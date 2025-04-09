@@ -110,7 +110,7 @@ def glm_fit_total(experiment, family=sm.families.Gaussian(), norm_by_vector=True
     experiment['glm_fit_total_result'] = result
     return experiment
 
-def plot_glm_results(glm_result, poshen_col='Poshen Activity'):
+def plot_glm_results(glm_result, poshen_col='Poshen Activity', fig_name='glm_result.pdf'):
     glm_result = glm_result.dropna()
     sns.scatterplot(glm_result, x=poshen_col, y='STARR-FISH Activity', hue=glm_result.index)
     sns.regplot(glm_result, x=poshen_col, y='STARR-FISH Activity', scatter=False, color='red')
@@ -119,9 +119,11 @@ def plot_glm_results(glm_result, poshen_col='Poshen Activity'):
     plt.text(min(glm_result[poshen_col])*1.2, max(glm_result['STARR-FISH Activity'])*0.8, 'y = ' + str(round(intercept,3)) + ' + ' + str(round(slope,3)) + 'x\nr = ' + str(round(r,3)) + ', p = ' + str(round(p,3)), fontsize=10)
     plt.ylabel('STARR-FISH Activity')
     plt.legend([],[], frameon=False)
+    # save figure
+    plt.savefig(fig_name, bbox_inches='tight')
     return plt.gca()
 
-def plot_activity(glm_result, value='STARR-FISH Activity', std='STARR-FISH Activity std err'):
+def plot_activity(glm_result, value='STARR-FISH Activity', std='STARR-FISH Activity std err', fig_name='activity.pdf'):
     sns.scatterplot(data=glm_result, x=glm_result.index, y=value, hue=glm_result.index)  # `s` adjusts point size
     plt.errorbar(x=glm_result.index, y=glm_result[value], yerr=2*glm_result[std], 
                  fmt='none',  # Do not plot markers (already done by Seaborn)
@@ -132,9 +134,11 @@ def plot_activity(glm_result, value='STARR-FISH Activity', std='STARR-FISH Activ
     # remove x label
     plt.xlabel('')
     plt.legend([],[], frameon=False)
+    # save figure
+    plt.savefig(fig_name, bbox_inches='tight')
     return plt.gca()
 
-def plot_corr_experiments(experiment1, experiment2, key='glm_fit_result', value='STARR-FISH Activity', std='STARR-FISH Activity std err'):
+def plot_corr_experiments(experiment1, experiment2, key='glm_fit_result', value='STARR-FISH Activity', std='STARR-FISH Activity std err', fig_name='corr_experiment.pdf'):
     glm_res1 = experiment1[key].dropna().copy()
     glm_res2 = experiment2[key].dropna().copy()
     # rename value and std columns
@@ -154,6 +158,8 @@ def plot_corr_experiments(experiment1, experiment2, key='glm_fit_result', value=
     plt.legend([],[], frameon=False)
     # title
     plt.title(f'Correlation between {key} of two experiments')
+    # save figure
+    plt.savefig(fig_name, bbox_inches='tight')
     return plt.gca()
 # %%
 july_experiment = preprocess_experiment('data/SFv4_T7_July_enhancer_cbg.csv', 'data/SFv4_T7_July_T7_cbg.csv')
@@ -164,23 +170,23 @@ sept_experiment = glm_fit(sept_experiment, family=sm.families.Gaussian(), norm_b
 july_experiment = glm_fit_total(july_experiment, family=sm.families.Gaussian(), norm_by_vector=False, norm_by_nanopore=True)
 sept_experiment = glm_fit_total(sept_experiment, family=sm.families.Gaussian(), norm_by_vector=False, norm_by_nanopore=True)
 # %% plot
-plot_glm_results(july_experiment['glm_fit_result'])
+plot_glm_results(july_experiment['glm_fit_result'], fig_name='fig/july_glm_result.pdf')
 # %%
-plot_activity(july_experiment['glm_fit_result'])
+plot_activity(july_experiment['glm_fit_result'], fig_name='fig/july_activity.pdf')
 # %%
-plot_glm_results(july_experiment['glm_fit_total_result'], poshen_col='Poshen Activity DESeq2')
+plot_glm_results(july_experiment['glm_fit_total_result'], poshen_col='Poshen Activity DESeq2', fig_name='fig/july_glm_total_result.pdf')
 # %%
-plot_activity(sept_experiment['glm_fit_total_result'])
+plot_activity(july_experiment['glm_fit_total_result'], fig_name='fig/july_activity_total.pdf')
 # %%
-plot_glm_results(sept_experiment['glm_fit_result'])
+plot_glm_results(sept_experiment['glm_fit_result'], fig_name='fig/sept_glm_result.pdf')
 # %%
-plot_activity(sept_experiment['glm_fit_result'])
+plot_activity(sept_experiment['glm_fit_result'], fig_name='fig/sept_activity.pdf')
 # %%
-plot_glm_results(sept_experiment['glm_fit_total_result'], poshen_col='Poshen Activity DESeq2')
+plot_glm_results(sept_experiment['glm_fit_total_result'], poshen_col='Poshen Activity DESeq2', fig_name='fig/sept_glm_total_result.pdf')
 # %%
-plot_activity(sept_experiment['glm_fit_total_result'])
+plot_activity(sept_experiment['glm_fit_total_result'], fig_name='fig/sept_activity_total.pdf')
 # %%
-plot_corr_experiments(july_experiment, sept_experiment, key='glm_fit_result')
+plot_corr_experiments(july_experiment, sept_experiment, key='glm_fit_result', fig_name='fig/corr_experiment.pdf')
 # %%
-plot_corr_experiments(july_experiment, sept_experiment, key='glm_fit_total_result')
+plot_corr_experiments(july_experiment, sept_experiment, key='glm_fit_total_result', fig_name='fig/corr_experiment_total.pdf')
 # %%
