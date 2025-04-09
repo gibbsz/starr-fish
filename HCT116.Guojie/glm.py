@@ -25,6 +25,8 @@ def preprocess_experiment(enhancer_file, vector_file):
               "enhancer_orig": enhancer, "vector_orig": vector}
     return result
 
+# glm fit on single experiment, fit enhancer ~ T7
+# if norm_by_total, then fit enhancer / total_enhancer ~ vector / total_vector
 def glm_fit(experiment, family=sm.families.Gaussian(), norm_by_total=False):
     # Create the model
     enhancer = experiment["enhancer"]
@@ -62,6 +64,9 @@ def glm_fit(experiment, family=sm.families.Gaussian(), norm_by_total=False):
     experiment['glm_fit_result'] = result
     return experiment
 
+# glm fit on single experiment, fit enhancer ~ total_enhancer, T7 ~ total_T7, 
+# then if norm_by_vector, divide the coefficients: enhancer ~ total_enhancer / vector ~ total_vector
+# if norm_by_nanopore, divide the enhancer coefficients by log(nanopore counts): enhancer ~ total_enhancer / log(nanopore counts)
 def glm_fit_total(experiment, family=sm.families.Gaussian(), norm_by_vector=True, norm_by_nanopore=False):
     # Create the model
     enhancer = experiment["enhancer"]
@@ -110,6 +115,8 @@ def glm_fit_total(experiment, family=sm.families.Gaussian(), norm_by_vector=True
     experiment['glm_fit_total_result'] = result
     return experiment
 
+# plot glm result correlation with poshen paper
+# poshen_col: the column name of poshen activity, 'Poshen Activity' or 'Poshen Activity DESeq2'
 def plot_glm_results(glm_result, poshen_col='Poshen Activity', fig_name='glm_result.pdf'):
     glm_result = glm_result.dropna()
     sns.scatterplot(glm_result, x=poshen_col, y='STARR-FISH Activity', hue=glm_result.index)
@@ -123,6 +130,7 @@ def plot_glm_results(glm_result, poshen_col='Poshen Activity', fig_name='glm_res
     plt.savefig(fig_name, bbox_inches='tight')
     return plt.gca()
 
+# plot glm result itself
 def plot_activity(glm_result, value='STARR-FISH Activity', std='STARR-FISH Activity std err', fig_name='activity.pdf'):
     sns.scatterplot(data=glm_result, x=glm_result.index, y=value, hue=glm_result.index)  # `s` adjusts point size
     plt.errorbar(x=glm_result.index, y=glm_result[value], yerr=2*glm_result[std], 
@@ -138,6 +146,7 @@ def plot_activity(glm_result, value='STARR-FISH Activity', std='STARR-FISH Activ
     plt.savefig(fig_name, bbox_inches='tight')
     return plt.gca()
 
+# plot correlation between two experiments
 def plot_corr_experiments(experiment1, experiment2, key='glm_fit_result', value='STARR-FISH Activity', std='STARR-FISH Activity std err', fig_name='corr_experiment.pdf'):
     glm_res1 = experiment1[key].dropna().copy()
     glm_res2 = experiment2[key].dropna().copy()
