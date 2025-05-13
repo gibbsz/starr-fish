@@ -184,4 +184,5 @@ cython_debug/
 *.txt
 *.fasta
 *.sh
+*.xlsx
 *.pkl
