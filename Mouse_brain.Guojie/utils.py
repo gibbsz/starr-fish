@@ -294,14 +294,16 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
             y_ = y_[select_region]
         ax.scatter(x_, y_, c=col, s=sbig, marker='.',label = cluster_)
     
+    # Format axes
     ax.grid(False)
-    ax.axis("off")
-    ax.axis("equal")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.set_aspect('equal')
+    ax.set_facecolor('black')
     # if cluster len is 1, then plot title
     ax.set_title(f"Cell types", color='white', fontsize=20)
     if plot_legend:
-        ax.legend(fontsize=10, loc='upper right')
-    fig.tight_layout()
+        ax.legend(fontsize=10, loc='lower right')
     return None
 
 
@@ -890,7 +892,7 @@ class STARRFISH:
             # show color bar
             sm = plt.cm.ScalarMappable(cmap=plt.cm.coolwarm, norm=plt.Normalize(vmin=0, vmax=nmax))
             sm.set_array([])
-            cbar_ax = fig.add_axes([0.48, 0.2, 0.01, 0.4])
+            cbar_ax = fig.add_axes([0.49, 0.2, 0.01, 0.4])
             cbar = plt.colorbar(
                 sm, 
                 cax=cbar_ax,  # Use the dedicated colorbar axes
