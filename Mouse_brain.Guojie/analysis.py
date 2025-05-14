@@ -498,14 +498,14 @@ def scatter_plot_with_margin_density_by_celltype(test_results1, test_results2, c
         ax_up.set_xlim(min_x, max_x)
         ax_right.set_ylim(min_y, max_y)
         # plot text 
-        ax_up.text(mean1, ax_up.get_ylim()[1] * 0.75, 
-                   f'{sum((toplot1 < mean1 + 2*std1) & (toplot1>mean1-2*std1))} CREs', 
-                   fontsize=8, ha='center')
-        ax_right.text(ax_right.get_xlim()[1] * 0.75, mean2, 
-                     f'{sum((toplot2 < mean2 + 2*std2) & (toplot2>mean2-2*std2))} CREs',
-                     fontsize=8, va='center', rotation=270)
         # plot mean and std
         if show_mean_std:
+            ax_up.text(mean1, ax_up.get_ylim()[1] * 0.75, 
+                    f'{sum((toplot1 < mean1 + 2*std1) & (toplot1>mean1-2*std1))} CREs', 
+                    fontsize=8, ha='center')
+            ax_right.text(ax_right.get_xlim()[1] * 0.75, mean2, 
+                        f'{sum((toplot2 < mean2 + 2*std2) & (toplot2>mean2-2*std2))} CREs',
+                        fontsize=8, va='center', rotation=270)
             ax_up.axvline(mean1, color='red', linestyle='--', label='mean', alpha=0.5)
             ax_up.axvline(mean1 + 2*std1, color='blue', linestyle='--', label='std', alpha=0.5)
             ax_up.axvline(mean1 - 2*std1, color='blue', linestyle='--', label='std', alpha=0.5)
@@ -833,7 +833,9 @@ def scatter_plot_with_margin_density_by_cre(test_results1, test_results2, cres_t
     plt.close(fig)
     return fig
 
-def plot_celltype_activity_distribution_compare(obj1: STARRFISH, obj2: STARRFISH, cell_types_to_use, test_method, test_configs, 
+def plot_celltype_activity_distribution_compare(obj1: STARRFISH, obj2: STARRFISH, 
+                                                cell_types_to_use, cres_to_use, 
+                                                test_method, test_configs, 
                                                 contour=True, hist=True, log=False, filter_zero=True, 
                                                 show_mean_std=True, show_positive_control=True, ncol=8):
     normalize_by_lib_size = True
@@ -861,9 +863,14 @@ def plot_celltype_activity_distribution_compare(obj1: STARRFISH, obj2: STARRFISH
     negative_control_results1 = test_results1[negative_control_cres]
     negative_control_results2 = test_results2[negative_control_cres]
     # align the columns of the two dataframes
-    common_cols = test_results1.columns.intersection(test_results2.columns)
-    test_results1 = test_results1[common_cols]
-    test_results2 = test_results2[common_cols]
+    if cres_to_use is not None:
+        cres_to_use = pd.Series(cres_to_use)
+        cres_to_use = cres_to_use[cres_to_use.isin(test_results1.columns)]
+        cres_to_use = cres_to_use[cres_to_use.isin(test_results2.columns)]
+    else:
+        cres_to_use = test_results1.columns.intersection(test_results2.columns)
+    test_results1 = test_results1[cres_to_use]
+    test_results2 = test_results2[cres_to_use]
     # log transform the data
     if log:
         test_results1 = np.log10(test_results1.astype(float) + 1)
@@ -1169,8 +1176,13 @@ def cre_dotplot(obj, cres_to_use, cell_types_to_use, test_method, test_configs,
     plt.xticks(rotation=90)
     plt.xlabel('Cell Types')
     plt.ylabel('CREs')
-    # legend position to the right
-    ax.legend(loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10, labelspacing=1.5)
+    # legend position to the bottom and horizontal
+    ncol = 7  # Number of columns you want
+    handles, labels = ax.get_legend_handles_labels()
+    handles = np.array(handles).reshape(-1, ncol).T.flatten()
+    labels = np.array(labels).reshape(-1, ncol).T.flatten()
+    ax.legend(handles, labels, loc='lower center', ncol=ncol,
+              bbox_to_anchor=(0.5, -0.25), fontsize=10, labelspacing=1.5)
     fig.tight_layout()
     plt.close(fig)
     return fig
@@ -1270,6 +1282,16 @@ def celltype_dotplot(obj, cres_to_use, cell_types_to_use, test_method, test_conf
     plt.close(fig)
     return fig
 # %%
+# define CREs to use
+lib_size = starrfish2_filtered.lib_size['counts']
+# fold to average lib_size
+lib_size_fold = lib_size / lib_size.mean()
+# remove CREs with less than 5 fold enrichment
+cres_to_use_libsize_high = lib_size_fold[lib_size_fold > 1/5].index
+# remove CRE217
+cres_to_use_libsize_high = cres_to_use_libsize_high[cres_to_use_libsize_high != 'CRE217']
+len(cres_to_use_libsize_high), lib_size.loc[cres_to_use_libsize_high].min()
+# %%
 # define cell types to use for filtered data
 cell_types_counts1 = starrfish1_filtered.get_celltypes().value_counts()
 cell_types_counts2 = starrfish2_filtered.get_celltypes().value_counts()
@@ -1286,7 +1308,7 @@ cell_types_to_use_nc = cell_types_to_use_nc_1.intersection(cell_types_to_use_nc_
 len(cell_types_to_use), len(cell_types_to_use_nc), len(cell_types_to_use_nc_2)
 # %% consistency between two experiments
 fig = plot_celltype_activity_distribution_compare(
-    starrfish1_filtered, starrfish2_filtered, cell_types_to_use=cell_types_to_use_nc,
+    starrfish1_filtered, starrfish2_filtered, cell_types_to_use=cell_types_to_use_nc, cres_to_use=cres_to_use_libsize_high,
     test_method='fold_change', test_configs=fold_change_test_config, log=True, filter_zero=False,
     show_mean_std=False, show_positive_control=False)
 fig.savefig(f'results/fold_change/expr1_expr2_celltype_distribution.pdf')
@@ -1319,6 +1341,7 @@ fig = cre_dotplot(starrfish2, significant_cres, cell_types_to_use_nc_2,
                   test_method='fold_change', test_configs=fold_change_test_config,
                   scale_by_cre=True, z_score_by_cre=False, figsize=(20, 12))
 fig.savefig(f'results/fold_change/expr2_cre_dotplot.pdf')
+# %% plot the distribution of activity and atac
 target_cres = starrfish2.get_creinfo().index[starrfish2.get_creinfo()['best_subclass'].isin(cell_types_to_use_nc_2)]
 print(target_cres[target_cres.isin(significant_cres)])
 print(len(target_cres), sum(significant_cres.isin(target_cres)), len(significant_cres))
@@ -1332,22 +1355,61 @@ fig5 = plot_cre_activity_atac_distribution_compare(
         test_method='fold_change', test_configs=fold_change_test_config, log=True, filter_zero=False)
 fig5.savefig(f'results/fold_change/expr2_cre_distribution_good_CRE.pdf')
 # %% visualization of a specific CRE
-fig = starrfish2_filtered.plot_gene(
-    'CRE004', average_by_celltype=False,
-    norm_by_negative_control_cell_type_sum=True,
-    norm_by_negative_control_cell_type_mean=False,
-    norm_by_negative_control_single_cell=False,
-    log=False, transpose=-1, flipx=-1,
-    cell_types_to_use=cell_types_to_use_nc_2)
-fig.savefig(f'results/fold_change/expr2_CRE004.pdf')
+for cre, cell_types_to_visualize  in zip(['CRE004', 'CRE173', 'CRE377', 'CRE177'],
+                                         [None, None, ['PB Evx2 Glut'], ['STR D1 Gaba']]):
+    fig = starrfish2_filtered.plot_gene(
+        cre, average_by_celltype=False,
+        norm_by_negative_control_cell_type_sum=True,
+        norm_by_negative_control_cell_type_mean=False,
+        norm_by_negative_control_single_cell=False,
+        cell_types_to_visualize=cell_types_to_visualize,
+        log=False, transpose=-1, flipx=-1,
+        cell_types_to_use=cell_types_to_use_nc_2)
+    fig.savefig(f'results/fold_change/expr2_{cre}.pdf')
+# visualization of a specific CRE, zoom in
+for cre, figsize, cell_types_to_visualize  in zip(['CRE004', 'CRE173', 'CRE377', 'CRE177'], 
+                                                 [(9, 6), (9, 6), (9, 4), (9, 6)],
+                                                 [None, None, ['PB Evx2 Glut'], ['STR D1 Gaba']]):
+    print(cre, cell_types_to_visualize, figsize)
+    fig = starrfish2_filtered.plot_gene(
+        cre, average_by_celltype=False,
+        norm_by_negative_control_cell_type_sum=True,
+        norm_by_negative_control_cell_type_mean=False,
+        norm_by_negative_control_single_cell=False,
+        cell_types_to_visualize=cell_types_to_visualize,
+        log=False, transpose=-1, flipx=-1, show_celltypes=False,
+        select_region_by_best_celltype=True, figsize=figsize, 
+        cell_types_to_use=cell_types_to_use_nc_2)
+    fig.savefig(f'results/fold_change/expr2_{cre}_zoomin.pdf')
+# %% visualization of cell types
+fig=starrfish2_filtered.plot_cluster(['TH Prkcd Grin2c Glut', # CRE004
+                                  'NDB-SI-MA-STRv Lhx8 Gaba', # CRE173
+                                  'PB Evx2 Glut'], # CRE377,
+                                 plot_legend=True, transpose=-1, flipx=-1,
+                                 sbig=20, figsize=(24, 12),
+                                 )
+fig.savefig(f'results/fold_change/expr2_celltypes.pdf')
+# visualization of a specific cell type, zoom in
+for cell_types_to_visualize, figsize, i  in zip(['TH Prkcd Grin2c Glut', 'NDB-SI-MA-STRv Lhx8 Gaba', 'PB Evx2 Glut', 'STR D1 Gaba'],
+                                                [(6, 6), (6, 6), (6, 4), (9, 6)], range(4)):
+    print(cell_types_to_visualize, figsize)
+    Xcells = starrfish2_filtered.adata.obsm['X_spatial'][:, ::-1] * [-1, 1]
+    celltype_idx = starrfish2_filtered.adata.obs['subclass'].isin([cell_types_to_visualize])
+    x_min = Xcells[celltype_idx, 0].min()
+    x_max = Xcells[celltype_idx, 0].max()
+    y_min = Xcells[celltype_idx, 1].min()
+    y_max = Xcells[celltype_idx, 1].max()
+    fig = starrfish2_filtered.plot_cluster(
+        [cell_types_to_visualize], plot_legend=False, transpose=-1, flipx=-1,
+        x_region=[x_min, x_max], y_region=[y_min, y_max],
+        cmap=starrfish2_filtered.adata.uns['cmap'][i:],
+        sbig=20, figsize=figsize,)
+    fig.savefig(f'results/fold_change/expr2_{cell_types_to_visualize}_zoomin.pdf')
 # %%
-fig = starrfish2_filtered.plot_gene(
-    'CRE004', average_by_celltype=False,
-    norm_by_negative_control_cell_type_sum=True,
-    norm_by_negative_control_cell_type_mean=False,
-    norm_by_negative_control_single_cell=False,
-    log=False, transpose=-1, flipx=-1,
-    select_region_by_best_celltype=True,
-    cell_types_to_use=cell_types_to_use_nc_2)
-fig.savefig(f'results/fold_change/expr2_CRE004_zoomin.pdf')
+fig5, fig52 = plot_celltype_activity_atac_distribution_compare(
+    starrfish2_filtered, 
+    cell_types_to_use=cell_types_to_use_nc_2, cres_to_use=cres_to_use_libsize_high,
+    test_method='fold_change', test_configs=fold_change_test_config, log=True, filter_zero=False)
+fig5.savefig(f'results/fold_change/expr2_celltype_distribution.pdf')
+fig52.savefig(f'results/fold_change/expr2_celltype_distribution_box.pdf')
 # %%

@@ -256,15 +256,18 @@ def plot_gene_scdata(scdata2, gene='SOX9', use='X', nmax=None, sz_min=5, sz_max=
 
 def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass', 
                         transpose=1, flipx=1, flipy=1, sbig=30, small=5, 
-                        x_region=None, y_region=None,
-                        ax=None, plot_legend = False, tag='X_spatial'):
+                        x_region=None, y_region=None, cmap=None,
+                        ax=None, plot_legend = False, tag='X_spatial',
+                        figsize=(20,10)):
     Xcells = scdata.obsm[tag][:, ::transpose] * [flipx, flipy]
-    cmap = scdata.uns['cmap']
+    if cmap is None:
+        cmap = scdata.uns['cmap']
     if ax is None:
-        fig, ax = plt.subplots(figsize=(10, 10), facecolor="black")
+        fig, ax = plt.subplots(figsize=figsize, facecolor="black")
+        toreturn = True
     else:
         fig = ax.figure
-
+        toreturn = False
     x = Xcells[:, 0]
     y = Xcells[:, 1]
     x_ = x.copy()
@@ -294,17 +297,20 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
             y_ = y_[select_region]
         ax.scatter(x_, y_, c=col, s=sbig, marker='.',label = cluster_)
     
+    # if cluster len is 1, then plot title
+    ax.set_title(f"Cell types", color='white', fontsize=20)
+    if plot_legend:
+        ax.legend(fontsize=20, loc='lower right')
     # Format axes
     ax.grid(False)
     ax.set_xticks([])
     ax.set_yticks([])
     ax.set_aspect('equal')
     ax.set_facecolor('black')
-    # if cluster len is 1, then plot title
-    ax.set_title(f"Cell types", color='white', fontsize=20)
-    if plot_legend:
-        ax.legend(fontsize=10, loc='lower right')
-    return None
+    if toreturn:
+        fig.tight_layout()
+        plt.close(fig)
+        return fig
 
 
 def calculate_fold_change(cre_celltypes_expression: pd.DataFrame, cell_types_to_use: pd.Series, CRE_info: pd.DataFrame,
@@ -775,8 +781,8 @@ class STARRFISH:
                   norm_by_negative_control_single_cell=False, log=True,
                   cell_types_to_use=None, cell_types_to_visualize=None, 
                   nmin=None, nmax=None, sz_min=5, sz_max=30, 
-                  x_region=None, y_region=None, select_region_by_best_celltype=False,
-                  transpose=1, flipx=1, flipy=1, smooth_k=None):
+                  x_region=None, y_region=None, select_region_by_best_celltype=False, show_celltypes=True,
+                  transpose=1, flipx=1, flipy=1, smooth_k=None, figsize=(30, 10)):
         tag = self.spatial_tag.split(':')[1]
         Xcells = self.adata.obsm[tag][:, ::transpose] * [flipx, flipy]
         # get best cell type
@@ -870,33 +876,39 @@ class STARRFISH:
             size = size[select_region]
         # Create single figure and axes
         if use == 'CRE':
-            fig, ax = plt.subplots(1, 2, figsize=(30, 10), facecolor='k')
-            plot_cluster_scdata(self.adata, clusters=best_celltype, use='subclass', 
-                                transpose=transpose, flipx=flipx, flipy=flipy, 
-                                x_region=x_region, y_region=y_region,
-                                sbig=sz_max, small=sz_min, ax=ax[1], plot_legend=True)
-            ax[0].set_title(f'{gene}', color='white', fontsize=20)
-            ax[0].set_facecolor('black')
+            if show_celltypes:
+                fig, ax = plt.subplots(1, 2, figsize=figsize, facecolor='k')
+                plot_cluster_scdata(self.adata, clusters=best_celltype, use='subclass', 
+                                    transpose=transpose, flipx=flipx, flipy=flipy, 
+                                    x_region=x_region, y_region=y_region,
+                                    sbig=sz_max, small=sz_min, ax=ax[1], plot_legend=True)
+                ax_ = ax[0]
+            else:
+                fig, ax_ = plt.subplots(figsize=figsize, facecolor='k')
+            ax_.set_title(f'{gene}', color='white', fontsize=20)
+            ax_.set_facecolor('black')
             
             # Plot data
             cell_with_genes = np.where(cts > 0)[0]
             # first plot cells without genes, then plot cells with genes
-            ax[0].scatter(Xcells[:, 0], Xcells[:, 1], c='grey', s=sz_min, marker='.')
-            ax[0].scatter(Xcells[cell_with_genes, 0], Xcells[cell_with_genes, 1], c=cmap[cell_with_genes], s=sz_max)
+            ax_.scatter(Xcells[:, 0], Xcells[:, 1], c='grey', s=sz_min, marker='.')
+            ax_.scatter(Xcells[cell_with_genes, 0], Xcells[cell_with_genes, 1], c=cmap[cell_with_genes], s=sz_max)
             
             # Format axes
-            ax[0].grid(False)
-            ax[0].set_xticks([])
-            ax[0].set_yticks([])
-            ax[0].set_aspect('equal')
+            ax_.grid(False)
+            ax_.set_xticks([])
+            ax_.set_yticks([])
+            ax_.set_aspect('equal')
             # show color bar
             sm = plt.cm.ScalarMappable(cmap=plt.cm.coolwarm, norm=plt.Normalize(vmin=0, vmax=nmax))
             sm.set_array([])
-            cbar_ax = fig.add_axes([0.49, 0.2, 0.01, 0.4])
             cbar = plt.colorbar(
-                sm, 
-                cax=cbar_ax,  # Use the dedicated colorbar axes
-                orientation='vertical'
+                sm,
+                ax=ax_,
+                orientation='vertical',
+                location='right',
+                pad=0.05,           # Space between plot and colorbar
+                shrink=0.3          # Scale height of colorbar (0.8 = 80% of plot height)
             )
             cbar.set_label('Normalized Counts', color='white', fontsize=16)
             cbar.ax.yaxis.set_tick_params(color='white')
@@ -969,12 +981,12 @@ class STARRFISH:
         return None
          
     def plot_cluster(self, clusters=['Endo NN'], use='subclass',
-                     transpose=1, flipx=1, flipy=1, sbig=30, small=5, 
-                     plot_legend = False):
+                     transpose=1, flipx=1, flipy=1, sbig=30, small=5, cmap=None,
+                     x_region=None, y_region=None, plot_legend = False, figsize=(20, 10)):
         tag = self.spatial_tag.split(':')[1]
-        plot_cluster_scdata(self.adata, clusters=clusters, use=use, transpose=transpose, 
-                            flipx=flipx, flipy=flipy, sbig=sbig, small=small, tag=tag,
-                            plot_legend = plot_legend)
+        return plot_cluster_scdata(self.adata, clusters=clusters, use=use, transpose=transpose, 
+                                   flipx=flipx, flipy=flipy, sbig=sbig, small=small, tag=tag, cmap=cmap,
+                                   x_region=x_region, y_region=y_region, plot_legend = plot_legend, figsize=figsize)
         
     def cre_deseq2(self, cell_type, pseudo_bulk_number=1000, replace=True, 
                    percentage_bootstrap=0.5, multi_processes=128) -> DeseqStats:
