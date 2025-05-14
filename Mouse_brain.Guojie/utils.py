@@ -899,8 +899,8 @@ class STARRFISH:
             cbar.set_label('Normalized Counts', color='white', fontsize=16)
             cbar.ax.yaxis.set_tick_params(color='white')
             cbar.ax.tick_params(labelcolor='white')
-            cbar.ax.set_xticks(np.linspace(0, nmax, 5))
-            cbar.ax.set_xticklabels([f'{i:.2f}' for i in np.linspace(0, nmax, 5)], color='white', fontsize=10)
+            cbar.ax.set_yticks(np.linspace(0, nmax, 5))
+            cbar.ax.set_yticklabels([f'{i:.2f}' for i in np.linspace(0, nmax, 5)], color='white', fontsize=10)
         else:
             fig, ax = plt.subplots(figsize=(10, 10), facecolor='black')
             ax.set_title(f'{gene} - N max {nmax}', color='white')
