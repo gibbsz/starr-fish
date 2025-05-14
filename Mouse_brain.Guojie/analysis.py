@@ -1341,20 +1341,8 @@ fig = cre_dotplot(starrfish2, significant_cres, cell_types_to_use_nc_2,
                   test_method='fold_change', test_configs=fold_change_test_config,
                   scale_by_cre=True, z_score_by_cre=False, figsize=(20, 12))
 fig.savefig(f'results/fold_change/expr2_cre_dotplot.pdf')
-# %% plot the distribution of activity and atac
-target_cres = starrfish2.get_creinfo().index[starrfish2.get_creinfo()['best_subclass'].isin(cell_types_to_use_nc_2)]
-print(target_cres[target_cres.isin(significant_cres)])
-print(len(target_cres), sum(significant_cres.isin(target_cres)), len(significant_cres))
-target_cres = target_cres[~target_cres.isin(significant_cres)]
-fig5 = plot_cre_activity_atac_distribution_compare(
-        starrfish2, cell_types_to_use=cell_types_to_use_nc_2, cres_to_use=target_cres,
-        test_method='fold_change', test_configs=fold_change_test_config, log=True, filter_zero=False)
-fig5.savefig(f'results/fold_change/expr2_cre_distribution_bad_CRE.pdf')
-fig5 = plot_cre_activity_atac_distribution_compare(
-        starrfish2, cell_types_to_use=cell_types_to_use_nc_2, cres_to_use=significant_cres,
-        test_method='fold_change', test_configs=fold_change_test_config, log=True, filter_zero=False)
-fig5.savefig(f'results/fold_change/expr2_cre_distribution_good_CRE.pdf')
-# %% visualization of a specific CRE
+# %% visualization
+# visulization of a specific CRE
 for cre, cell_types_to_visualize  in zip(['CRE004', 'CRE173', 'CRE377', 'CRE177'],
                                          [None, None, ['PB Evx2 Glut'], ['STR D1 Gaba']]):
     fig = starrfish2_filtered.plot_gene(
@@ -1381,7 +1369,7 @@ for cre, figsize, cell_types_to_visualize  in zip(['CRE004', 'CRE173', 'CRE377',
         select_region_by_best_celltype=True, figsize=figsize, 
         cell_types_to_use=cell_types_to_use_nc_2)
     fig.savefig(f'results/fold_change/expr2_{cre}_zoomin.pdf')
-# %% visualization of cell types
+# visualization of cell types
 fig=starrfish2_filtered.plot_cluster(['TH Prkcd Grin2c Glut', # CRE004
                                   'NDB-SI-MA-STRv Lhx8 Gaba', # CRE173
                                   'PB Evx2 Glut'], # CRE377,
@@ -1405,11 +1393,16 @@ for cell_types_to_visualize, figsize, i  in zip(['TH Prkcd Grin2c Glut', 'NDB-SI
         cmap=starrfish2_filtered.adata.uns['cmap'][i:],
         sbig=20, figsize=figsize,)
     fig.savefig(f'results/fold_change/expr2_{cell_types_to_visualize}_zoomin.pdf')
-# %%
-fig5, fig52 = plot_celltype_activity_atac_distribution_compare(
-    starrfish2_filtered, 
-    cell_types_to_use=cell_types_to_use_nc_2, cres_to_use=cres_to_use_libsize_high,
-    test_method='fold_change', test_configs=fold_change_test_config, log=True, filter_zero=False)
-fig5.savefig(f'results/fold_change/expr2_celltype_distribution.pdf')
-fig52.savefig(f'results/fold_change/expr2_celltype_distribution_box.pdf')
-# %%
+# %% plot the distribution of activity and atac
+target_cres = starrfish2.get_creinfo().index[starrfish2.get_creinfo()['best_subclass'].isin(cell_types_to_use_nc_2)]
+print(target_cres[target_cres.isin(significant_cres)])
+print(len(target_cres), sum(significant_cres.isin(target_cres)), len(significant_cres))
+target_cres = target_cres[~target_cres.isin(significant_cres)]
+fig5 = plot_cre_activity_atac_distribution_compare(
+        starrfish2, cell_types_to_use=cell_types_to_use_nc_2, cres_to_use=target_cres,
+        test_method='fold_change', test_configs=fold_change_test_config, log=True, filter_zero=False)
+fig5.savefig(f'results/fold_change/expr2_cre_distribution_bad_CRE.pdf')
+fig5 = plot_cre_activity_atac_distribution_compare(
+        starrfish2, cell_types_to_use=cell_types_to_use_nc_2, cres_to_use=significant_cres,
+        test_method='fold_change', test_configs=fold_change_test_config, log=True, filter_zero=False)
+fig5.savefig(f'results/fold_change/expr2_cre_distribution_good_CRE.pdf')
