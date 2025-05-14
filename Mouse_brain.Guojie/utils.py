@@ -256,6 +256,7 @@ def plot_gene_scdata(scdata2, gene='SOX9', use='X', nmax=None, sz_min=5, sz_max=
 
 def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass', 
                         transpose=1, flipx=1, flipy=1, sbig=30, small=5, 
+                        x_region=None, y_region=None,
                         ax=None, plot_legend = False, tag='X_spatial'):
     Xcells = scdata.obsm[tag][:, ::transpose] * [flipx, flipy]
     cmap = scdata.uns['cmap']
@@ -264,29 +265,42 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
     else:
         fig = ax.figure
 
-    XC = -Xcells[:, ::-1]
-    x = XC[:, 0]
-    y = XC[:, 1]
-    #np.unique(scdata.obs["leiden"].astype(np.int))[::-1]
-    plt.scatter(x, y, c='gray', s=small, marker='.')
+    x = Xcells[:, 0]
+    y = Xcells[:, 1]
+    x_ = x.copy()
+    y_ = y.copy()
+    if x_region is not None:
+        select_region = (x_ > x_region[0]) & (x_ < x_region[1])
+        x_ = x_[select_region]
+        y_ = y_[select_region]
+    if y_region is not None:
+        select_region = (y_ > y_region[0]) & (y_ < y_region[1])
+        x_ = x_[select_region]
+        y_ = y_[select_region]
+    plt.scatter(x_, y_, c='gray', s=small, marker='.')
     for i, cluster in enumerate(clusters):
         cluster_ = str(cluster)
         inds = scdata.obs[use] == cluster_
         x_ = x[inds]
         y_ = y[inds]
         col = cmap[i % len(cmap)]
+        if x_region is not None:
+            select_region = (x_ > x_region[0]) & (x_ < x_region[1])
+            x_ = x_[select_region]
+            y_ = y_[select_region]
+        if y_region is not None:
+            select_region = (y_ > y_region[0]) & (y_ < y_region[1])
+            x_ = x_[select_region]
+            y_ = y_[select_region]
         ax.scatter(x_, y_, c=col, s=sbig, marker='.',label = cluster_)
     
     ax.grid(False)
     ax.axis("off")
     ax.axis("equal")
     # if cluster len is 1, then plot title
-    if len(clusters) == 1:
-        ax.set_title(f"{clusters[0]}", color='white', fontsize=20)
-    else:
-        ax.set_title(f"{len(clusters)} clusters", color='white', fontsize=20)
+    ax.set_title(f"Cell types", color='white', fontsize=20)
     if plot_legend:
-        ax.legend()
+        ax.legend(fontsize=10, loc='upper right')
     fig.tight_layout()
     return None
 
@@ -754,9 +768,12 @@ class STARRFISH:
         return cres.index
     
     def plot_gene(self, gene='CRE129', use='CRE', 
-                  average_by_celltype=True, norm_by_negative_control=True, log=True,
+                  average_by_celltype=False, 
+                  norm_by_negative_control_cell_type_mean=False, norm_by_negative_control_cell_type_sum=True, 
+                  norm_by_negative_control_single_cell=False, log=True,
                   cell_types_to_use=None, cell_types_to_visualize=None, 
                   nmin=None, nmax=None, sz_min=5, sz_max=30, 
+                  x_region=None, y_region=None, select_region_by_best_celltype=False,
                   transpose=1, flipx=1, flipy=1, smooth_k=None):
         tag = self.spatial_tag.split(':')[1]
         Xcells = self.adata.obsm[tag][:, ::transpose] * [flipx, flipy]
@@ -780,17 +797,24 @@ class STARRFISH:
             # rename the index
             cts.index = self.get_celltypes().index
         # if norm_by_negative_control, then normalize by negative control
-        if norm_by_negative_control:
+        if norm_by_negative_control_cell_type_mean:
             negative_control_counts = self.get_cre_expression()[self.get_negative_control_cres()].sum(axis=1).groupby(self.get_celltypes()).mean()
             norm_factor = negative_control_counts.loc[self.get_celltypes()]
             cts = cts / norm_factor.values
+        if norm_by_negative_control_cell_type_sum:
+            negative_control_counts = self.get_cre_expression()[self.get_negative_control_cres()].sum(axis=1).groupby(self.get_celltypes()).sum()
+            norm_factor = negative_control_counts.loc[self.get_celltypes()]
+            cts = cts / norm_factor.values
+        if norm_by_negative_control_single_cell:
+            negative_control_counts = self.get_cre_expression()[self.get_negative_control_cres()].sum(axis=1)
+            cts = cts / negative_control_counts.values
         if log:
             cts = np.log1p(cts)
         if cell_types_to_use is not None:
             # only cts for the cell types to use
             cts[~self.get_celltypes().isin(cell_types_to_use)] = np.nan
         # Prepare plot parameters
-        cts = np.nan_to_num(cts)
+        cts = np.nan_to_num(cts, nan=0, posinf=0, neginf=0)
         # if smoothing_k is not None, then smooth the data spatially by k-nearest neighbors
         if smooth_k is not None:
             # get the k nearest neighbors
@@ -805,30 +829,78 @@ class STARRFISH:
         ncts = np.clip(cts/nmax, 0, 1)
         size = sz_min + ncts * (sz_max - sz_min)
         cmap = plt.cm.coolwarm(ncts)
-        
+        if select_region_by_best_celltype:
+            # select region by best_celltype
+            xmin = Xcells[:, 0].min()
+            xmax = Xcells[:, 0].max()
+            ymin = Xcells[:, 1].min()
+            ymax = Xcells[:, 1].max()
+            for celltype in best_celltype:
+                # get the cell type
+                celltype_idx = self.get_celltypes() == celltype
+                # get the coordinates of the cells
+                x_min = Xcells[celltype_idx, 0].min()
+                x_max = Xcells[celltype_idx, 0].max()
+                y_min = Xcells[celltype_idx, 1].min()
+                y_max = Xcells[celltype_idx, 1].max()
+                # select the region
+                if x_min > xmin:
+                    xmin = x_min
+                if x_max < xmax:
+                    xmax = x_max
+                if y_min > ymin:
+                    ymin = y_min
+                if y_max < ymax:
+                    ymax = y_max
+            x_region = (xmin, xmax)
+            y_region = (ymin, ymax)
+        if x_region is not None:
+            select_region = (Xcells[:, 0] > x_region[0]) & (Xcells[:, 0] < x_region[1])
+            Xcells = Xcells[select_region]
+            cts = cts[select_region]
+            cmap = cmap[select_region]
+            size = size[select_region]
+        if y_region is not None:
+            select_region = (Xcells[:, 1] > y_region[0]) & (Xcells[:, 1] < y_region[1])
+            Xcells = Xcells[select_region]
+            cts = cts[select_region]
+            cmap = cmap[select_region]
+            size = size[select_region]
         # Create single figure and axes
         if use == 'CRE':
             fig, ax = plt.subplots(1, 2, figsize=(30, 10), facecolor='k')
             plot_cluster_scdata(self.adata, clusters=best_celltype, use='subclass', 
                                 transpose=transpose, flipx=flipx, flipy=flipy, 
-                                sbig=sz_max, small=1, ax=ax[1], plot_legend=False)
-            ax[0].set_title(f'{gene} - N max {nmax:.2f}', color='white', fontsize=20)
+                                x_region=x_region, y_region=y_region,
+                                sbig=sz_max, small=sz_min, ax=ax[1], plot_legend=True)
+            ax[0].set_title(f'{gene}', color='white', fontsize=20)
             ax[0].set_facecolor('black')
             
             # Plot data
-            XC = -Xcells[:, ::-1]
             cell_with_genes = np.where(cts > 0)[0]
             # first plot cells without genes, then plot cells with genes
-            ax[0].scatter(XC[:, 0], XC[:, 1], c='grey', s=sz_min, marker='.')
-            # ax[0].scatter(XC[~cell_with_genes, 0], XC[~cell_with_genes, 1], c=cmap[~cell_with_genes], s=size[~cell_with_genes])
-            ax[0].scatter(XC[cell_with_genes, 0], XC[cell_with_genes, 1], c=cmap[cell_with_genes], s=sz_max)
-            # ax[0].scatter(XC[:, 0], XC[:, 1], c=cmap, s=size)
+            ax[0].scatter(Xcells[:, 0], Xcells[:, 1], c='grey', s=sz_min, marker='.')
+            ax[0].scatter(Xcells[cell_with_genes, 0], Xcells[cell_with_genes, 1], c=cmap[cell_with_genes], s=sz_max)
             
             # Format axes
             ax[0].grid(False)
             ax[0].set_xticks([])
             ax[0].set_yticks([])
             ax[0].set_aspect('equal')
+            # show color bar
+            sm = plt.cm.ScalarMappable(cmap=plt.cm.coolwarm, norm=plt.Normalize(vmin=0, vmax=nmax))
+            sm.set_array([])
+            cbar_ax = fig.add_axes([0.48, 0.2, 0.01, 0.4])
+            cbar = plt.colorbar(
+                sm, 
+                cax=cbar_ax,  # Use the dedicated colorbar axes
+                orientation='vertical'
+            )
+            cbar.set_label('Normalized Counts', color='white', fontsize=16)
+            cbar.ax.yaxis.set_tick_params(color='white')
+            cbar.ax.tick_params(labelcolor='white')
+            cbar.ax.set_xticks(np.linspace(0, nmax, 5))
+            cbar.ax.set_xticklabels([f'{i:.2f}' for i in np.linspace(0, nmax, 5)], color='white', fontsize=10)
         else:
             fig, ax = plt.subplots(figsize=(10, 10), facecolor='black')
             ax.set_title(f'{gene} - N max {nmax}', color='white')
@@ -849,7 +921,8 @@ class STARRFISH:
             ax.set_aspect('equal')
         
         fig.tight_layout()
-        return None
+        plt.close(fig)
+        return fig
 
     def plot_activate_cells(self, cre='CRE001', activate_threshold=2, atac_z_score_threshold=2, 
                             remove_celltypes='Non neuron',
