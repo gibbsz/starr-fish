@@ -11,6 +11,7 @@ from pydeseq2.dds import DeseqDataSet
 from pydeseq2.default_inference import DefaultInference
 from pydeseq2.ds import DeseqStats
 from scipy import stats, optimize
+import statsmodels.api as sm
 from statsmodels.stats import multitest
 from typing import Union, List, Literal
 import scanpy as sc
@@ -29,6 +30,7 @@ from scipy.stats import linregress
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
 import logging
+from typing import Literal
 set_cmdstan_path('/share/vault/Users/gz2294/miniconda3/envs/scvi/bin/cmdstan/')
 cmdstanpy_logger = logging.getLogger("cmdstanpy")
 cmdstanpy_logger.disabled = True
@@ -81,7 +83,7 @@ def glm(adata, cell_types_to_use=None, CREs=None, norm_by_volm=False, volm_covar
     if fov_covariate:
         formula += ' + C(fov)'
     if multiprocess_threads is not None:
-        pool = multiprocessing.Pool(processes=min(multiprocess_threads, int(multiprocessing.cpu_count()*0.5)))
+        pool = multiprocessing.Pool(processes=min(multiprocess_threads, int(multiprocessing.cpu_count()*0.8)))
     for k, cell_type in enumerate(cell_types_to_use):
         start = time.time()
         # get the data for the cell type
@@ -144,7 +146,7 @@ def cre_deseq2(adata, cell_type, pseudo_bulk_number=1000, replace=True, percenta
     adata_non_cell_type = adata[adata.obs['subclass'] != cell_type].obsm['CRE'].copy()
     if replace:
         if multi_processes is not None:
-            with multiprocessing.Pool(processes=min(multi_processes, int(multiprocessing.cpu_count()*0.5))) as pool:
+            with multiprocessing.Pool(processes=min(multi_processes, int(multiprocessing.cpu_count()*0.8))) as pool:
                 pseudo_bulks = pool.starmap(create_pseudo_bulk, [(i, adata_cell_type, adata_non_cell_type, percentage_bootstrap) for i in range(pseudo_bulk_number)])
         else:
             pseudo_bulks = [create_pseudo_bulk(i, adata_cell_type, adata_non_cell_type, percentage_bootstrap) for i in range(pseudo_bulk_number)]
@@ -280,7 +282,7 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
         select_region = (y_ > y_region[0]) & (y_ < y_region[1])
         x_ = x_[select_region]
         y_ = y_[select_region]
-    plt.scatter(x_, y_, c='gray', s=small, marker='.')
+    plt.scatter(x_, y_, c='gray', s=small, marker='.', rasterized=True)
     for i, cluster in enumerate(clusters):
         cluster_ = str(cluster)
         inds = scdata.obs[use] == cluster_
@@ -295,12 +297,16 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
             select_region = (y_ > y_region[0]) & (y_ < y_region[1])
             x_ = x_[select_region]
             y_ = y_[select_region]
-        ax.scatter(x_, y_, c=col, s=sbig, marker='.',label = cluster_)
+        ax.scatter(x_, y_, c=col, s=sbig, marker='.',label = cluster_, rasterized=True)
     
     # if cluster len is 1, then plot title
     ax.set_title(f"Cell types", color='white', fontsize=20)
     if plot_legend:
-        ax.legend(fontsize=20, loc='lower right')
+        # if cluster len larger than 5, plot it outside
+        if len(clusters) > 5:
+            ax.legend(fontsize=20, loc='upper left', bbox_to_anchor=(1.05, 1))
+        else:
+            ax.legend(fontsize=20, loc='lower right')
     # Format axes
     ax.grid(False)
     ax.set_xticks([])
@@ -319,7 +325,7 @@ def calculate_fold_change(cre_celltypes_expression: pd.DataFrame, cell_types_to_
                           normalize_by_negative_control=False, lib_size=None,
                           normalize_by_infected_cell=False, normalize_by_libsize=False, filter_zero_counts=False,
                           rank_transform=None):
-    foldchange = pd.DataFrame(index=cell_types_to_use.unique(), columns=cre_celltypes_expression.columns)
+    foldchange = pd.DataFrame(index=pd.unique(cell_types_to_use), columns=cre_celltypes_expression.columns)
     if filter_zero_counts:
         # get the number of infected cells for each CRE in each cell type
         celltype_activity_matrix = cre_celltypes_expression.groupby(cell_types_to_use).sum()
@@ -344,9 +350,9 @@ def calculate_fold_change(cre_celltypes_expression: pd.DataFrame, cell_types_to_
     if normalize_by_negative_control:
         # get the negative control
         negative_control = CRE_info[CRE_info['labeling_type'] == 'negative control'].index
-        negative_control_mean = celltype_activity_matrix.loc[:, negative_control].sum(axis=1)
+        negative_control_mean = celltype_activity_matrix.loc[:, negative_control].mean(axis=1)
         # get the negative control lib size
-        negative_control_lib_size = lib_size.loc[negative_control].sum(axis=0)
+        negative_control_lib_size = lib_size.loc[negative_control].mean(axis=0)
         if normalize_by_libsize:
             negative_control_mean = negative_control_mean / negative_control_lib_size
             celltype_activity_matrix = celltype_activity_matrix / lib_size.values.reshape(1, -1)
@@ -368,7 +374,7 @@ def calculate_fold_change(cre_celltypes_expression: pd.DataFrame, cell_types_to_
             celltype_activity_matrix = celltype_activity_matrix.sample(frac=1, axis=0, random_state=0)
             celltype_activity_matrix = celltype_activity_matrix.rank(axis=0, method='first')
         return celltype_activity_matrix, celltype_activity_matrix
-    for celltype in cell_types_to_use.unique():
+    for celltype in pd.unique(cell_types_to_use):
         # get the data for the cell type
         celltype_activity = celltype_activity_matrix.loc[celltype]
         # get non_celltype activity
@@ -698,11 +704,6 @@ class STARRFISH:
     def load_adata(self, adata_path):
         # load the adata
         adata = sc.read(adata_path)
-        adata.obs['fov'] = adata.obs.index.str.split('--').str[0]
-        adata.obs['subclass'] = adata.obs['subclass_name'].str.replace('^[0-9]+ ', '', regex=True)
-        adata.uns['CRE_info']['best_subclass'] = adata.uns['CRE_info']['best_subclass'].str.replace('_', ' ')
-        adata.uns['CRE_info'].index = ['CRE' + str(i+1).zfill(3) for i in range(len(adata.uns['CRE_info']))]
-        adata.obsm['CRE'] = adata.obsm['CRE'][adata.uns['CRE_info'].index]
         self.adata: sc.AnnData = adata
         
     def get_tag(self, tag) -> Union[pd.DataFrame, pd.Series]:
@@ -775,12 +776,30 @@ class STARRFISH:
         cres = cres[cres['labeling_type'] == 'negative control']
         return cres.index
     
+    def get_positive_control_cres(self, cell_type) -> pd.Series:
+        # get the positive control cres
+        cres = self.get_creinfo().copy()
+        cres = cres[cres['best_subclass'] == cell_type]
+        return cres.index
+    
+    def get_atac_z_cres(self, cell_type, z=2) -> pd.Series:
+        # get the positive control cres
+        atac_cpm_z = self.atac_cpm.copy()
+        atac_cpm_z = np.log1p(atac_cpm_z)
+        if cell_type not in atac_cpm_z.index:
+            return None
+        atac_cpm_z = atac_cpm_z.loc[cell_type]
+        atac_cpm_z = (atac_cpm_z - atac_cpm_z.mean()) / atac_cpm_z.std()
+        cres = atac_cpm_z[atac_cpm_z > z]
+        return cres.index
+    
     def plot_gene(self, gene='CRE129', use='CRE', 
                   average_by_celltype=False, 
                   norm_by_negative_control_cell_type_mean=False, norm_by_negative_control_cell_type_sum=True, 
                   norm_by_negative_control_single_cell=False, log=True,
                   cell_types_to_use=None, cell_types_to_visualize=None, 
-                  nmin=None, nmax=None, sz_min=5, sz_max=30, 
+                  nmin=None, nmax=None, sz_min=5, sz_max=30, scale_size_by: Literal['counts', 'celltype_number']='counts',  
+                  cmap_name='Reds',
                   x_region=None, y_region=None, select_region_by_best_celltype=False, show_celltypes=True,
                   transpose=1, flipx=1, flipy=1, smooth_k=None, figsize=(30, 10)):
         tag = self.spatial_tag.split(':')[1]
@@ -835,8 +854,18 @@ class STARRFISH:
             cts[cts < nmin] = 0
         nmax = np.nanmax(cts) if nmax is None else nmax
         ncts = np.clip(cts/nmax, 0, 1)
-        size = sz_min + ncts * (sz_max - sz_min)
-        cmap = plt.cm.coolwarm(ncts)
+        if scale_size_by == 'counts':
+            size = sz_min + ncts * (sz_max - sz_min)
+        elif scale_size_by == 'celltype_number':
+            # get the number of cell types
+            celltype_number = self.get_celltypes().value_counts().loc[self.get_celltypes()].values
+            # if not in cell_types_to_use, then set to 0
+            celltype_number[~self.get_celltypes().isin(cell_types_to_use)] = 0
+            # normalize the celltype_number
+            celltype_number = celltype_number.max() - celltype_number + 1
+            celltype_number = np.clip(celltype_number / celltype_number.max(), 0, 1)
+            size = sz_min + celltype_number * (sz_max - sz_min)
+        cmap = plt.get_cmap(cmap_name)(ncts)
         if select_region_by_best_celltype:
             # select region by best_celltype
             xmin = Xcells[:, 0].min()
@@ -877,44 +906,58 @@ class STARRFISH:
         # Create single figure and axes
         if use == 'CRE':
             if show_celltypes:
-                fig, ax = plt.subplots(1, 2, figsize=figsize, facecolor='k')
+                fig = plt.figure(figsize=figsize, facecolor='k')
+                gs = fig.add_gridspec(1, 3, width_ratios=[0.49, 0.02, 0.49], wspace=0.05)
+                ax_main = fig.add_subplot(gs[0])
+                ax_cbar = fig.add_subplot(gs[1])
+                ax_ctypes = fig.add_subplot(gs[2])
                 plot_cluster_scdata(self.adata, clusters=best_celltype, use='subclass', 
                                     transpose=transpose, flipx=flipx, flipy=flipy, 
                                     x_region=x_region, y_region=y_region,
-                                    sbig=sz_max, small=sz_min, ax=ax[1], plot_legend=True)
-                ax_ = ax[0]
+                                    sbig=np.minimum(sz_max, 30), small=sz_min, ax=ax_ctypes, plot_legend=True)
             else:
-                fig, ax_ = plt.subplots(figsize=figsize, facecolor='k')
-            ax_.set_title(f'{gene}', color='white', fontsize=20)
-            ax_.set_facecolor('black')
+                gs = fig.add_gridspec(1, 3, width_ratios=[0.95, 0.05], wspace=0.05)
+                ax_main = fig.add_subplot(gs[0])
+                ax_cbar = fig.add_subplot(gs[1])
+            ax_main.set_title(f'{gene}', color='white', fontsize=20)
+            ax_main.set_facecolor('black')
             
             # Plot data
             cell_with_genes = np.where(cts > 0)[0]
             # first plot cells without genes, then plot cells with genes
-            ax_.scatter(Xcells[:, 0], Xcells[:, 1], c='grey', s=sz_min, marker='.')
-            ax_.scatter(Xcells[cell_with_genes, 0], Xcells[cell_with_genes, 1], c=cmap[cell_with_genes], s=sz_max)
+            ax_main.scatter(Xcells[:, 0], Xcells[:, 1], c='grey', s=sz_min, marker='.', rasterized=True)
+            ax_main.scatter(Xcells[cell_with_genes, 0], Xcells[cell_with_genes, 1], c=cmap[cell_with_genes], sizes=size[cell_with_genes], rasterized=True)
             
             # Format axes
-            ax_.grid(False)
-            ax_.set_xticks([])
-            ax_.set_yticks([])
-            ax_.set_aspect('equal')
-            # show color bar
-            sm = plt.cm.ScalarMappable(cmap=plt.cm.coolwarm, norm=plt.Normalize(vmin=0, vmax=nmax))
-            sm.set_array([])
+            ax_main.grid(False)
+            ax_main.set_xticks([])
+            ax_main.set_yticks([])
+            ax_main.set_aspect('equal')
+            
+            # Set colorbar axis background
+            ax_cbar.set_facecolor('black')
+
+            # Create colorbar in the dedicated axis
+            sm = plt.cm.ScalarMappable(cmap=plt.get_cmap(cmap_name), norm=plt.Normalize(vmin=0, vmax=nmax))
             cbar = plt.colorbar(
                 sm,
-                ax=ax_,
+                cax=ax_cbar,  # Use dedicated axis
                 orientation='vertical',
-                location='right',
-                pad=0.05,           # Space between plot and colorbar
-                shrink=0.3          # Scale height of colorbar (0.8 = 80% of plot height)
+                shrink=0.1          # Scale height of colorbar (0.8 = 80% of plot height)
             )
+
+            # Format colorbar
             cbar.set_label('Normalized Counts', color='white', fontsize=16)
             cbar.ax.yaxis.set_tick_params(color='white')
-            cbar.ax.tick_params(labelcolor='white')
+            cbar.ax.tick_params(labelcolor='white', labelsize=10)
             cbar.ax.set_yticks(np.linspace(0, nmax, 5))
-            cbar.ax.set_yticklabels([f'{i:.2f}' for i in np.linspace(0, nmax, 5)], color='white', fontsize=10)
+            cbar.ax.set_yticklabels([f'{i:.2f}' for i in np.linspace(0, nmax, 5)], color='white')
+
+            # Remove axis spines from colorbar
+            ax_cbar.spines['top'].set_visible(False)
+            ax_cbar.spines['right'].set_visible(False)
+            ax_cbar.spines['bottom'].set_visible(False)
+            ax_cbar.spines['left'].set_visible(False)
         else:
             fig, ax = plt.subplots(figsize=(10, 10), facecolor='black')
             ax.set_title(f'{gene} - N max {nmax}', color='white')
@@ -924,9 +967,9 @@ class STARRFISH:
             XC = -Xcells[:, ::-1]
             cell_with_genes = np.where(cts > 0)[0]
             # first plot cells without genes, then plot cells with genes
-            ax.scatter(XC[:, 0], XC[:, 1], c='grey', s=sz_min, marker='.')
+            ax.scatter(XC[:, 0], XC[:, 1], c='grey', s=sz_min, marker='.', rasterized=True)
             # ax.scatter(XC[~cell_with_genes, 0], XC[~cell_with_genes, 1], c=cmap[~cell_with_genes], s=size[~cell_with_genes])
-            ax.scatter(XC[cell_with_genes, 0], XC[cell_with_genes, 1], c=cmap[cell_with_genes], s=sz_max)
+            ax.scatter(XC[cell_with_genes, 0], XC[cell_with_genes, 1], c=cmap[cell_with_genes], s=sz_max, rasterized=True)
             
             # Format axes
             ax.grid(False)
@@ -987,7 +1030,50 @@ class STARRFISH:
         return plot_cluster_scdata(self.adata, clusters=clusters, use=use, transpose=transpose, 
                                    flipx=flipx, flipy=flipy, sbig=sbig, small=small, tag=tag, cmap=cmap,
                                    x_region=x_region, y_region=y_region, plot_legend = plot_legend, figsize=figsize)
+    
+    def plot_umap(self, clusters=['Endo NN'], use='subclass', cmap=None, size=1,
+                  ax=None, plot_legend = False, tag='X_umap', figsize=(20,10)):
+        Xcells = self.adata.obsm[tag]
+        if cmap is None:
+            cmap = self.adata.uns['cmap']
+        if ax is None:
+            fig, ax = plt.subplots(figsize=figsize, facecolor="white")
+            toreturn = True
+        else:
+            fig = ax.figure
+            toreturn = False
+        x = Xcells[:, 0]
+        y = Xcells[:, 1]
+        x_ = x.copy()
+        y_ = y.copy()
+        plt.scatter(x_, y_, c='gray', s=size, marker='.', rasterized=True)
+        for i, cluster in enumerate(clusters):
+            cluster_ = str(cluster)
+            inds = self.adata.obs[use] == cluster_
+            x_ = x[inds]
+            y_ = y[inds]
+            col = cmap[i % len(cmap)]
+            ax.scatter(x_, y_, c=col, s=size, marker='.',label = cluster_, rasterized=True)
         
+        # if cluster len is 1, then plot title
+        ax.set_title(f"Cell types", color='black', fontsize=20)
+        if plot_legend:
+            # if cluster len larger than 5, plot it outside
+            if len(clusters) > 5:
+                ax.legend(fontsize=5, loc='upper left', bbox_to_anchor=(1.05, 1))
+            else:
+                ax.legend(fontsize=5, loc='lower right')
+        # Format axes
+        ax.grid(False)
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_aspect('equal')
+        ax.set_facecolor('white')
+        if toreturn:
+            fig.tight_layout()
+            plt.close(fig)
+            return fig
+    
     def cre_deseq2(self, cell_type, pseudo_bulk_number=1000, replace=True, 
                    percentage_bootstrap=0.5, multi_processes=128) -> DeseqStats:
         config = {'cell_type': cell_type, 
@@ -1395,7 +1481,7 @@ class STARRFISH:
         cre_info = self.get_creinfo().copy()
         if not partial_loaded:
             foldchange, celltype_activity = calculate_fold_change(
-                cre_celltypes_expression, cell_types_to_use, cre_info, 
+                cre_celltypes_expression, cell_types_to_use.to_numpy(), cre_info, 
                 rna_celltypes_expression, volm,
                 normalize_by_celltype_rna, normalize_by_celltype_volume,
                 normalize_by_negative_control, np.log1p(self.lib_size['counts'] + 1),
@@ -1419,10 +1505,10 @@ class STARRFISH:
         if bootstrap_number is not None:
             foldchange = fold_change_test_result['foldchange']
             celltype_activity = fold_change_test_result['celltype_activity']
-            with multiprocessing.Pool(processes=min(n_jobs, int(multiprocessing.cpu_count()*0.5))) as pool:
+            with multiprocessing.Pool(processes=min(n_jobs, int(multiprocessing.cpu_count()*0.8))) as pool:
                 bootstrap_results = pool.starmap(
                     calculate_fold_change, 
-                    [(cre_celltypes_expression, cell_types_to_use.sample(frac=1, replace=False, random_state=i), cre_info, 
+                    [(cre_celltypes_expression, cell_types_to_use.sample(frac=1, replace=False, random_state=i).to_numpy(), cre_info, 
                       rna_celltypes_expression, volm,
                       normalize_by_celltype_rna, normalize_by_celltype_volume,
                       normalize_by_negative_control, np.log1p(self.lib_size['counts'] + 1),
@@ -1434,14 +1520,22 @@ class STARRFISH:
             for i, (fc, act) in enumerate(bootstrap_results):
                 foldchange_array[i] = fc
                 activity_array[i] = act
-            # calculate p-value
+            # calculate p-value for foldchange and celltype_activity
             pvalue = pd.DataFrame(index=foldchange.index, columns=foldchange.columns)
+            pvalue_activity = pd.DataFrame(index=celltype_activity.index, columns=celltype_activity.columns)
+            # if we use normalize_by_negative_control, fill the nan with 0
+            if normalize_by_negative_control:
+                foldchange_array[np.isnan(foldchange_array)] = 0
+                activity_array[np.isnan(activity_array)] = 0
             for i in range(foldchange.shape[0]):
                 for j in range(foldchange.shape[1]):
                     pvalue.iloc[i, j] = np.sum(foldchange_array[:, i, j] >= foldchange.iloc[i, j]) / bootstrap_number
+                    pvalue_activity.iloc[i, j] = np.sum(activity_array[:, i, j] >= celltype_activity.iloc[i, j]) / bootstrap_number
             qvalue = pvalue.copy()
+            qvalue_activity = pvalue_activity.copy()
             for i in range(pvalue.shape[1]):
                 qvalue.iloc[:, i] = multitest.multipletests(pvalue.iloc[:, i], method='fdr_bh')[1]
+                qvalue_activity.iloc[:, i] = multitest.multipletests(pvalue_activity.iloc[:, i], method='fdr_bh')[1]
             # add pvalue and qvalue to cre_info
             for cre in fold_change_test_result['cre_info'].index:
                 # get the best subclass
@@ -1450,10 +1544,14 @@ class STARRFISH:
                 if best_subclass in pvalue.index:
                     fold_change_test_result['cre_info'].loc[cre, 'pvalue'] = pvalue.loc[best_subclass, cre]
                     fold_change_test_result['cre_info'].loc[cre, 'qvalue'] = qvalue.loc[best_subclass, cre]
+                    fold_change_test_result['cre_info'].loc[cre, 'pvalue_activity'] = pvalue_activity.loc[best_subclass, cre]
+                    fold_change_test_result['cre_info'].loc[cre, 'qvalue_activity'] = qvalue_activity.loc[best_subclass, cre]
             fold_change_test_result['pvalue'] = pvalue
             fold_change_test_result['qvalue'] = qvalue
             fold_change_test_result['foldchange_array'] = foldchange_array
             fold_change_test_result['activity_array'] = activity_array
+            fold_change_test_result['pvalue_activity'] = pvalue_activity
+            fold_change_test_result['qvalue_activity'] = qvalue_activity
         # save results to attribute
         if not hasattr(self, 'fold_change_test_results') or not hasattr(self, 'fold_change_test_configs'):
             self.fold_change_test_results = []
@@ -1462,6 +1560,123 @@ class STARRFISH:
         self.fold_change_test_configs.append(config)
         return fold_change_test_result
     
+    def neg_control_regression_test(self, cell_types_to_use: List=None, 
+                                    negative_control=None,
+                                    normalize_by_cell_rna=False, normalize_by_cell_volume=False,
+                                    normalize_by_celltype_rna=False, normalize_by_celltype_volume=False,
+                                    log_transform=False) -> dict:
+        config = {
+            'cell_types_to_use': cell_types_to_use,
+            'negative_control': negative_control,
+            'normalize_by_cell_rna': normalize_by_cell_rna,
+            'normalize_by_cell_volume': normalize_by_cell_volume,
+            'normalize_by_celltype_rna': normalize_by_celltype_rna,
+            'normalize_by_celltype_volume': normalize_by_celltype_volume,
+            'log_transform': log_transform
+        }
+        # check if the results already exist
+        neg_control_regression_test_result = None
+        if hasattr(self, 'neg_control_regression_test_results') and hasattr(self, 'neg_control_regression_test_configs'):
+            for stored_config, stored_result in zip(self.neg_control_regression_test_configs, self.neg_control_regression_test_results):
+                # only partially check the config, everything the same except bootstrap_number
+                if all(stored_config[k] == config[k] for k in config):
+                    # if the results already exist, return the results
+                    neg_control_regression_test_result = stored_result.copy()
+                    return neg_control_regression_test_result
+        if cell_types_to_use is not None:
+            # get the cell types
+            cre_celltypes_expression, rna_celltypes_expression, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
+        else:
+            cre_celltypes_expression = self.get_cre_expression().copy()
+            rna_celltypes_expression = self.get_rna_expression().copy()
+            cell_types_to_use = self.get_celltypes()
+        volm = self.get_tag('obs:volm').copy()
+        volm = volm.loc[cell_types_to_use.index]
+        # transform rna_celltypes_expression to dataframe
+        rna_celltypes_expression = pd.DataFrame(rna_celltypes_expression, index=cell_types_to_use.index)
+        if normalize_by_cell_rna and normalize_by_cell_volume:
+            rna_per_volume = rna_celltypes_expression / volm.values.reshape(-1, 1)
+            cre_celltypes_expression = cre_celltypes_expression / rna_per_volume.mean(axis=1).values.reshape(-1, 1)
+        elif normalize_by_cell_rna and not normalize_by_cell_volume:
+            cre_celltypes_expression = cre_celltypes_expression / rna_celltypes_expression.mean(axis=1).values.reshape(-1, 1)
+        elif normalize_by_cell_volume and not normalize_by_cell_rna:
+            cre_celltypes_expression = cre_celltypes_expression / volm.values.reshape(-1, 1)
+        # get negative controls
+        if negative_control is None:
+            negative_control = self.get_negative_control_cres().tolist()
+        else:
+            negative_control = pd.Series(negative_control).tolist()
+        # aggregate to bulk
+        cre_celltypes_bulk_expression = cre_celltypes_expression.groupby(cell_types_to_use).sum()
+        rna_celltypes_bulk_expression = rna_celltypes_expression.groupby(cell_types_to_use).sum()
+        celltypes_volm_bulk = volm.groupby(cell_types_to_use).sum()
+        if normalize_by_celltype_rna and normalize_by_celltype_volume:
+            rna_per_volume = rna_celltypes_bulk_expression / celltypes_volm_bulk.values.reshape(-1, 1)
+            cre_celltypes_bulk_expression = cre_celltypes_bulk_expression / rna_per_volume.mean(axis=1).values.reshape(-1, 1)
+        elif normalize_by_celltype_rna and not normalize_by_celltype_volume:
+            cre_celltypes_bulk_expression = cre_celltypes_bulk_expression / rna_celltypes_bulk_expression.mean(axis=1).values.reshape(-1, 1)
+        elif normalize_by_celltype_volume and not normalize_by_celltype_rna:
+            cre_celltypes_bulk_expression = cre_celltypes_bulk_expression / celltypes_volm_bulk.values.reshape(-1, 1)
+        # prepare lib size
+        lib_size = self.lib_size['counts'].copy()
+        # if 'sum' in negative_control, then prepare a lib size for sum negative control
+        if 'sum' in negative_control:
+            tmp = [cre for cre in negative_control if cre != 'sum']
+            lib_size.loc['sum'] = lib_size.loc[tmp].sum()
+            cre_celltypes_bulk_expression['sum'] = cre_celltypes_bulk_expression[tmp].sum(axis=1)
+        # apply log transform
+        if log_transform:
+            cre_celltypes_bulk_expression = np.log1p(cre_celltypes_bulk_expression)
+        # do for each cell type
+        model_stats = pd.DataFrame(index=cre_celltypes_bulk_expression.index, columns=['slope', 'intercept', 'r_squared'])
+        fold_change = pd.DataFrame(index=cre_celltypes_bulk_expression.index, columns=cre_celltypes_bulk_expression.columns)
+        p_values = pd.DataFrame(index=cre_celltypes_bulk_expression.index, columns=cre_celltypes_bulk_expression.columns)
+        q_values = pd.DataFrame(index=cre_celltypes_bulk_expression.index, columns=cre_celltypes_bulk_expression.columns)
+        for cell_type in cre_celltypes_bulk_expression.index:
+            # get the cre expression for the cell type
+            cre_data = cre_celltypes_bulk_expression.loc[cell_type]
+            # get the negative control expression for the cell type
+            neg_control_data = cre_celltypes_bulk_expression.loc[cell_type, negative_control]
+            # fit a linear regression model
+            X_train = lib_size.loc[negative_control].values.reshape(-1, 1)
+            y_train = neg_control_data.values
+            # if y_train all equal, skip
+            if np.all(y_train == y_train[0]):
+                continue
+            model = sm.OLS(y_train, X_train).fit()
+            # predict for all cres
+            X_test = lib_size.values.reshape(-1, 1)
+            y_pred = model.get_prediction(X_test)
+            summary = y_pred.summary_frame()
+            predicted = summary['mean'].values
+            std_dev = summary['mean_se'].values
+            # calculate the fold change
+            fc = cre_data.values / predicted
+            # calculate the p-value
+            t_stats = (cre_data.values - predicted) / std_dev
+            dof = model.df_resid  # Degrees of freedom
+            p = 2 * (1 - stats.t.cdf(np.abs(t_stats), dof))
+            # save the results
+            model_stats.loc[cell_type, 'slope'] = model.params[0]
+            model_stats.loc[cell_type, 'r_squared'] = model.rsquared
+            fold_change.loc[cell_type] = fc
+            p[np.isnan(p)] = 1
+            p_values.loc[cell_type] = p
+            q_values.loc[cell_type] = multitest.multipletests(p, method='fdr_bh')[1]
+        neg_control_regression_test_result = {
+            'model_stats': model_stats,
+            'fold_change': fold_change,
+            'p_values': p_values,
+            'q_values': q_values
+        }
+        # save results to attribute
+        if not hasattr(self, 'neg_control_regression_test_results') or not hasattr(self, 'neg_control_regression_test_configs'):
+            self.neg_control_regression_test_results = []
+            self.neg_control_regression_test_configs = []
+        self.neg_control_regression_test_results.append(neg_control_regression_test_result)
+        self.neg_control_regression_test_configs.append(config)
+        return neg_control_regression_test_result
+
     def mixture_model_test(self, cell_types_to_use: List=None,
                            normalize_by_cell_rna=False, normalize_by_cell_volume=False, log_transform=False,
                            model='STARR_FISH_MIXTURE_NB.stan'):
@@ -1512,7 +1727,7 @@ class STARRFISH:
             # set up result dict
             fit_results = {}
             # do multiprocessing
-            with multiprocessing.Pool(processes=int(multiprocessing.cpu_count()*0.5)) as pool:
+            with multiprocessing.Pool(processes=int(multiprocessing.cpu_count()*0.8)) as pool:
                     # fit for each cell type
                 for cell_type in cell_types_to_use.unique():
                     start = time.time()
@@ -1803,7 +2018,6 @@ class STARRFISH:
             cell_types_to_use = self.atac_cpm.index
             cell_types_to_use = cell_types_to_use[cell_types_to_use.isin(acvitity_df.index)]
         atac_cpm = self.atac_cpm.loc[cell_types_to_use]
-        atac_count = self.atac_counts.loc[cell_types_to_use]
         activity_df = acvitity_df.loc[cell_types_to_use]
         # match the index
         if cres_to_use is not None:
@@ -1813,7 +2027,6 @@ class STARRFISH:
         else:
             cres_to_use = atac_cpm.columns.intersection(activity_df.columns)
         atac_cpm = atac_cpm[cres_to_use]
-        atac_count = atac_count[cres_to_use]
         activity_df = activity_df[cres_to_use]
         # do log transform
         if log_atac:
@@ -1843,6 +2056,8 @@ class STARRFISH:
         if filter_by_atac_raw_threshold is not None:
             for cell_type in atac_cpm.index:
                 # filter the activity by atac mean + 3 std
+                atac_count = self.atac_counts.loc[cell_types_to_use]
+                atac_count = atac_count[cres_to_use]
                 atac_cpm.loc[cell_type][atac_count.loc[cell_type] < filter_by_atac_raw_threshold] = np.nan
         # calculate the correlation for each cre
         # first do col wise correlation
@@ -1887,7 +2102,7 @@ class STARRFISH:
                 p_value = None
             else:
                 # p value is (cell types to use) x (cre1, cre2)
-                with multiprocessing.Pool(processes=min(n_jobs, int(multiprocessing.cpu_count()*0.5))) as pool:
+                with multiprocessing.Pool(processes=min(n_jobs, int(multiprocessing.cpu_count()*0.8))) as pool:
                     p_value = pool.starmap(
                         cross_talk_fisher_test,
                         [(activated.loc[cell_types_to_use == cell_type].to_numpy(),) for cell_type in cell_types_to_use.unique()]
@@ -1909,7 +2124,7 @@ class STARRFISH:
                 p_value = None
                 corr = None
             else:
-                with multiprocessing.Pool(processes=min(n_jobs, int(multiprocessing.cpu_count()*0.5))) as pool:
+                with multiprocessing.Pool(processes=min(n_jobs, int(multiprocessing.cpu_count()*0.8))) as pool:
                     test_result = pool.starmap(
                         cross_talk_corr_test,
                         [(cre_celltypes_expression.loc[cell_types_to_use == cell_type].to_numpy(), method, ) for cell_type in cell_types_to_use.unique()]

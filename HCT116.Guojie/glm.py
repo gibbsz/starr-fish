@@ -393,6 +393,22 @@ plot_glm_results(toplot2, x_col='Poshen Activity', fig_name=None, ax=ax[1, 0])
 plot_glm_results(toplot2, x_col='Poshen Activity DESeq2', fig_name=None, ax=ax[1, 1])
 fig.show()
 # %%
+# plot correlation between Poshen and STARR-FISH activity on different groups of CREs
+cre_groups = []
+libsize = CRE_300_experiment1[key].dropna().copy()['nanopore']
+cre_groups.append(libsize[libsize < 5].index)
+cre_groups.append(libsize[(libsize >= 5) & (libsize < 10)].index)
+cre_groups.append(libsize[(libsize >= 10) & (libsize < 500)].index)
+cre_groups.append(libsize[(libsize >= 25) & (libsize < 50)].index)
+cre_groups.append(libsize[(libsize >= 50) & (libsize < 1000)].index)
+cre_groups.append(libsize[libsize >= 1000].index)
+# 4 x 2 subplots
+fig, ax = plt.subplots(2, len(cre_groups), figsize=(6*len(cre_groups), 12))
+for i, cre_group in enumerate(cre_groups):
+    toplot1 = CRE_300_experiment1[key].dropna().copy().loc[cre_group]
+    plot_glm_results(toplot1, x_col='Poshen Activity', fig_name=None, ax=ax[0, i])
+    plot_glm_results(toplot1, x_col='Poshen Activity DESeq2', fig_name=None, ax=ax[1, i])
+# %%
 sns.regplot(CRE_300_experiment1[key].dropna(), x='Poshen Activity', y='STARR-FISH Activity', scatter=False, color='red')
 slope, intercept, r, p, sterr = scipy.stats.linregress(x=CRE_300_experiment1[key].dropna()['STARR-FISH Activity'], 
                                                        y=CRE_300_experiment1[key].dropna()['Poshen Activity'])

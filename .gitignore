@@ -186,3 +186,5 @@ cython_debug/
 *.sh
 *.xlsx
 *.pkl
+*.bed.gz
+*.bed.gz.tbi
