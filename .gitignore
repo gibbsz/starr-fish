@@ -188,3 +188,9 @@ cython_debug/
 *.pkl
 *.bed.gz
 *.bed.gz.tbi
+
+# data folder
+Mouse_brain.Guojie/Data/ATAC/wmb_bigwig
+Mouse_brain.Guojie/.genomespy_shared
+Mouse_brain.Guojie/Data/Histone/DNAbw
+Mouse_brain.Guojie/Data/annotation/my_cre_annot_final.tsv

@@ -25,12 +25,16 @@ import scvi
 PWD = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(PWD)
 from starr_fish_vae import STARRFISHVI
+from tracksClass import PlotTracks
 from cmdstanpy import CmdStanModel, cmdstan_path, set_cmdstan_path
 from scipy.stats import linregress
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
 import logging
 from typing import Literal
+from genomespy import igv
+from pygenometracks.utilities import get_region
+from get_preprocess_utils import get_motif, query_motif
 set_cmdstan_path('/share/vault/Users/gz2294/miniconda3/envs/scvi/bin/cmdstan/')
 cmdstanpy_logger = logging.getLogger("cmdstanpy")
 cmdstanpy_logger.disabled = True
@@ -319,13 +323,13 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
         return fig
 
 
-def calculate_fold_change(cre_celltypes_expression: pd.DataFrame, cell_types_to_use: pd.Series, CRE_info: pd.DataFrame,
-                          rna_celltypes_expression: pd.DataFrame, volm: pd.Series,
+def calculate_fold_change(cre_celltypes_expression: pd.DataFrame, cell_types_to_use: pd.Series, cell_types_order: pd.Series,
+                          CRE_info: pd.DataFrame, rna_celltypes_expression: pd.DataFrame, volm: pd.Series,
                           normalize_by_celltype_rna=False, normalize_by_celltype_volume=False,
                           normalize_by_negative_control=False, lib_size=None,
                           normalize_by_infected_cell=False, normalize_by_libsize=False, filter_zero_counts=False,
                           rank_transform=None):
-    foldchange = pd.DataFrame(index=pd.unique(cell_types_to_use), columns=cre_celltypes_expression.columns)
+    foldchange = pd.DataFrame(index=cell_types_order, columns=cre_celltypes_expression.columns)
     if filter_zero_counts:
         # get the number of infected cells for each CRE in each cell type
         celltype_activity_matrix = cre_celltypes_expression.groupby(cell_types_to_use).sum()
@@ -397,6 +401,9 @@ def calculate_fold_change(cre_celltypes_expression: pd.DataFrame, cell_types_to_
             non_celltype_infect_rate = infected[cell_types_to_use != celltype].mean(axis=0)
             non_celltype_activity = non_celltype_activity / non_celltype_infect_rate
         foldchange.loc[celltype] = celltype_activity / non_celltype_activity
+    # remap by cell_types_order
+    foldchange = foldchange.reindex(cell_types_order)
+    celltype_activity_matrix = celltype_activity_matrix.reindex(cell_types_order)
     return foldchange, celltype_activity_matrix
 
 
@@ -705,6 +712,20 @@ class STARRFISH:
         # load the adata
         adata = sc.read(adata_path)
         self.adata: sc.AnnData = adata
+    
+    def load_atac_cpm(self, atac_cpm_path: str):
+        atac_cpm = pd.read_csv(atac_cpm_path, index_col=0)
+        atac_cpm.columns = atac_cpm.columns.str.replace('\\.', '-')
+        atac_cpm.columns = atac_cpm.columns.str.replace('_', ' ')
+        # only keep the cres that are in cre_info
+        cre_info = self.get_creinfo().copy()
+        # check atac_cpm index format
+        if atac_cpm.index.str.startswith('chr').any():    
+            cre_info = cre_info[cre_info['enh'].isin(atac_cpm.index)]
+            atac_cpm = atac_cpm.loc[cre_info['enh']]
+            atac_cpm.index = cre_info.index
+        # transpose the atac_cpm
+        self.atac_cpm = atac_cpm.transpose()
         
     def get_tag(self, tag) -> Union[pd.DataFrame, pd.Series]:
         # get the CREs
@@ -1481,8 +1502,8 @@ class STARRFISH:
         cre_info = self.get_creinfo().copy()
         if not partial_loaded:
             foldchange, celltype_activity = calculate_fold_change(
-                cre_celltypes_expression, cell_types_to_use.to_numpy(), cre_info, 
-                rna_celltypes_expression, volm,
+                cre_celltypes_expression, cell_types_to_use.to_numpy(), np.unique(cell_types_to_use),
+                cre_info, rna_celltypes_expression, volm,
                 normalize_by_celltype_rna, normalize_by_celltype_volume,
                 normalize_by_negative_control, np.log1p(self.lib_size['counts'] + 1),
                 normalize_by_infected_cell, normalize_by_libsize, filter_zero_counts,
@@ -1505,11 +1526,13 @@ class STARRFISH:
         if bootstrap_number is not None:
             foldchange = fold_change_test_result['foldchange']
             celltype_activity = fold_change_test_result['celltype_activity']
-            with multiprocessing.Pool(processes=min(n_jobs, int(multiprocessing.cpu_count()*0.8))) as pool:
+            if n_jobs is None:
+                n_jobs = int(multiprocessing.cpu_count()*0.8)
+            with multiprocessing.Pool(processes=n_jobs) as pool:
                 bootstrap_results = pool.starmap(
                     calculate_fold_change, 
-                    [(cre_celltypes_expression, cell_types_to_use.sample(frac=1, replace=False, random_state=i).to_numpy(), cre_info, 
-                      rna_celltypes_expression, volm,
+                    [(cre_celltypes_expression, cell_types_to_use.sample(frac=1, replace=False, random_state=i).to_numpy(), 
+                      celltype_activity.index, cre_info, rna_celltypes_expression, volm,
                       normalize_by_celltype_rna, normalize_by_celltype_volume,
                       normalize_by_negative_control, np.log1p(self.lib_size['counts'] + 1),
                       normalize_by_infected_cell, normalize_by_libsize, filter_zero_counts, rank_transform) 
@@ -2140,6 +2163,206 @@ class STARRFISH:
             self.cross_talk_test_configs = []
         self.cross_talk_test_results.append(result)
         self.cross_talk_test_configs.append(config)
+        return result
+    
+    def plot_atac_genomespy(self, cell_types_to_use, cre, padding=5000):
+        bw_list = pd.read_csv('Data/ATAC/bw_list.csv', index_col=0)
+        # set index as cell types
+        bw_list = bw_list.set_index('celltype')
+        tracks = {}
+        for cell_type in cell_types_to_use:
+            if cell_type in bw_list.index:
+                bw_file = bw_list.loc[cell_type]['path']
+                tracks[cell_type] = {
+                    "path": f'Data/ATAC/wmb_bigwig/subclass_macs2/{bw_file}',
+                    "height": 40,
+                    "type": "bigwig"
+                }
+        # get cre chrom start and end
+        cre_info = self.get_creinfo()
+        start = cre_info.loc[cre]['Start']
+        end = cre_info.loc[cre]['End']
+        chrom = cre_info.loc[cre]['Chrom']
+        plot = igv(tracks, region={"chrom": chrom, "start": int(start)-padding, "end": int(end)+padding}, server_port=18089)
+        return plot
+    
+    def plot_pygenometracks(self, cell_types_to_use, cre, outFileName, region=None,
+                            padding=2500, nbins=700, max=None, min=None, width=80, height=80):
+        # order the cell_types_to_use by name order
+        cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
+        cluster_annotation_term['subclass'] = cluster_annotation_term['subclass'].str.replace('/', '-')
+        cell_types_to_use_cluster_number = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[cell_types_to_use].values
+        # reorder cell types to use by subcluster number
+        cell_types_to_use = pd.Index(cell_types_to_use[np.argsort(cell_types_to_use_cluster_number)])
+        track_file='tmp.ini'
+        available_tracks = PlotTracks.get_available_tracks()
+        bw_list = pd.read_csv('Data/ATAC/bw_list.csv', index_col=0)
+        # set index as cell types
+        bw_list = bw_list.set_index('celltype')
+        out = open(track_file, 'w')
+        out.write("""
+        [x-axis]
+        # optional
+        #fontsize = 20
+        # default is bottom meaning below the axis line
+        # where = top
+
+        [spacer]
+        # height of space in cm (optional)
+        height = 0.5
+
+        """)
+        for i, cell_type in enumerate(cell_types_to_use):
+            track_added = False
+            if cell_type in bw_list.index:
+                bw_file = bw_list.loc[cell_type]['path']
+                file_h = open(f'Data/ATAC/wmb_bigwig/subclass_macs2/{bw_file}', 'r')
+            else:
+                continue
+            for track_type, track_class in available_tracks.items():
+                for ending in track_class.SUPPORTED_ENDINGS:
+                    if file_h.name.endswith(ending):
+                        default_values = track_class.OPTIONS_TXT
+                        default_values = default_values.replace("title =", f"title = {cell_type}")
+                        # replace color to user selected color
+                        default_values = default_values.replace("color = #666666", f"color = {self.adata.uns['cmap'][i % len(self.adata.uns['cmap'])]}")
+                        # replace number_of_bins to user selected number of bins
+                        default_values = default_values.replace("number_of_bins = 700", f"number_of_bins = {nbins}")
+                        # if max or min is not None, replace them
+                        if min is not None:
+                            default_values = default_values.replace("min_value = 0", f"min_value = {min}")
+                        if max is not None:
+                            default_values = default_values.replace("#max_value = auto", f"max_value = {max}")
+                        out.write(f"\n[{cell_type}]\nfile = {file_h.name}\n{default_values}")
+                        track_added = True
+            if track_added is False:
+                sys.stdout.write(f"WARNING: file format not recognized for: {file_h.name}\n")
+        # close the file
+        out.close()
+        # Identify the regions to plot from regions: the format is chr:start-end
+        if cre is not None:
+            region_chrom = self.get_creinfo().loc[cre, 'Chrom']
+            region_start = self.get_creinfo().loc[cre, 'Start']
+            region_end = self.get_creinfo().loc[cre, 'End']
+            regions = f'{region_chrom}:{int(region_start)-padding}-{int(region_end)+padding}'
+        else:
+            assert region is not None, "Please provide a region to plot."
+            region_chrom, region_start, region_end = region
+            regions = f'{region_chrom}:{int(region_start)-padding}-{int(region_end)+padding}'
+        regions = [get_region(regions)]
+
+        if len(regions) == 0:
+            raise ValueError("There is no valid regions to plot.")
+        
+        tracks = open(track_file, 'r')
+        dpi = 500
+        trackLabelFraction = 0.1
+        trackLabelHAlign = 'left'
+        plotWidth = None # width of the plot
+        decreasingXAxis = False
+        title = 'Plot'
+        fontSize=0.3 * width
+        # Create all the tracks
+        trp = PlotTracks(tracks.name, width, fig_height=height,
+                         fontsize=fontSize, dpi=dpi,
+                         track_label_width=trackLabelFraction,
+                         plot_regions=regions, plot_width=plotWidth)
+
+        # Create dir if dir does not exists:
+        # Modified from https://stackoverflow.com/questions/12517451/automatically-creating-directories-with-file-output
+        os.makedirs(os.path.dirname(os.path.abspath(outFileName)), exist_ok=True)
+
+        # Plot them
+        current_fig = trp.plot(outFileName, *regions[0], title=title,
+                               highlight_region=(int(region_start), int(region_end)),
+                               h_align_titles=trackLabelHAlign,
+                               decreasing_x_axis=decreasingXAxis)
+        plt.close(current_fig)
+        # remove the track file
+        os.remove(track_file)
+        trp.close_files()
+    
+    def get_celltypes_peaks_close_to_cre(self, cell_types_to_use, cre, range=10000) -> pd.DataFrame:
+        cre_chrom = self.get_creinfo().loc[cre]['Chrom']
+        cre_start = int(self.get_creinfo().loc[cre]['Start'])
+        cre_end = int(self.get_creinfo().loc[cre]['End'])
+        # get the cell type files
+        peak_list = pd.read_csv('Data/ATAC/peak_list.csv', index_col=0)
+        # set index as cell types
+        peak_list = peak_list.set_index('celltype')
+        result = pd.DataFrame()
+        for cell_type in cell_types_to_use:
+            if cell_type in peak_list.index:
+                peak_file = peak_list.loc[cell_type]['path']
+                peak_file = pd.read_csv(f'Data/ATAC/subclass2CRE/{peak_file}', header=None)
+                peak_file['Chromosome'] = peak_file[0].str.split(':').str[0]
+                peak_file['Start'] = peak_file[0].str.split(':').str[1].str.split('-').str[0].astype(int)
+                peak_file['End'] = peak_file[0].str.split(':').str[1].str.split('-').str[1].astype(int)
+                # set peak_file column 0 to another name
+                peak_file = peak_file.rename(columns={0: 'Peak'})
+                # reorder columns
+                peak_file = peak_file[['Chromosome', 'Start', 'End', 'Peak']]
+                # filter the cell type peaks by range
+                peak_file = peak_file[(peak_file['Chromosome'] == cre_chrom) & 
+                                      (peak_file['Start'] >= cre_start - range) & 
+                                      (peak_file['End'] <= cre_end + range)]
+                peak_file['celltype'] = cell_type
+                # append to result
+                result = pd.concat([result, peak_file])
+                # reset the index by dropping the index
+                if not result.empty:
+                    result = result.reset_index(drop=True)
+        # write to bed file, and query motifs
+        peak_bed = 'tmp.bed'
+        # write ['Chromosome', 'Start', 'End'] to bed file
+        result[['Chromosome', 'Start', 'End']].to_csv(peak_bed, sep='\t', header=False, index=False)
+        # query the motifs
+        peaks_motif = query_motif(peak_bed, f"{PWD}/Data/annotation/mm10.archetype_motifs.v1.0.bed.gz")
+        get_motif_output = get_motif(peak_bed, peaks_motif, assembly='mm10')
+        # Read the peak motif bed file
+        peak_motif = pd.read_csv(
+            get_motif_output,
+            sep="\t",
+            header=None,
+            names=["Chromosome", "Start", "End", "Motif_cluster", "Score"],
+        )
+        # Pivot the data
+        peak_motif_pivoted = peak_motif.pivot_table(
+            index=["Chromosome", "Start", "End"],
+            columns="Motif_cluster",
+            values="Score",
+            fill_value=0,
+        )
+        peak_motif_pivoted.reset_index(inplace=True)
+        # Create the 'Name' column
+        peak_motif_pivoted["Name"] = peak_motif_pivoted.apply(
+            lambda x: f'{x["Chromosome"]}:{x["Start"]}-{x["End"]}', axis=1
+        )
+        peak_motif_pivoted = peak_motif_pivoted.drop(columns=["Chromosome", "Start", "End"])
+        # Read the original peak bed file
+        original_peaks = pd.read_csv(
+            peak_bed, sep="\t", header=None, names=["Chromosome", "Start", "End", "Score"]
+        )
+        # exclude chrM and chrY
+        original_peaks = original_peaks[~original_peaks.Chromosome.isin(["chrM", "chrY"])]
+        original_peaks["Name"] = original_peaks.apply(
+            lambda x: f'{x["Chromosome"]}:{x["Start"]}-{x["End"]}', axis=1
+        )
+        # Merge the pivoted data with the original peaks
+        merged_data = pd.merge(original_peaks, peak_motif_pivoted, on="Name", how="left")
+        # Fill NaN values with 0 for motif columns
+        motif_columns = [
+            col
+            for col in merged_data.columns
+            if col not in ["Chromosome", "Start", "End", "Score", "Name"]
+        ]
+        merged_data[motif_columns] = merged_data[motif_columns].fillna(0)
+        # combine merged_data with result
+        result = pd.concat([result, merged_data.iloc[:, 5:]], axis=1)
+        # remove get_motif_output, peaks_motif, peak_bed
+        os.remove(get_motif_output)
+        os.remove(peak_bed)
+        os.remove(peaks_motif)
         return result
     
     @staticmethod

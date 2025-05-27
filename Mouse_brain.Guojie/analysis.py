@@ -9,6 +9,8 @@ from matplotlib.gridspec import GridSpec
 import seaborn as sns
 import scanpy as sc
 from scipy.stats import pearsonr, spearmanr, ttest_ind
+from scipy.spatial.distance import pdist
+from scipy.cluster.hierarchy import linkage, dendrogram, leaves_list
 from adjustText import adjust_text
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -61,9 +63,13 @@ def preprocess(adata_path):
             chrom.append(i)
             start.append('')
             end.append('')
-    adata.uns['CRE_info']['Chrom'] = chrom.astype(str)
-    adata.uns['CRE_info']['Start'] = start.astype(str)
-    adata.uns['CRE_info']['End'] = end.astype(str)
+    adata.uns['CRE_info']['Chrom'] = chrom
+    adata.uns['CRE_info']['Start'] = start
+    adata.uns['CRE_info']['End'] = end
+    # convert start and end to str
+    adata.uns['CRE_info']['Chrom'] = adata.uns['CRE_info']['Chrom'].astype(str)
+    adata.uns['CRE_info']['Start'] = adata.uns['CRE_info']['Start'].astype(str)
+    adata.uns['CRE_info']['End'] = adata.uns['CRE_info']['End'].astype(str)
     # rename enh
     adata.uns['CRE_info']['enh'] = adata.uns['CRE_info']['Chrom'] + ':' + adata.uns['CRE_info']['Start'].astype(str) + '-' + adata.uns['CRE_info']['End'].astype(str)
     # rename best_subclass
@@ -72,10 +78,11 @@ def preprocess(adata_path):
     adata.obsm['CRE'] = adata.obsm['CRE'][adata.uns['CRE_info'].index]
     return adata
 # %% preprocess and load data
-adata1 = preprocess(f'{PWD}/Data/scdata_12_11NoT7_BRBB500gn_withCRE_final.h5ad')
-adata2 = preprocess(f'{PWD}/Data/scdata_03_14_BRBB500gn_withCRE_final.h5ad')
-# %% load data and form STARRFISH object
+# load data and form STARRFISH object
 load = True
+if not load:
+    adata1 = preprocess(f'{PWD}/Data/scdata_12_11NoT7_BRBB500gn_withCRE_final.h5ad')
+    adata2 = preprocess(f'{PWD}/Data/scdata_03_14_BRBB500gn_withCRE_final.h5ad')
 adata_cpm = 'Data/ATAC/cpm_peakBysubclass.csv'
 if os.path.exists('results/starrfish1.pkl') and load:
     starrfish1 = STARRFISH.load('results/starrfish1.pkl')
@@ -109,6 +116,7 @@ lib_size_fold = lib_size / lib_size.mean()
 cres_to_use_libsize_high = lib_size_fold[lib_size_fold > 1/40].index
 # remove CRE217
 cres_to_use_libsize_high = cres_to_use_libsize_high[cres_to_use_libsize_high != 'CRE217']
+non_negative_control_cres = lib_size.index[~lib_size.index.isin(starrfish2_filtered.get_negative_control_cres())]
 len(cres_to_use_libsize_high), lib_size.loc[cres_to_use_libsize_high].min()
 # %%
 # define cell types to use for filtered data
@@ -1293,7 +1301,7 @@ def cre_corr_dotplot(obj, cres_to_use, cell_types_to_use, test_method, test_conf
     # make to plot dataframe, flatten recall and atac_cpm
     toplot = pd.DataFrame({'activity': test_result.values.flatten(),
                            'atac_cpm': atac_cpm.loc[cell_types_to_use].values.flatten(),
-                           'cell_types': cell_types_to_use.values.repeat(len(cres_to_use)).to_list(),
+                           'cell_types': cell_types_to_use.values.repeat(len(cres_to_use)),
                            'cres': np.tile(cres_to_use, len(cell_types_to_use)),
                            'positive_control': positive_control_df.values.flatten()})
     # rename columns
@@ -1416,6 +1424,8 @@ def celltype_corr_dotplot(obj, cres_to_use, cell_types_to_use, test_method, test
     return fig
 
 def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive_control_info, figsize=(20, 12)):
+    if cres_to_use is None:
+        cres_to_use = q_value.columns
     if cell_types_to_use is None:
         cell_types_to_use = q_value.index
     cell_types_to_use = cell_types_to_use[cell_types_to_use.isin(q_value.index)]
@@ -1425,84 +1435,125 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
     cell_types_to_use_cluster_number = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[cell_types_to_use].values
     # reorder cell types to use by subcluster number
     cell_types_to_use = pd.Index(cell_types_to_use[np.argsort(cell_types_to_use_cluster_number)])
-    # reorder the cres by the best recall cell type
-    cres_best_recall_celltype = activity.loc[cell_types_to_use, cres_to_use].idxmin(axis=0)
-    # cres_best_recall_celltype = obj.get_creinfo()['best_subclass'].loc[significant_cres]
-    cres_best_recall_celltype_idx = cell_types_to_use.get_indexer(cres_best_recall_celltype)
-    cres_to_use = cres_to_use[np.argsort(cres_best_recall_celltype_idx)]
     # reorder test result and atac cpm
     q_value = q_value.loc[cell_types_to_use, cres_to_use]
     activity = activity.loc[cell_types_to_use, cres_to_use]
     # find positive controls
-    target_df = pd.DataFrame(index=q_value.index, columns=q_value.columns)
-    for cre in q_value.columns:
-        best_subclass = positive_control_info.loc[cre, 'best_subclass']
-        # significant cres
-        cell_types = q_value[cre].index[q_value[cre] <= 0.05]
-        # on target cell types
-        if best_subclass in cell_types:
-            target_df.loc[best_subclass, cre] = 'on-target'
-            cell_types = cell_types[cell_types != best_subclass]
-        else:
-            target_df.loc[best_subclass, cre] = 'miss'
-        # other cell types are off-target
-        target_df.loc[cell_types, cre] = 'off-target'
-    # divide the cres into 4 categories: only on-target, on-target + off-target, only off-target, no target
-    def assign_cre_type(x):
-        if 'on-target' in x.values:
-            if 'off-target' in x.values:
-                return 'Mix-target'
+    if positive_control_info is not None:
+        target_df = pd.DataFrame(index=q_value.index, columns=q_value.columns)
+        for cre in q_value.columns:
+            best_subclass = positive_control_info.loc[cre, 'best_subclass']
+            # significant cres
+            cell_types = q_value[cre].index[q_value[cre] <= 0.05]
+            # on target cell types
+            if best_subclass in cell_types:
+                target_df.loc[best_subclass, cre] = 'on-target'
+                cell_types = cell_types[cell_types != best_subclass]
             else:
-                return 'On-target'
-        elif 'off-target' in x.values:
-            return 'Off-target'
-        else:
-            return 'No target'
-    cre_type = target_df.apply(assign_cre_type, axis=0)
-    # first clip, then rescale
-    q_value = q_value.clip(lower=1/5000)
-    # scale activity to 1 for each CRE
-    activity = activity / activity.max(axis=0)
-    activity = activity.clip(lower=1e-2)
-    q_value = -np.log10(q_value.astype(float))
-    activity = np.log10(activity.astype(float))
+                if best_subclass in q_value.index:
+                    target_df.loc[best_subclass, cre] = 'miss'
+            # other cell types are off-target
+            cell_types = cell_types[cell_types.isin(q_value.index)]
+            if len(cell_types) > 0:
+                target_df.loc[cell_types, cre] = 'off-target'
+        # divide the cres into 4 categories: only on-target, on-target + off-target, only off-target, no target
+        def assign_cre_type(x):
+            if 'on-target' in x.values:
+                if 'off-target' in x.values:
+                    return 'Mix-target'
+                else:
+                    return 'On-target'
+            elif 'off-target' in x.values:
+                return 'Off-target'
+            else:
+                return 'No target'
+        cre_type = target_df.apply(assign_cre_type, axis=0)
+    else:
+        target_df = pd.DataFrame(index=q_value.index, columns=q_value.columns)
+        target_df[:] = 'CREs'
+        cre_type = np.repeat('CREs', len(cres_to_use))
+    # Data transformations
+    q_value = q_value.clip(lower=1/5000).astype(float)  # Clip to avoid log10(0)
+    activity = activity.clip(lower=1e-2).astype(float)  # Clip to avoid log10(0)
+    activity = np.log10(activity).T  # Transpose for CRE clustering
+    activity = activity.sub(activity.mean(axis=1), axis=0).div(activity.std(axis=1), axis=0)  # Z-score per CRE
+    q_value = -np.log10(q_value).T
     # if scale_by_cre, we scale the test result by the max of each cre
-    hue_name = 'log10(scaled activity)'
+    hue_name = 'log(activity) (z-score)'
     size_name = '-log10(q value)'
     # make to plot dataframe, flatten recall and atac_cpm
-    toplot = pd.DataFrame({'-log10(q value)': q_value.values.flatten(),
-                           'log10(activity)': activity.loc[cell_types_to_use].values.flatten(),
-                           'cell_types': cell_types_to_use.values.repeat(len(cres_to_use)).to_list(),
-                           'cres': np.tile(cres_to_use, len(cell_types_to_use)),
-                           'positive_control': target_df.values.flatten(),
+    toplot = pd.DataFrame({size_name: q_value.T.values.flatten(),
+                           hue_name: activity.T.values.flatten(),
                            'cre_type': np.tile(cre_type, len(cell_types_to_use))})
-    # rename columns
-    toplot.rename(columns={'-log10(q value)': size_name,
-                           'log10(activity)': hue_name}, inplace=True)
+    hue_min, hue_max = toplot[hue_name].min(), toplot[hue_name].max()
+    size_min, size_max = toplot[size_name].min(), toplot[size_name].max()
     # plot dot plot, no edge color, use 4 sub plots
     # Set the height ratios for the subplots
-    cre_categories = ['On-target', 'Mix-target', 'Off-target', 'No target']
-    height_ratios = [sum(cre_type == category) for category in cre_categories]
+    cre_categories = np.array(['On-target', 'Mix-target', 'Off-target', 'No target', 'CREs'])
+    height_ratios = np.array([sum(cre_type == category) for category in cre_categories])
+    # remove the categories with 0 counts
+    cre_categories = cre_categories[height_ratios != 0]
+    height_ratios = height_ratios[height_ratios != 0]
     # Create 4 subplots aligned vertically, assign different heights
-    fig, axes = plt.subplots(4, 1, figsize=figsize, sharex=True, sharey=False, gridspec_kw={'height_ratios': height_ratios})
+    fig, axes = plt.subplots(len(height_ratios), 2, figsize=figsize, sharex=False, sharey=False,
+                             gridspec_kw={'height_ratios': height_ratios, 'width_ratios': [0.2, 1]})
     # Plot each CRE type in a subplot
     for i, category in enumerate(cre_categories):
-        ax = axes[i]
-        subset = toplot[toplot['cre_type'] == category].copy()
-        # make subset no category
-        subset['cres'] = subset['cres'].values.astype(str)
+        if len(cre_categories) == 1:
+            ax = axes[1]
+            ax_dend = axes[0]
+        else:
+            ax = axes[i, 1]
+            # Plot dendrogram
+            ax_dend = axes[i, 0]
+        category_cres = cres_to_use[cre_type == category]
+        
+        # Cluster CREs within category
+        activity_subset = activity.loc[category_cres]  # Use pre-transposed data
+        q_value_subset = q_value.loc[category_cres]
+        # make in significant activity to 0
+        hie_data = activity_subset * (q_value_subset >= -np.log10(0.05))
+        # cos_dists = pdist(hie_data.values, metric='cosine')
+        # Z = linkage(cos_dists, method='average')
+        Z = linkage(hie_data.values, method='ward', metric='euclidean')
+        cre_order = leaves_list(Z)
+        ordered_cres = hie_data.index[cre_order]
+        # Sort data by clustered order
+        activity_subset = activity_subset.loc[ordered_cres].copy()
+        q_value_subset = q_value.loc[ordered_cres].copy()
+        target_df_subset = target_df.loc[:, ordered_cres].copy()
+        subset = pd.DataFrame({size_name: q_value_subset.T.values.flatten(),
+                               hue_name: activity_subset.T.values.flatten(),
+                               'cell_types': list(cell_types_to_use.values.repeat(len(ordered_cres))),
+                               'cres': np.tile(ordered_cres, len(cell_types_to_use)),
+                               'positive_control': target_df_subset.values.flatten()})
+        # dot plots
         sns.scatterplot(data=subset, x='cell_types', y='cres', size=size_name, hue=hue_name, edgecolor='none',
+                        hue_norm=(hue_min, hue_max), size_norm=(size_min, size_max),
                         sizes=(3, 250), alpha=0.8, palette='coolwarm', ax=ax)
-        # scatter on-target
-        sns.scatterplot(data=subset[subset['positive_control'] == 'on-target'], x='cell_types', y='cres', 
-                        s=250, alpha=0.8, marker='s', facecolor='none', edgecolor='red', legend=False, ax=ax)
-        sns.scatterplot(data=subset[subset['positive_control'] == 'off-target'], x='cell_types', y='cres', 
-                        s=250, alpha=0.8, marker='s', facecolor='none', edgecolor='blue', legend=False, ax=ax)
-        sns.scatterplot(data=subset[subset['positive_control'] == 'miss'], x='cell_types', y='cres', 
-                        s=250, alpha=0.8, marker='s', facecolor='none', edgecolor='grey', legend=False, ax=ax)
-        ax.margins(y=0.05/height_ratios[i] * max(np.array(height_ratios)))
+        # dendrogram
+        dendrogram(Z, orientation='left', labels=ordered_cres, ax=ax_dend)
+        ax_dend.axis('off')
+        # Add markers for positive controls
+        if positive_control_info is not None:
+            markers = {
+                'on-target': ('red', 's'), 
+                'off-target': ('blue', 's'), 
+                'miss': ('grey', 's')
+            }
+            for control, (color, marker) in markers.items():
+                data = subset[subset['positive_control'] == control]
+                if not data.empty:
+                    sns.scatterplot(
+                        data=data, x='cell_types', y='cres', 
+                        s=250, alpha=0.8, marker=marker,
+                        facecolor='none', edgecolor=color, legend=False, ax=ax
+                    )
+        # ax.margins(y=0.5/figsize[1]/height_ratios[i] * max(np.array(height_ratios)))
+        ax.margins(y=0.5 / height_ratios[i])
+        ax.set_xlim(-0.5, len(cell_types_to_use)-0.5) 
         # remove the ticks, x label
-        if i != 3:
+        if i != len(cre_categories) - 1:
             ax.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
             ax.set_xlabel('')
         else:
@@ -1510,14 +1561,18 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
             ax.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=True)
             ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
             ax.set_xlabel('Cell Types')
+        if category == 'Off-target' or category == 'CREs':
             # Capture legend handles/labels from the FIRST subplot before removal
             legend = ax.get_legend()
-            if legend:
-                legend_handles = legend.legend_handles
-                legend_labels = [t.get_text() for t in legend.get_texts()]
+            legend_handles = legend.legend_handles
+            legend_labels = [t.get_text() for t in legend.get_texts()]
         # Remove subplot legend
         ax.get_legend().remove()
-        ax.set_ylabel(category)
+        if category == 'CREs':
+            # remove y axis label
+            ax.set_ylabel('')
+        else:
+            ax.set_ylabel(category)
     # put legends to right of the plot
     fig.legend(legend_handles, legend_labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10, labelspacing=1.5)
     fig.tight_layout()
@@ -1530,7 +1585,7 @@ fig = plot_celltype_activity_distribution_compare(
     show_mean_std=False, show_positive_control=False)
 fig.savefig(f'results/fold_change/expr1_expr2_celltype_distribution.pdf')
 # %% fold_change test, CRE-wise, just add up counts
-fold_change_test_config = {"cell_types_to_use": cell_types_to_use_nc_2.to_list(),
+fold_change_test_config = {"cell_types_to_use": None,
                            "normalize_by_cell_rna": False,
                            "normalize_by_cell_volume": False,
                            "normalize_by_celltype_rna": False,
@@ -1559,8 +1614,8 @@ fig = cre_corr_dotplot(starrfish2_filtered, significant_cres, cell_types_to_use_
                   scale_by_cre=True, z_score_by_cre=False, figsize=(12, 16))
 fig.savefig(f'results/fold_change/expr2_cre_dotplot_vertical.pdf')
 fig = cre_corr_dotplot(starrfish2_filtered, significant_cres, cell_types_to_use_nc_2,
-                  test_method='fold_change', test_configs=fold_change_test_config,
-                  scale_by_cre=True, z_score_by_cre=False, figsize=(16, 12))
+                       test_method='fold_change', test_configs=fold_change_test_config,
+                       scale_by_cre=True, z_score_by_cre=False, figsize=(16, 12))
 fig.savefig(f'results/fold_change/expr2_cre_dotplot_horizontal.pdf')
 # %% plot cumulative correlation versus CREs, we need to see that but not necessarily in the manuscript
 corr_cutoffs = np.linspace(0, 1, 100)
@@ -1598,10 +1653,11 @@ fold_change_test_config = {"cell_types_to_use": cell_types_to_use_nc_2.to_list()
                            "log_transform": False,
                            "rank_transform": None,
                            "filter_zero_counts": False,
-                           "bootstrap_number": 5000}
+                           "bootstrap_number": 5000,
+                           'n_jobs': 256}
 res2 = starrfish2_filtered.fold_change_test(**fold_change_test_config)
 # for each CRE, do q-value correction
-res2_q = res2['qvalue_activity'].loc[cell_types_to_use_nc_2, target_cres].copy()
+res2_q = res2['qvalue_activity'].copy()
 target_df = pd.DataFrame(index=res2_q.columns, columns=['on-target', 'off-target', 'best_subclass'])
 for cre in res2_q.columns:
     # get on-target cell types
@@ -1639,11 +1695,13 @@ ax.set_xlabel('log10(foldchange)')
 ax.set_ylabel('-log10(qvalue)')
 plt.close(fig)
 fig.savefig(f'results/fold_change/expr2_cre_volcano.pdf')
-# plot a dot plot of all cres
-fig = cre_pval_dotplot(res2['qvalue_activity'], res2['celltype_activity'], target_cres, cell_types_to_use_nc_2,
-                       positive_control_info=starrfish2_filtered.get_creinfo(), figsize=(8, 16))
-fig.savefig(f'results/fold_change/expr2_qvalue_dotplot.pdf', bbox_inches='tight')
-# %% visualization
+#%% plot a dot plot of all cres
+fig = cre_pval_dotplot(res2['qvalue_activity'], res2['celltype_activity'], 
+                       target_df.index[(target_df['on-target']!=0) | (target_df['off-target']!=0)].intersection(non_negative_control_cres),
+                       cell_types_to_use_nc_2,
+                       positive_control_info=None, figsize=(8, 48))
+fig.savefig(f'results/fold_change/expr2_qvalue_dotplot_all_cres.pdf', bbox_inches='tight')
+ # %% visualization
 # visulization of a specific CRE by atac signals
 for cre in significant_cres:
     # pick the top 5 best ATAC
@@ -1768,48 +1826,58 @@ plt.xlabel('ATAC std (log)')
 plt.ylabel('Pearson correlation')
 plt.show()
 # %%
-# simple regression of motif scores to activity
+# simple regression of motif scores to activity, didn't work
 motif_scores = pd.read_csv('results/CRE_motif.csv')
 motif_scores['enh'] = motif_scores['Chromosome'] + ':' + motif_scores['Start'].astype(str) + '-' + motif_scores['End'].astype(str)
 motif_scores.index = starrfish2_filtered.get_creinfo().index[starrfish2_filtered.get_creinfo()['labeling_type'] != 'negative control']
 motif_scores['lib_size'] = starrfish2_filtered.lib_size.loc[motif_scores.index]
+# %% genomespy to visualize
+plot = starrfish2_filtered.plot_atac_genomespy(cell_types_to_use_nc_2, cre='CRE004')
+plot.show(filename='genomespy.html')
 # %%
-# regression
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import mean_squared_error
-from sklearn.model_selection import train_test_split
-# do for each cell type
-celltype_motif_scores = motif_scores.copy()
-celltype_motif_scores['Score'] = cre_corr['pearson'].loc[celltype_motif_scores.index]
-# only keep high lib size
-celltype_motif_scores = celltype_motif_scores.loc[cres_to_use_libsize_high.intersection(celltype_motif_scores.index)]
-motif_mat = celltype_motif_scores.iloc[:, 5:-2]
-activity = celltype_motif_scores['Score']
-# train test split
-X_train, X_test, y_train, y_test = train_test_split(motif_mat, activity, test_size=0.2, random_state=42)
-# standardize the data
-scaler = StandardScaler()
-scaler.fit(np.concatenate([X_train, X_test]))
-X_train = scaler.transform(X_train)
-X_test = scaler.transform(X_test)
-scaler = StandardScaler()
-scaler.fit(np.concatenate([y_train.values.reshape(-1, 1), y_test.values.reshape(-1, 1)]))
-y_train = scaler.transform(y_train.values.reshape(-1, 1))
-y_test = scaler.transform(y_test.values.reshape(-1, 1))
-# linear regression
-model = LinearRegression()
-model.fit(X_train, y_train)
-y_pred = model.predict(X_test)
-# calculate the mean squared error
-mse = mean_squared_error(y_test, y_pred)
-print('Mean squared error:', mse)
-# calculate the r2 score
-r2 = model.score(X_test, y_test)
-print('R2 score:', r2)
-# plot the regression
-plt.scatter(y_test, y_pred)
-plt.xlabel('True activity')
-plt.ylabel('Predicted activity')
-plt.title(f'Linear regression for {celltype}')
+plot.close()
+# %%
+starrfish2_filtered.plot_pygenometracks(cell_types_to_use_nc_2, 'CRE004', 'CRE004.pdf', 
+                                        nbins=500, padding=20000, min=None, max=2)
+# %%
+ethan_anno = pd.read_csv('Data/annotation/my_cre_annot_final.tsv', sep='\t', index_col=0)
+ethan_anno
+# %%
+motif_csv = pd.read_csv('results/CRE_motif.csv')
+motif_csv.index = motif_csv['Chromosome'] + ':' + motif_csv['Start'].astype(str) + '-' + motif_csv['End'].astype(str)
+motif_name = pd.Series(starrfish2_filtered.get_creinfo().index).groupby(starrfish2_filtered.get_creinfo()['enh'].values).first().loc[motif_csv.index]
+motif_csv.index = motif_name.values
+# %%
+peaks = starrfish2_filtered.get_celltypes_peaks_close_to_cre(cell_types_to_use_nc_2, 'CRE004', range=100000)
+# %%
+cre_motif = peaks[peaks['Peak'] == starrfish2_filtered.get_creinfo().loc['CRE004', 'enh']].iloc[:, 5:]
+positive_control = peaks[peaks['celltype'].isin(['STR D1 Gaba', 'STR D2 Gaba', 'CB Granule Glut'])].iloc[:, 5:]
+negative_control = peaks[~peaks['celltype'].isin(['TH Prkcd Grin2c Glut', 'STR D1 Gaba', 'STR D2 Gaba', 'CB Granule Glut'])].iloc[:, 5:]
+# find any motif that present in the positive control but not in the negative control
+for motif in cre_motif.columns:
+    if cre_motif[motif].sum() > 0:
+        pos = positive_control[motif]
+        neg = negative_control[motif]
+        pos_mean = pos[pos > 0].mean()
+        pos_std = pos[pos > 0].std()
+        neg_mean = neg[neg > 0].mean()
+        neg_std = neg[neg > 0].std()
+        if pos_mean - pos_std > neg_mean + neg_std:
+            print(motif)
+# %% genome spy
+from genomespy import igv
+tracks = {
+    'macs2': {
+                    "path": 'Data/ATAC/wmb_bigwig/subclass_macs2/061_STR_D1_Gaba_treat_pileup.srt.bw',
+                    "height": 40,
+                    "type": "bigwig"
+                },
+    'bamcoverage': {
+                    "path": 'Data/ATAC/wmb_bigwig/subclass_bamcoverage/061_STR_D1_Gaba.ATAC.e100.bs100.sm300.bw',
+                    "height": 40,
+                    "type": "bigwig"
+                },
+    
+}
+plot = igv(tracks, region={"chrom": "chr7", "start": 66600000, "end": 66800000}, server_port=18089)
 # %%
