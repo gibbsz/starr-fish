@@ -1701,7 +1701,7 @@ fig = cre_pval_dotplot(res2['qvalue_activity'], res2['celltype_activity'],
                        cell_types_to_use_nc_2,
                        positive_control_info=None, figsize=(8, 48))
 fig.savefig(f'results/fold_change/expr2_qvalue_dotplot_all_cres.pdf', bbox_inches='tight')
- # %% visualization
+# %% visualization
 # visulization of a specific CRE by atac signals
 for cre in significant_cres:
     # pick the top 5 best ATAC
@@ -1728,11 +1728,12 @@ for cre in target_df.index[(target_df['on-target'] != 0) | (target_df['off-targe
     cre_q_values = cre_q_values.sort_values(ascending=True)
     cell_types_to_visualize = cre_q_values.index
     fig = starrfish2_filtered.plot_gene(
-        cre, average_by_celltype=False,
-        norm_by_negative_control_cell_type_sum=False,
-        norm_by_negative_control_cell_type_mean=True,
-        norm_by_negative_control_single_cell=False,
-        cell_types_to_visualize=cell_types_to_visualize, scale_size_by='counts',
+        cre, average_by_celltype=False, # if true, all cells from same cell type will have same value
+        norm_by_negative_control_cell_type_sum=False, # normalize raw counts by the sum of negative control in the cell type
+        norm_by_negative_control_cell_type_mean=True, # normalize raw counts by the mean of negative control in the cell type
+        norm_by_negative_control_single_cell=False, # normalize raw counts by the negative control in each single cell
+        cell_types_to_visualize=cell_types_to_visualize, # only visualize some cell types
+        scale_size_by='counts', # scale size by "counts": normalized counts; or "celltype_number": number of cells in the cell type
         log=False, transpose=-1, flipx=-1, sz_max=50,
         cell_types_to_use=cell_types_to_use_nc_2)
     fig.savefig(f'results/fold_change/cres/q_value/expr2_{cre}.pdf')
