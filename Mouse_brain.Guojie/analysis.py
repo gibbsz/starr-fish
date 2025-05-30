@@ -1685,26 +1685,37 @@ fig = cre_corr_dotplot(starrfish2_filtered, significant_cres, cell_types_to_use_
                        scale_by_cre=True, z_score_by_cre=False, figsize=(16, 12))
 fig.savefig(f'results/fold_change/expr2_cre_dotplot_horizontal.pdf')
 # %% plot cumulative correlation versus CREs, we need to see that but not necessarily in the manuscript
-corr_cutoffs = np.linspace(0, 1, 100)
-prob = []
-for corr_cutoff in corr_cutoffs:
-    prob.append((cre_corr['pearson'] < corr_cutoff).sum() / len(cre_corr))
+starrfish2_filtered.load_cpm('Data/ATAC_cpm_peakBysubclass.csv', attr_to_add='atac_cpm')
+starrfish2_filtered.load_cpm('Data/H3K4me1_cpm_peakBysubclass.csv', attr_to_add='h3k4me1_cpm')
+starrfish2_filtered.load_cpm('Data/H3K9me3_cpm_peakBysubclass.csv', attr_to_add='h3k9me3_cpm')
+starrfish2_filtered.load_cpm('Data/H3K27ac_cpm_peakBysubclass.csv', attr_to_add='h3k27ac_cpm')
+starrfish2_filtered.load_cpm('Data/H3K27me3_cpm_peakBysubclass.csv', attr_to_add='h3k27me3_cpm')
+corr_cutoffs = np.linspace(-1, 1, 200)
+prob = {'atac_cpm': [], 'h3k4me1_cpm': [], 'h3k9me3_cpm': [], 'h3k27ac_cpm': [], 'h3k27me3_cpm': []}
+for mod in ['atac_cpm', 'h3k4me1_cpm', 'h3k9me3_cpm', 'h3k27ac_cpm', 'h3k27me3_cpm']:
+    cre_corr, celltype_corr = starrfish2_filtered.corr_atac_cpm(
+        cell_types_to_use=cell_types_to_use_nc_2, cres_to_use=None, 
+        acvitity_df=activity_df, 
+        filter_by_atac_z_threshold=None, filter_by_atac_raw_threshold=None,
+        filter_by_negative_control_z_threshold=None,
+        log_activity=True, log_atac=True, attr_to_use=mod)
+    for corr_cutoff in corr_cutoffs:
+        if mod in ['h3k9me3_cpm', 'h3k27me3_cpm']:
+            prop = (cre_corr['pearson'] <= -corr_cutoff).sum() / len(cre_corr)
+        else:
+            prop = (cre_corr['pearson'] >= corr_cutoff).sum() / len(cre_corr)
+        prob[mod].append(prop)
+# %%
 fig, ax = plt.subplots(figsize=(6, 4))
-ax.plot(corr_cutoffs, prob)
-ax.set_xlabel('Pearson correlation with ATAC')
-ax.set_ylabel('Cumulative probability')
-# get threshold of significance
-significance = cre_corr.loc[significant_cres, 'pearson'].min()
-significance_prob = (cre_corr['pearson'] < significance).sum() / len(cre_corr)
-# dash line, x=significance, y=0-significance_prob
-ax.plot([0, significance], [significance_prob, significance_prob], 
-        linestyle='--', color='grey')
-# dash line, x=0-significance, y=significance_prob
-ax.plot([significance, significance], [0, significance_prob], 
-        linestyle='--', color='grey')
-# set limit to x-axis from 0 to 1 and y-axis from 0 to 1
+ax.plot(corr_cutoffs, prob['atac_cpm'], label='ATAC', color='blue')
+ax.plot(corr_cutoffs, prob['h3k4me1_cpm'], label='H3K4me1', color='green')
+ax.plot(corr_cutoffs, prob['h3k9me3_cpm'], label='H3K9me3', color='red')
+ax.plot(corr_cutoffs, prob['h3k27ac_cpm'], label='H3K27ac', color='orange')
+ax.plot(corr_cutoffs, prob['h3k27me3_cpm'], label='H3K27me3', color='purple')
+ax.set_xlabel('Pearson correlation with epigenomic markers')
+ax.set_ylabel('Proportion correlation ≥ cutoff')
 ax.set_xlim(0, 1)
-ax.set_ylim(0, 1)
+ax.set_ylim(0, 0.6)
 fig.tight_layout()
 fig.savefig(f'results/fold_change/expr2_cre_cumulative_prob.pdf')
 # %%
@@ -1881,18 +1892,6 @@ ax2.legend_.remove()
 
 plt.title('Precision and Recall vs. Z-score', fontsize=14)
 plt.show()
-# %% make a plot of corr vs lib size
-cre_corr['lib_size'] = np.log1p(starrfish2_filtered.lib_size.loc[cre_corr.index])
-sns.scatterplot(data=cre_corr, x='lib_size', y='pearson')
-plt.xlabel('Library size (log)')
-plt.ylabel('Pearson correlation')
-# %% make a plot of corr vs variance of ATAC
-atac_std = np.log1p(starrfish2_filtered.atac_cpm.loc[cell_types_to_use_nc_2.intersection(starrfish2_filtered.atac_cpm.index), cre_corr.index]).std(axis=0)
-cre_corr['atac_std'] = atac_std
-sns.scatterplot(data=cre_corr, x='atac_std', y='pearson', hue='lib_size', palette='viridis')
-plt.xlabel('ATAC std (log)')
-plt.ylabel('Pearson correlation')
-plt.show()
 # %%
 # simple regression of motif scores to activity, didn't work
 motif_scores = pd.read_csv('results/CRE_motif.csv')
@@ -1902,7 +1901,6 @@ motif_scores['lib_size'] = starrfish2_filtered.lib_size.loc[motif_scores.index]
 # %% genomespy to visualize
 plot = starrfish2_filtered.plot_atac_genomespy(cell_types_to_use_nc_2, cre='CRE004')
 plot.show(filename='genomespy.html')
-# %%
 plot.close()
 # %%
 starrfish2_filtered.plot_pygenometracks(cell_types_to_use_nc_2, 'CRE004', 'CRE004.pdf', 
@@ -1910,44 +1908,6 @@ starrfish2_filtered.plot_pygenometracks(cell_types_to_use_nc_2, 'CRE004', 'CRE00
 # %%
 ethan_anno = pd.read_csv('Data/annotation/my_cre_annot_final.tsv', sep='\t', index_col=0)
 ethan_anno
-# %%
-motif_csv = pd.read_csv('results/CRE_motif.csv')
-motif_csv.index = motif_csv['Chromosome'] + ':' + motif_csv['Start'].astype(str) + '-' + motif_csv['End'].astype(str)
-motif_name = pd.Series(starrfish2_filtered.get_creinfo().index).groupby(starrfish2_filtered.get_creinfo()['enh'].values).first().loc[motif_csv.index]
-motif_csv.index = motif_name.values
-# %%
-peaks = starrfish2_filtered.get_celltypes_peaks_close_to_cre(cell_types_to_use_nc_2, 'CRE004', range=100000)
-# %%
-cre_motif = peaks[peaks['Peak'] == starrfish2_filtered.get_creinfo().loc['CRE004', 'enh']].iloc[:, 5:]
-positive_control = peaks[peaks['celltype'].isin(['STR D1 Gaba', 'STR D2 Gaba', 'CB Granule Glut'])].iloc[:, 5:]
-negative_control = peaks[~peaks['celltype'].isin(['TH Prkcd Grin2c Glut', 'STR D1 Gaba', 'STR D2 Gaba', 'CB Granule Glut'])].iloc[:, 5:]
-# find any motif that present in the positive control but not in the negative control
-for motif in cre_motif.columns:
-    if cre_motif[motif].sum() > 0:
-        pos = positive_control[motif]
-        neg = negative_control[motif]
-        pos_mean = pos[pos > 0].mean()
-        pos_std = pos[pos > 0].std()
-        neg_mean = neg[neg > 0].mean()
-        neg_std = neg[neg > 0].std()
-        if pos_mean - pos_std > neg_mean + neg_std:
-            print(motif)
-# %% genome spy
-from genomespy import igv
-tracks = {
-    'macs2': {
-                    "path": 'Data/ATAC/wmb_bigwig/subclass_macs2/061_STR_D1_Gaba_treat_pileup.srt.bw',
-                    "height": 40,
-                    "type": "bigwig"
-                },
-    'bamcoverage': {
-                    "path": 'Data/ATAC/wmb_bigwig/subclass_bamcoverage/061_STR_D1_Gaba.ATAC.e100.bs100.sm300.bw',
-                    "height": 40,
-                    "type": "bigwig"
-                },
-    
-}
-plot = igv(tracks, region={"chrom": "chr7", "start": 66600000, "end": 66800000}, server_port=18089)
 # %%
 # use homer to find motifs
 human_mouse_map = pd.read_csv('Data/human_mouse_ortholog.tsv', sep='\t')
@@ -1977,5 +1937,8 @@ for cell_type in cell_types_to_use_nc_2:
             mouse_genes = human_mouse_map.loc[human_mouse_map['Mouse gene name'] == gene, 'Mouse gene stable ID'].values
             homer_genes_mouse.extend(mouse_genes)
     homer_genes_mouse = pd.Series(homer_genes_mouse).dropna().unique()
+    np.save(f'results/homer_motif/{cell_type.replace(" ", "_")}.homer_genes_mouse.npy', homer_genes_mouse)
     genes_of_interest.extend(homer_genes_mouse)
+genes_of_interest = pd.Series(genes_of_interest).dropna().unique()
+np.save('results/homer_motif/genes_of_interest.npy', genes_of_interest)
 # %%
