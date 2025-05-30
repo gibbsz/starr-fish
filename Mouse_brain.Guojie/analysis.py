@@ -10,7 +10,8 @@ import seaborn as sns
 import scanpy as sc
 from scipy.stats import pearsonr, spearmanr, ttest_ind
 from scipy.spatial.distance import pdist
-from scipy.cluster.hierarchy import linkage, dendrogram, leaves_list
+from scipy.cluster.hierarchy import linkage, dendrogram, leaves_list, optimal_leaf_ordering
+from scipy.spatial.distance import squareform
 from adjustText import adjust_text
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -1423,6 +1424,41 @@ def celltype_corr_dotplot(obj, cres_to_use, cell_types_to_use, test_method, test
     plt.close(fig)
     return fig
 
+def draw_custom_dendrogram(cre_order_token, ordered_cres, ax, reorder_penalty=0.05):
+    # Step 1: Get unique tokens and map to CREs
+    unique_tokens, inverse_indices = np.unique(cre_order_token, axis=0, return_inverse=True)
+    token_groups = {i: np.where(inverse_indices == i)[0] for i in range(len(unique_tokens))}
+
+    n = len(ordered_cres)
+    dist_matrix = np.ones((n, n))
+    np.fill_diagonal(dist_matrix, 0)
+
+    # Step 2: Set small intra-group distances
+    for group in token_groups.values():
+        for i in group:
+            for j in group:
+                if i != j:
+                    dist_matrix[i, j] = 0.1
+
+    # Step 3: Add token dissimilarity + position-based penalty
+    for i in range(n):
+        for j in range(i + 1, n):
+            if dist_matrix[i, j] > 0.1:  # Skip already close intra-group CREs
+                # Token-based distance
+                token_dist = np.linalg.norm(cre_order_token[i] - cre_order_token[j])
+                # Position-based penalty
+                order_dist = reorder_penalty * abs(i - j)
+                total_dist = token_dist + order_dist
+                dist_matrix[i, j] = dist_matrix[j, i] = total_dist
+
+    # Step 4: Cluster and draw
+    D = squareform(dist_matrix)
+    Z = linkage(D, method='average')
+    Z_opt = optimal_leaf_ordering(Z, D)
+    dendrogram(Z_opt, labels=ordered_cres, orientation='left', ax=ax)
+    ax.set_yticklabels([])
+    ax.tick_params(left=False)
+
 def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive_control_info, figsize=(20, 12)):
     if cres_to_use is None:
         cres_to_use = q_value.columns
@@ -1507,32 +1543,62 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
             # Plot dendrogram
             ax_dend = axes[i, 0]
         category_cres = cres_to_use[cre_type == category]
-        
         # Cluster CREs within category
         activity_subset = activity.loc[category_cres]  # Use pre-transposed data
         q_value_subset = q_value.loc[category_cres]
+        if cre_categories != 'No target':
+            # set the orders based on q-value
+            # create a order token for each CRE
+            max_sig_n = (q_value_subset >= -np.log10(0.05)).sum(axis=1).max()
+            cre_order_token = []
+            for j, cre in enumerate(category_cres):
+                # get significant cell types
+                significant_cell_types = q_value_subset.loc[cre][q_value_subset.loc[cre] >= -np.log10(0.05)].index
+                # get the index of the cell types in cell_types_to_use
+                significant_cell_types_idx = cell_types_to_use.get_indexer(significant_cell_types) + 1
+                significant_q_value = q_value_subset.loc[cre][significant_cell_types].values
+                # fill to max_sig_n
+                significant_cell_types_idx = np.pad(significant_cell_types_idx, (0, max_sig_n - len(significant_cell_types_idx)), constant_values=0)
+                significant_q_value = np.pad(significant_q_value, (0, max_sig_n - len(significant_q_value)), constant_values=0)
+                # append the q-value
+                cre_order_token.append(np.concatenate((significant_cell_types_idx, -significant_q_value)))
+            # sort the cres by the order token
+            cre_order_token = np.array(cre_order_token)
+            # sort cres by the order token
+            ordered_cres = category_cres[np.lexsort(cre_order_token.T[::-1,:])]
+            cre_order_token = cre_order_token[np.lexsort(cre_order_token.T[::-1,:])]
+            # Sort data by clustered order
+            activity_subset = activity_subset.loc[ordered_cres].copy()
+            q_value_subset = q_value.loc[ordered_cres].copy()
+            target_df_subset = target_df.loc[:, ordered_cres].copy()
+        # do hierarchical clustering
         # make in significant activity to 0
-        hie_data = activity_subset * (q_value_subset >= -np.log10(0.05))
-        # cos_dists = pdist(hie_data.values, metric='cosine')
-        # Z = linkage(cos_dists, method='average')
-        Z = linkage(hie_data.values, method='ward', metric='euclidean')
-        cre_order = leaves_list(Z)
-        ordered_cres = hie_data.index[cre_order]
-        # Sort data by clustered order
-        activity_subset = activity_subset.loc[ordered_cres].copy()
-        q_value_subset = q_value.loc[ordered_cres].copy()
-        target_df_subset = target_df.loc[:, ordered_cres].copy()
+        # hie_data = (q_value_subset >= -np.log10(0.05))
+        # # cos_dists = pdist(hie_data.values, metric='cosine')
+        # # Z = linkage(cos_dists, method='average')
+        # D = pdist(hie_data.values, metric='euclidean')
+        # Z = linkage(D, method='ward')
+        # Z_opt = optimal_leaf_ordering(Z, D)
+        # # get new ordered cres
+        # ordered_cres = hie_data.index[leaves_list(Z_opt)]
+        # Reorder activity_subset and q_value_subset based on ordered_cres
+        # activity_subset = activity_subset.loc[ordered_cres].copy()
+        # q_value_subset = q_value_subset.loc[ordered_cres].copy()
+        # target_df_subset = target_df_subset.loc[:, ordered_cres].copy()
         subset = pd.DataFrame({size_name: q_value_subset.T.values.flatten(),
                                hue_name: activity_subset.T.values.flatten(),
                                'cell_types': list(cell_types_to_use.values.repeat(len(ordered_cres))),
                                'cres': np.tile(ordered_cres, len(cell_types_to_use)),
                                'positive_control': target_df_subset.values.flatten()})
+        subset['cres'] = pd.Categorical(subset['cres'], categories=ordered_cres, ordered=True)
         # dot plots
         sns.scatterplot(data=subset, x='cell_types', y='cres', size=size_name, hue=hue_name, edgecolor='none',
                         hue_norm=(hue_min, hue_max), size_norm=(size_min, size_max),
                         sizes=(3, 250), alpha=0.8, palette='coolwarm', ax=ax)
         # dendrogram
-        dendrogram(Z, orientation='left', labels=ordered_cres, ax=ax_dend)
+        # dendrogram(Z_opt, orientation='left', labels=ordered_cres, ax=ax_dend)
+        draw_custom_dendrogram(cre_order_token[:, :max_sig_n], ordered_cres, ax_dend)
+        # ax.invert_yaxis()
         ax_dend.axis('off')
         # Add markers for positive controls
         if positive_control_info is not None:
@@ -1550,7 +1616,7 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
                         facecolor='none', edgecolor=color, legend=False, ax=ax
                     )
         # ax.margins(y=0.5/figsize[1]/height_ratios[i] * max(np.array(height_ratios)))
-        ax.margins(y=0.5 / height_ratios[i])
+        ax.margins(y=0.6 / height_ratios[i])
         ax.set_xlim(-0.5, len(cell_types_to_use)-0.5) 
         # remove the ticks, x label
         if i != len(cre_categories) - 1:
@@ -1571,6 +1637,7 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
         if category == 'CREs':
             # remove y axis label
             ax.set_ylabel('')
+            ax.set_yticklabels([])
         else:
             ax.set_ylabel(category)
     # put legends to right of the plot
@@ -1881,4 +1948,34 @@ tracks = {
     
 }
 plot = igv(tracks, region={"chrom": "chr7", "start": 66600000, "end": 66800000}, server_port=18089)
+# %%
+# use homer to find motifs
+human_mouse_map = pd.read_csv('Data/human_mouse_ortholog.tsv', sep='\t')
+non_negative_control_cres = starrfish2_filtered.get_creinfo().index[starrfish2_filtered.get_creinfo()['labeling_type'] != 'negative control']
+genes_of_interest = []
+for cell_type in cell_types_to_use_nc_2:
+    cres = res2['qvalue_activity'].loc[cell_type].index[res2['qvalue_activity'].loc[cell_type] <= 0.05]
+    cres = cres[cres.isin(non_negative_control_cres)]
+    if len(cres) < 5:
+        continue
+    bg_cres = non_negative_control_cres[~non_negative_control_cres.isin(cres)]
+    homer_genes = starrfish2_filtered.motif_enrichment_homer(
+        cres_to_use=cres, background_cres=bg_cres, 
+        outputdir=f'results/homer_motif/{cell_type.replace(" ", "_")}/',
+        overwrite=False,)
+    if homer_genes is None:
+        continue
+    # filter to q-value < 0.05
+    homer_genes = homer_genes[homer_genes['q-value (Benjamini)'] < 0.05]['gene'].str.split(';|:|,|-').explode()
+    # get mouse genes
+    homer_genes_mouse = []
+    for gene in homer_genes:
+        if gene in human_mouse_map['Gene name'].values:
+            mouse_genes = human_mouse_map.loc[human_mouse_map['Gene name'] == gene, 'Mouse gene stable ID'].values
+            homer_genes_mouse.extend(mouse_genes)
+        elif gene in human_mouse_map['Mouse gene name'].values:
+            mouse_genes = human_mouse_map.loc[human_mouse_map['Mouse gene name'] == gene, 'Mouse gene stable ID'].values
+            homer_genes_mouse.extend(mouse_genes)
+    homer_genes_mouse = pd.Series(homer_genes_mouse).dropna().unique()
+    genes_of_interest.extend(homer_genes_mouse)
 # %%
