@@ -22,6 +22,7 @@ import matplotlib.pyplot as plt
 import sys
 import os
 import scvi
+import re
 PWD = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(PWD)
 from starr_fish_vae import STARRFISHVI
@@ -570,6 +571,15 @@ def fit_stan(x, model, chains=4):
     return fit.summary().copy()
 
 
+def motif_enrichment(ranked_scores: pd.DataFrame):
+    es = ranked_scores.expanding().mean()
+    # scale by the sum of ranked scores
+    es = es / ranked_scores.mean()
+    # integrate the enrichment score
+    enrichment_score = es.mean()
+    return enrichment_score
+
+
 class STARRFISH:
     def __init__(self, adata: Union[sc.AnnData, str], 
                  cre_tag = 'obsm:CRE', celltype_tag='obs:subclass', spatial_tag='obsm:X_spatial', creinfo_tag='uns:CRE_info',
@@ -713,19 +723,19 @@ class STARRFISH:
         adata = sc.read(adata_path)
         self.adata: sc.AnnData = adata
     
-    def load_atac_cpm(self, atac_cpm_path: str):
-        atac_cpm = pd.read_csv(atac_cpm_path, index_col=0)
-        atac_cpm.columns = atac_cpm.columns.str.replace('\\.', '-')
-        atac_cpm.columns = atac_cpm.columns.str.replace('_', ' ')
+    def load_cpm(self, cpm_path: str, attr_to_add: str = 'atac_cpm'):
+        cpm = pd.read_csv(cpm_path, index_col=0)
+        cpm.columns = cpm.columns.str.replace('\\.', '-')
+        cpm.columns = cpm.columns.str.replace('_', ' ')
         # only keep the cres that are in cre_info
         cre_info = self.get_creinfo().copy()
-        # check atac_cpm index format
-        if atac_cpm.index.str.startswith('chr').any():    
-            cre_info = cre_info[cre_info['enh'].isin(atac_cpm.index)]
-            atac_cpm = atac_cpm.loc[cre_info['enh']]
-            atac_cpm.index = cre_info.index
-        # transpose the atac_cpm
-        self.atac_cpm = atac_cpm.transpose()
+        # check cpm index format
+        if cpm.index.str.startswith('chr').any():    
+            cre_info = cre_info[cre_info['enh'].isin(cpm.index)]
+            cpm = cpm.loc[cre_info['enh']]
+            cpm.index = cre_info.index
+        # transpose the cpm
+        self.__setattr__(attr_to_add, cpm.transpose())
         
     def get_tag(self, tag) -> Union[pd.DataFrame, pd.Series]:
         # get the CREs
@@ -2030,17 +2040,18 @@ class STARRFISH:
                       acvitity_df: pd.DataFrame = None, log_atac=False, log_activity=False, 
                       filter_by_atac_z_threshold=None,
                       filter_by_atac_raw_threshold=None,
-                      filter_by_negative_control_z_threshold=None) -> tuple[pd.DataFrame, pd.DataFrame]:
+                      filter_by_negative_control_z_threshold=None,
+                      attr_to_use='atac_cpm') -> tuple[pd.DataFrame, pd.DataFrame]:
         # filter atac_cpm and activity_df by cell_types_to_use
         if cell_types_to_use is not None:
             # first transform the cell_types_to_use as np.array
             cell_types_to_use = pd.Series(cell_types_to_use)
-            cell_types_to_use = cell_types_to_use[cell_types_to_use.isin(self.atac_cpm.index)]
+            cell_types_to_use = cell_types_to_use[cell_types_to_use.isin(getattr(self, attr_to_use).index)]
             cell_types_to_use = cell_types_to_use[cell_types_to_use.isin(acvitity_df.index)]
         else:
-            cell_types_to_use = self.atac_cpm.index
+            cell_types_to_use = getattr(self, attr_to_use).index
             cell_types_to_use = cell_types_to_use[cell_types_to_use.isin(acvitity_df.index)]
-        atac_cpm = self.atac_cpm.loc[cell_types_to_use]
+        atac_cpm = getattr(self, attr_to_use).loc[cell_types_to_use]
         activity_df = acvitity_df.loc[cell_types_to_use]
         # match the index
         if cres_to_use is not None:
@@ -2165,7 +2176,7 @@ class STARRFISH:
         self.cross_talk_test_configs.append(config)
         return result
     
-    def plot_atac_genomespy(self, cell_types_to_use, cre, padding=5000):
+    def plot_genomespy(self, cell_types_to_use, cre, padding=5000):
         bw_list = pd.read_csv('Data/ATAC/bw_list.csv', index_col=0)
         # set index as cell types
         bw_list = bw_list.set_index('celltype')
@@ -2364,6 +2375,138 @@ class STARRFISH:
         os.remove(peak_bed)
         os.remove(peaks_motif)
         return result
+    
+    def motif_enrichment_test(self, cell_types_to_use, cres_to_use, activity_df, bootstrap_number=1000) -> dict:
+        motif_scores = pd.read_csv('results/CRE_motif.csv', index_col=0)
+        # only keep 4:
+        motif_scores = motif_scores[motif_scores.columns[5:]]
+        if cell_types_to_use is None:
+            cell_types_to_use = activity_df.index
+        if cres_to_use is None:
+            cres_to_use = activity_df.columns.intersection(motif_scores.index)
+        # filter activity_df by cell_types_to_use
+        activity_df = activity_df.loc[cell_types_to_use, cres_to_use]
+        # for each cell type, calculate the motif_enrichment
+        motif_enrichment_p = pd.DataFrame(index=cell_types_to_use, columns=motif_scores.columns)
+        motif_enrichment_q = pd.DataFrame(index=cell_types_to_use, columns=motif_scores.columns)
+        motif_enrichment_es = pd.DataFrame(index=cell_types_to_use, columns=motif_scores.columns)
+        motif_enrichment_bg = np.ndarray((1000, motif_enrichment_p.shape[0], motif_enrichment_p.shape[1]))
+        with multiprocessing.Pool(processes=min(256, int(multiprocessing.cpu_count()))) as pool:
+            for i, cell_type in enumerate(cell_types_to_use):
+                print(f'Processing cell type {cell_type} ({i+1}/{len(cell_types_to_use)})')
+                # get the activity of the cell type
+                activity = activity_df.loc[cell_type]
+                # get the motif scores of the cell type, rank by activity
+                cre_sorted = activity.sort_values(ascending=False).index
+                motif_score_cell_type = motif_scores.loc[cre_sorted].copy()
+                # calculate the enrichment
+                enrichment_score = motif_enrichment(motif_score_cell_type)
+                # shuffle and calculate the background, do parallel
+                bgs = pool.starmap(
+                    motif_enrichment,
+                    [(motif_score_cell_type.sample(frac=1, replace=False, random_state=i),) for i in range(bootstrap_number)], 
+                )
+                motif_enrichment_es.loc[cell_type] = enrichment_score
+                for j, bg in enumerate(bgs):
+                    motif_enrichment_bg[j, i, :] = bg
+                # calculate the p-value
+                p_value = np.zeros(motif_enrichment_es.shape[1])
+                for j, score in enumerate(enrichment_score):
+                    p_value[j] = np.sum(motif_enrichment_bg[:, i, j] >= score, axis=0) / bootstrap_number
+                motif_enrichment_p.loc[cell_type] = p_value
+                motif_enrichment_q.loc[cell_type] = multitest.multipletests(p_value, method='fdr_bh')[1]
+        # return the results
+        motif_enrichment_results = {
+            'p_value': motif_enrichment_p,
+            'q_value': motif_enrichment_q,
+            'enrichment_score': motif_enrichment_es,
+            'background': motif_enrichment_bg
+        }
+        return motif_enrichment_results
+    
+    def motif_enrichment_homer(self, cres_to_use, background_cres=None, outputdir=None, overwrite=False):
+        if outputdir is None:
+            outputdir = 'results/motif_enrichment_homer'
+        # check if the outputdir exists, if not, run it
+        if not os.path.exists(f'{outputdir}/homerResults.html') or overwrite:
+            cre_info = self.get_creinfo()
+            cre_info = cre_info[cre_info['labeling_type'] != 'negative control']
+            cre_info['name'] = cre_info.index
+            cre_info = cre_info[['name', 'Chrom', 'Start', 'End']]
+            # get cres_to_use info
+            cre_pos, cre_neg = cre_info.loc[cres_to_use].copy(), cre_info.loc[cres_to_use].copy()
+            # duplicate and use both '+' and '-' strand
+            cre_pos['Strand'] = '+'
+            cre_pos['name'] = cre_pos['name'] + '_plus'
+            cre_neg['Strand'] = '-'
+            cre_neg['name'] = cre_neg['name'] + '_minus'
+            cre = pd.concat((cre_pos, cre_neg), ignore_index=True)
+            # if background_cres is not None, get background cres info
+            if background_cres is not None:
+                background_pos, background_neg = cre_info.loc[background_cres].copy(), cre_info.loc[background_cres].copy()
+                background_pos['Strand'] = '+'
+                background_pos['name'] = background_pos['name'] + '_plus'
+                background_neg['Strand'] = '-'
+                background_neg['name'] = background_neg['name'] + '_minus'
+                background = pd.concat((background_pos, background_neg), ignore_index=True)
+            # make output directory
+            os.makedirs(outputdir, exist_ok=True)
+            cre.to_csv(f'{outputdir}/cre.bed', sep='\t', index=False, header=False)
+            if background_cres is not None:
+                background.to_csv(f'{outputdir}/background.bed', sep='\t', index=False, header=False)
+            # run homer findMotifsGenome.pl
+            if background_cres is not None:
+                cmd = f"export PERL5LIB=/share/vault/Users/gz2294/Homer/bin:$PERL5LIB; \
+                        export PATH=/share/vault/Users/gz2294/Homer/bin:$PATH; \
+                        findMotifsGenome.pl {outputdir}/cre.bed mm10 '{outputdir}' -bg {outputdir}/background.bed -p 128"
+            else:
+                cmd = f"export PERL5LIB=/share/vault/Users/gz2294/Homer/bin:$PERL5LIB; \
+                        export PATH=/share/vault/Users/gz2294/Homer/bin:$PATH; \
+                        findMotifsGenome.pl {outputdir}/cre.bed mm10 '{outputdir} -p 128"
+            print(f'Running command: {cmd}')
+            result = os.system(cmd)
+            if result == 0:
+                print(f'Motif enrichment completed, results saved to {outputdir}')
+            else:
+                print('Motif enrichment failed, please check the command and the input files.')
+                return None
+        # read the homer results
+        def modify_motif_name(motifnm):
+            motifnm = re.sub(r"\(.*", "", motifnm)
+            motifnm = re.sub(r"COUP-TFII", "NR2F2", motifnm)
+            motifnm = re.sub(r"-distal", "", motifnm)
+            motifnm = re.sub(r"\+.*", "", motifnm)
+            motifnm = re.sub(r"-AP1", "", motifnm)
+            motifnm = re.sub(r"NF-E2", "Nfe2", motifnm)
+            motifnm = re.sub(r"-halfsite", "", motifnm)
+            motifnm = re.sub(r"n-Myc", "Mycn", motifnm)
+            motifnm = re.sub(r"c-Myc", "Myc", motifnm)
+            motifnm = re.sub(r"Nkx2\.1", "Nkx2-1", motifnm)
+            motifnm = re.sub(r"Nkx2\.2", "Nkx2-2", motifnm)
+            motifnm = re.sub(r"Nkx2\.5", "Nkx2-5", motifnm)
+            motifnm = re.sub(r"Nkx3\.1", "Nkx3-1", motifnm)
+            motifnm = re.sub(r"Nkx6\.1", "Nkx6-1", motifnm)
+            motifnm = re.sub(r"\+il21", "", motifnm)
+            motifnm = re.sub(r"HIF-1b", "Arnt", motifnm)
+            motifnm = re.sub(r"HIF-1a", "Hif1a", motifnm)
+            motifnm = re.sub(r"\+1bp", "", motifnm)
+            motifnm = re.sub(r"OCT:OCT-short", "OCT", motifnm)
+            motifnm = re.sub(r"OCT:OCT", "OCT", motifnm)
+            motifnm = re.sub(r"RBPJ:Ebox", "Rbpj", motifnm)
+            motifnm = re.sub(r"PU\.1", "Spi1", motifnm)
+            motifnm = re.sub(r"ZNF143\|STAF", "Zfp143", motifnm)
+            motifnm = re.sub(r"NFkB2-p52", "NFkb2", motifnm)
+            motifnm = re.sub(r"NFkB-p65", "Rela", motifnm)
+            motifnm = re.sub(r"AP-2alpha", "Tfap2a", motifnm)
+            return motifnm
+        if os.path.exists(f'{outputdir}/knownResults.txt'):
+            homer_res = pd.read_csv(f'{outputdir}/knownResults.txt', sep='\t')
+            # modify the homer names
+            homer_res['gene'] = homer_res['Motif Name'].apply(modify_motif_name)
+            return homer_res
+        else:
+            print('Homer results not found, please check the output directory.')
+            return None
     
     @staticmethod
     def corr_starrfish(activity_df1: pd.DataFrame, activity_df2: pd.DataFrame,

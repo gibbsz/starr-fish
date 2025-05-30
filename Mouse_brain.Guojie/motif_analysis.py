@@ -16,20 +16,20 @@ from get_preprocess_utils import (
 import pandas as pd
 # %%
 annotation_dir = Path(f'{PWD}/Data/annotation')
-motif_bed_url = "https://resources.altius.org/~jvierstra/projects/motif-clustering/releases/v1.0/hg38.archetype_motifs.v1.0.bed.gz"
-motif_bed_index_url = "https://resources.altius.org/~jvierstra/projects/motif-clustering/releases/v1.0/hg38.archetype_motifs.v1.0.bed.gz.tbi"
+motif_bed_url = "https://resources.altius.org/~jvierstra/projects/motif-clustering/releases/v1.0/mm10.all_motifs.v1.0.bed.gz"
+motif_bed_index_url = "https://resources.altius.org/~jvierstra/projects/motif-clustering/releases/v1.0/mm10.all_motifs.v1.0.bed.gz.tbi"
 if (
     motif_bed_url
     and motif_bed_index_url
     and not (
-        (annotation_dir / "mm10.archetype_motifs.v1.0.bed.gz").exists()
-        or (annotation_dir / "mm10.archetype_motifs.v1.0.bed.gz.tbi").exists()
+        (annotation_dir / "mm10.all_motifs.v1.0.bed.gz").exists()
+        or (annotation_dir / "mm10.all_motifs.v1.0.bed.gz.tbi").exists()
     )
 ):
     download_motif(motif_bed_url, motif_bed_index_url, motif_dir=annotation_dir)
-    motif_bed = str(annotation_dir / "mm10.archetype_motifs.v1.0.bed.gz")
+    motif_bed = str(annotation_dir / "mm10.all_motifs.v1.0.bed.gz")
 else:
-    motif_bed = str(annotation_dir / "mm10.archetype_motifs.v1.0.bed.gz")
+    motif_bed = str(annotation_dir / "mm10.all_motifs.v1.0.bed.gz")
 # %%
 peak_bed = "Data/CRE.bed" 
 peaks_motif = query_motif(peak_bed, motif_bed)

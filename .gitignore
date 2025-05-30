@@ -188,6 +188,9 @@ cython_debug/
 *.pkl
 *.bed.gz
 *.bed.gz.tbi
+*.bw
+*.bed
+*.html
 
 # data folder
 Mouse_brain.Guojie/Data/ATAC/wmb_bigwig
