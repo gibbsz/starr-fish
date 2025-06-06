@@ -324,24 +324,26 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
         return fig
 
 
-def calculate_fold_change(cre_celltypes_expression: pd.DataFrame, cell_types_to_use: pd.Series, cell_types_order: pd.Series,
-                          CRE_info: pd.DataFrame, rna_celltypes_expression: pd.DataFrame, volm: pd.Series,
+def calculate_fold_change(cre_cells_expression: pd.DataFrame, cell_types_to_use: pd.Series, cell_types_order: pd.Series,
+                          CRE_info: pd.DataFrame, rna_cells_expression: pd.DataFrame, volm: pd.Series,
                           normalize_by_celltype_rna=False, normalize_by_celltype_volume=False,
                           normalize_by_negative_control=False, lib_size=None,
                           normalize_by_infected_cell=False, normalize_by_libsize=False, filter_zero_counts=False,
                           rank_transform=None):
-    foldchange = pd.DataFrame(index=cell_types_order, columns=cre_celltypes_expression.columns)
+    foldchange = pd.DataFrame(index=cell_types_order, columns=cre_cells_expression.columns)
     if filter_zero_counts:
         # get the number of infected cells for each CRE in each cell type
-        celltype_activity_matrix = cre_celltypes_expression.groupby(cell_types_to_use).sum()
-        non_zero_cells = (cre_celltypes_expression > 0).groupby(cell_types_to_use).sum()
+        celltype_activity_matrix = cre_cells_expression.groupby(cell_types_to_use).sum()
+        non_zero_cells = (cre_cells_expression > 0).groupby(cell_types_to_use).sum()
         # before division, fill zeros with 1
         non_zero_cells[non_zero_cells == 0] = 1
         celltype_activity_matrix = celltype_activity_matrix / non_zero_cells
     else:
         # just average
-        celltype_activity_matrix = cre_celltypes_expression.groupby(cell_types_to_use).mean()
-    celltype_rna_matrix = rna_celltypes_expression.mean(axis=1).groupby(cell_types_to_use).mean()
+        celltype_activity_matrix = cre_cells_expression.groupby(cell_types_to_use).mean()
+    # get proportion of cells express the CRE in each cell type
+    celltype_proportion_matrix = (cre_cells_expression > 0).groupby(cell_types_to_use).mean()
+    celltype_rna_matrix = rna_cells_expression.mean(axis=1).groupby(cell_types_to_use).mean()
     celltype_volm_matrix = volm.groupby(cell_types_to_use).mean()
     if normalize_by_celltype_rna:
         # get cell type RNA
@@ -356,16 +358,20 @@ def calculate_fold_change(cre_celltypes_expression: pd.DataFrame, cell_types_to_
         # get the negative control
         negative_control = CRE_info[CRE_info['labeling_type'] == 'negative control'].index
         negative_control_mean = celltype_activity_matrix.loc[:, negative_control].mean(axis=1)
+        negative_control_proportion_mean = celltype_proportion_matrix.loc[:, negative_control].mean(axis=1)
         # get the negative control lib size
         negative_control_lib_size = lib_size.loc[negative_control].mean(axis=0)
         if normalize_by_libsize:
             negative_control_mean = negative_control_mean / negative_control_lib_size
             celltype_activity_matrix = celltype_activity_matrix / lib_size.values.reshape(1, -1)
+            negative_control_proportion_mean = negative_control_proportion_mean / negative_control_lib_size
+            celltype_proportion_matrix = celltype_proportion_matrix / lib_size.values.reshape(1, -1)
         # normalize by negative control
         celltype_activity_matrix = celltype_activity_matrix / negative_control_mean.values.reshape(-1, 1)
+        celltype_proportion_matrix = celltype_proportion_matrix / negative_control_proportion_mean.values.reshape(-1, 1)
     if normalize_by_infected_cell:
         # get infect rates per cell type
-        infected = ((cre_celltypes_expression >= 1).sum(axis=1) > 0)
+        infected = ((cre_cells_expression >= 1).sum(axis=1) > 0)
         infect_rate_celltype = infected.groupby(cell_types_to_use).mean()
         # normalize by the infected cell type
         celltype_activity_matrix = celltype_activity_matrix / infect_rate_celltype.values.reshape(-1, 1)
@@ -383,8 +389,8 @@ def calculate_fold_change(cre_celltypes_expression: pd.DataFrame, cell_types_to_
         # get the data for the cell type
         celltype_activity = celltype_activity_matrix.loc[celltype]
         # get non_celltype activity
-        non_celltype_activity = cre_celltypes_expression[cell_types_to_use != celltype].mean(axis=0)
-        non_celltype_rna = rna_celltypes_expression.mean(axis=1)[cell_types_to_use != celltype].mean(axis=0)
+        non_celltype_activity = cre_cells_expression[cell_types_to_use != celltype].mean(axis=0)
+        non_celltype_rna = rna_cells_expression.mean(axis=1)[cell_types_to_use != celltype].mean(axis=0)
         non_celltype_volm = volm[cell_types_to_use != celltype].mean()
         if normalize_by_celltype_rna:
             non_celltype_activity = non_celltype_activity / non_celltype_rna
@@ -405,7 +411,7 @@ def calculate_fold_change(cre_celltypes_expression: pd.DataFrame, cell_types_to_
     # remap by cell_types_order
     foldchange = foldchange.reindex(cell_types_order)
     celltype_activity_matrix = celltype_activity_matrix.reindex(cell_types_order)
-    return foldchange, celltype_activity_matrix
+    return foldchange, celltype_activity_matrix, celltype_proportion_matrix
 
 
 def col_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_threshold2=None):
@@ -1461,7 +1467,7 @@ class STARRFISH:
                          normalize_by_libsize=False,
                          filter_zero_counts=False, log_transform=False,
                          rank_transform=None,
-                         bootstrap_number=None, n_jobs=256) -> dict:
+                         bootstrap_number=None, fill_nan=True, n_jobs=256, load_stored=True) -> dict:
         config = {
             'cell_types_to_use': cell_types_to_use,
             'normalize_by_cell_rna': normalize_by_cell_rna,
@@ -1474,11 +1480,12 @@ class STARRFISH:
             "filter_zero_counts": filter_zero_counts,
             'log_transform': log_transform,
             'rank_transform': rank_transform,
-            'bootstrap_number': bootstrap_number}
+            'bootstrap_number': bootstrap_number,
+            'fill_nan': fill_nan,}
         # check if the results already exist
         partial_loaded = False
         fold_change_test_result = None
-        if hasattr(self, 'fold_change_test_results') and hasattr(self, 'fold_change_test_configs'):
+        if hasattr(self, 'fold_change_test_results') and hasattr(self, 'fold_change_test_configs') and load_stored:
             for stored_config, stored_result in zip(self.fold_change_test_configs, self.fold_change_test_results):
                 # only partially check the config, everything the same except bootstrap_number
                 if all(stored_config[k] == config[k] for k in config if k != 'bootstrap_number'):
@@ -1491,29 +1498,29 @@ class STARRFISH:
             partial_loaded = True
         if cell_types_to_use is not None:
             # get the cell types
-            cre_celltypes_expression, rna_celltypes_expression, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
+            cre_cells_expression, rna_cells_expression, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
         else:
-            cre_celltypes_expression = self.get_cre_expression().copy()
-            rna_celltypes_expression = self.get_rna_expression().copy()
+            cre_cells_expression = self.get_cre_expression().copy()
+            rna_cells_expression = self.get_rna_expression().copy()
             cell_types_to_use = self.get_celltypes()
         volm = self.get_tag('obs:volm').copy()
         volm = volm.loc[cell_types_to_use.index]
         # transform rna_celltypes_expression to dataframe
-        rna_celltypes_expression = pd.DataFrame(rna_celltypes_expression, index=cell_types_to_use.index)
+        rna_cells_expression = pd.DataFrame(rna_cells_expression, index=cell_types_to_use.index)
         if normalize_by_cell_rna and normalize_by_cell_volume:
-            rna_per_volume = rna_celltypes_expression / volm.values.reshape(-1, 1)
-            cre_celltypes_expression = cre_celltypes_expression / rna_per_volume.mean(axis=1).values.reshape(-1, 1)
+            rna_per_volume = rna_cells_expression / volm.values.reshape(-1, 1)
+            cre_cells_expression = cre_cells_expression / rna_per_volume.mean(axis=1).values.reshape(-1, 1)
         elif normalize_by_cell_rna and not normalize_by_cell_volume:
-            cre_celltypes_expression = cre_celltypes_expression / rna_celltypes_expression.mean(axis=1).values.reshape(-1, 1)
+            cre_cells_expression = cre_cells_expression / rna_cells_expression.mean(axis=1).values.reshape(-1, 1)
         elif normalize_by_cell_volume and not normalize_by_cell_rna:
-            cre_celltypes_expression = cre_celltypes_expression / volm.values.reshape(-1, 1)
+            cre_cells_expression = cre_cells_expression / volm.values.reshape(-1, 1)
         if log_transform:
-            cre_celltypes_expression = np.log1p(cre_celltypes_expression)
+            cre_cells_expression = np.log1p(cre_cells_expression)
         cre_info = self.get_creinfo().copy()
         if not partial_loaded:
-            foldchange, celltype_activity = calculate_fold_change(
-                cre_celltypes_expression, cell_types_to_use.to_numpy(), np.unique(cell_types_to_use),
-                cre_info, rna_celltypes_expression, volm,
+            foldchange, celltype_activity, celltype_proportion = calculate_fold_change(
+                cre_cells_expression, cell_types_to_use.to_numpy(), np.unique(cell_types_to_use),
+                cre_info, rna_cells_expression, volm,
                 normalize_by_celltype_rna, normalize_by_celltype_volume,
                 normalize_by_negative_control, np.log1p(self.lib_size['counts'] + 1),
                 normalize_by_infected_cell, normalize_by_libsize, filter_zero_counts,
@@ -1531,6 +1538,7 @@ class STARRFISH:
                 'cre_info': cre_info,
                 'foldchange': foldchange,
                 'celltype_activity': celltype_activity,
+                'celltype_proportion': celltype_proportion
             }
         # do bootstrap, if bootstrap_number is not None
         if bootstrap_number is not None:
@@ -1541,8 +1549,8 @@ class STARRFISH:
             with multiprocessing.Pool(processes=n_jobs) as pool:
                 bootstrap_results = pool.starmap(
                     calculate_fold_change, 
-                    [(cre_celltypes_expression, cell_types_to_use.sample(frac=1, replace=False, random_state=i).to_numpy(), 
-                      celltype_activity.index, cre_info, rna_celltypes_expression, volm,
+                    [(cre_cells_expression, cell_types_to_use.sample(frac=1, replace=False, random_state=i).to_numpy(), 
+                      celltype_activity.index, cre_info, rna_cells_expression, volm,
                       normalize_by_celltype_rna, normalize_by_celltype_volume,
                       normalize_by_negative_control, np.log1p(self.lib_size['counts'] + 1),
                       normalize_by_infected_cell, normalize_by_libsize, filter_zero_counts, rank_transform) 
@@ -1550,25 +1558,41 @@ class STARRFISH:
                 )
             foldchange_array = np.ndarray((bootstrap_number, foldchange.shape[0], foldchange.shape[1]))
             activity_array = np.ndarray((bootstrap_number, celltype_activity.shape[0], celltype_activity.shape[1]))
-            for i, (fc, act) in enumerate(bootstrap_results):
+            proportion_array = np.ndarray((bootstrap_number, celltype_proportion.shape[0], celltype_proportion.shape[1]))
+            for i, (fc, act, porp) in enumerate(bootstrap_results):
                 foldchange_array[i] = fc
                 activity_array[i] = act
+                proportion_array[i] = porp
             # calculate p-value for foldchange and celltype_activity
             pvalue = pd.DataFrame(index=foldchange.index, columns=foldchange.columns)
             pvalue_activity = pd.DataFrame(index=celltype_activity.index, columns=celltype_activity.columns)
+            pvalue_proportion = pd.DataFrame(index=celltype_proportion.index, columns=celltype_proportion.columns)
             # if we use normalize_by_negative_control, fill the nan with 0
-            if normalize_by_negative_control:
+            if fill_nan:
                 foldchange_array[np.isnan(foldchange_array)] = 0
                 activity_array[np.isnan(activity_array)] = 0
+                proportion_array[np.isnan(proportion_array)] = 0
             for i in range(foldchange.shape[0]):
                 for j in range(foldchange.shape[1]):
-                    pvalue.iloc[i, j] = np.sum(foldchange_array[:, i, j] >= foldchange.iloc[i, j]) / bootstrap_number
-                    pvalue_activity.iloc[i, j] = np.sum(activity_array[:, i, j] >= celltype_activity.iloc[i, j]) / bootstrap_number
-            qvalue = pvalue.copy()
-            qvalue_activity = pvalue_activity.copy()
-            for i in range(pvalue.shape[1]):
-                qvalue.iloc[:, i] = multitest.multipletests(pvalue.iloc[:, i], method='fdr_bh')[1]
-                qvalue_activity.iloc[:, i] = multitest.multipletests(pvalue_activity.iloc[:, i], method='fdr_bh')[1]
+                    # get nan values
+                    nan_values = np.sum(np.isnan(foldchange_array[:, i, j] >= foldchange.iloc[i, j]))
+                    # if nan_values larger than half of bootstrap_number, set pvalue to 1
+                    pvalue.iloc[i, j] = np.nanmean(foldchange_array[:, i, j] >= foldchange.iloc[i, j]) \
+                        if nan_values < bootstrap_number / 2 else 1.0
+                    # get nan values for activity
+                    nan_values_activity = np.sum(np.isnan(activity_array[:, i, j] >= celltype_activity.iloc[i, j]))
+                    pvalue_activity.iloc[i, j] = np.nanmean(activity_array[:, i, j] >= celltype_activity.iloc[i, j]) \
+                        if nan_values_activity < bootstrap_number / 2 else 1.0
+                    nan_values_proportion = np.sum(np.isnan(proportion_array[:, i, j] >= celltype_proportion.iloc[i, j]))
+                    pvalue_proportion.iloc[i, j] = np.nanmean(proportion_array[:, i, j] >= celltype_proportion.iloc[i, j]) \
+                        if nan_values_proportion < bootstrap_number / 2 else 1.0
+            # do multiple testing correction for all pvalues
+            qvalue = pd.DataFrame(multitest.multipletests(pvalue.astype(float).values.flatten(), method='fdr_bh')[1].reshape(pvalue.shape),
+                                 index=pvalue.index, columns=pvalue.columns)
+            qvalue_activity = pd.DataFrame(multitest.multipletests(pvalue_activity.astype(float).values.flatten(), method='fdr_bh')[1].reshape(pvalue_activity.shape),
+                                           index=pvalue_activity.index, columns=pvalue_activity.columns)
+            qvalue_proportion = pd.DataFrame(multitest.multipletests(pvalue_proportion.astype(float).values.flatten(), method='fdr_bh')[1].reshape(pvalue_proportion.shape),
+                                             index=pvalue_proportion.index, columns=pvalue_proportion.columns)
             # add pvalue and qvalue to cre_info
             for cre in fold_change_test_result['cre_info'].index:
                 # get the best subclass
@@ -1579,12 +1603,17 @@ class STARRFISH:
                     fold_change_test_result['cre_info'].loc[cre, 'qvalue'] = qvalue.loc[best_subclass, cre]
                     fold_change_test_result['cre_info'].loc[cre, 'pvalue_activity'] = pvalue_activity.loc[best_subclass, cre]
                     fold_change_test_result['cre_info'].loc[cre, 'qvalue_activity'] = qvalue_activity.loc[best_subclass, cre]
+                    fold_change_test_result['cre_info'].loc[cre, 'pvalue_proportion'] = pvalue_proportion.loc[best_subclass, cre]
+                    fold_change_test_result['cre_info'].loc[cre, 'qvalue_proportion'] = qvalue_proportion.loc[best_subclass, cre]
+            fold_change_test_result['foldchange_array'] = foldchange_array
             fold_change_test_result['pvalue'] = pvalue
             fold_change_test_result['qvalue'] = qvalue
-            fold_change_test_result['foldchange_array'] = foldchange_array
             fold_change_test_result['activity_array'] = activity_array
             fold_change_test_result['pvalue_activity'] = pvalue_activity
             fold_change_test_result['qvalue_activity'] = qvalue_activity
+            fold_change_test_result['proportion_array'] = proportion_array
+            fold_change_test_result['pvalue_proportion'] = pvalue_proportion
+            fold_change_test_result['qvalue_proportion'] = qvalue_proportion
         # save results to attribute
         if not hasattr(self, 'fold_change_test_results') or not hasattr(self, 'fold_change_test_configs'):
             self.fold_change_test_results = []
@@ -2021,13 +2050,20 @@ class STARRFISH:
             access = model.get_accessibility_estimates()
             infect_rate = model.get_infection_rate_estimate()
             lib_size_estimate = model.get_library_size_factors()['accessibility']
-            adata_mvi.obsm['activity'] = access
+            adata_mvi.obsm['CRE'] = access
             adata_mvi.obsm['infect_rate'] = infect_rate
             adata_mvi.obsm['lib_size'] = lib_size_estimate
             adata_mvi.uns['infection_rate_gene'] = torch.nn.functional.softplus(model.module.infection_rate_gene).detach().cpu().numpy()
         elif use_model == 'SCVI':
             access = model.get_normalized_expression()
-            adata_mvi.obsm['activity'] = access
+            adata_mvi.obsm['X_scvi'] = access[adata_mvi.var.index[adata_mvi.var['modality'] == 'Gene Expression']]
+            adata_mvi.obsm['CRE'] = access[adata_mvi.var.index[adata_mvi.var['modality'] == 'Peaks']]
+        # add uns to adata_mvi
+        adata_mvi.uns['model'] = use_model
+        adata_mvi.uns['model_args'] = model_args
+        for k, v in self.adata.uns.items():
+            if k not in adata_mvi.uns:
+                adata_mvi.uns[k] = v.copy()
         # save to attribute
         if not hasattr(self, 'scvi_results') or not hasattr(self, 'scvi_configs'):
             self.scvi_results = []

@@ -44,7 +44,10 @@ def drop_test(starrfish, test_method):
     return starrfish
 
 def preprocess(adata_path):
-    adata = sc.read_h5ad(adata_path)
+    if type(adata_path) is str:
+        adata = sc.read_h5ad(adata_path)
+    elif type(adata_path) is sc.AnnData:
+        adata = adata_path
     # operate fov, it is the index names
     adata.obs['fov'] = adata.obs.index.str.split('--').str[0]
     # change adata2 obs subclass_name to subclass
@@ -84,7 +87,7 @@ load = True
 if not load:
     adata1 = preprocess(f'{PWD}/Data/scdata_12_11NoT7_BRBB500gn_withCRE_final.h5ad')
     adata2 = preprocess(f'{PWD}/Data/scdata_03_14_BRBB500gn_withCRE_final.h5ad')
-adata_cpm = 'Data/ATAC/cpm_peakBysubclass.csv'
+adata_cpm = 'Data/ATAC_cpm_peakBysubclass.csv'
 if os.path.exists('results/starrfish1.pkl') and load:
     starrfish1 = STARRFISH.load('results/starrfish1.pkl')
 else:
@@ -114,10 +117,13 @@ lib_size = starrfish2_filtered.lib_size['counts']
 # fold to average lib_size
 lib_size_fold = lib_size / lib_size.mean()
 # remove CREs with less than 5 fold enrichment
-cres_to_use_libsize_high = lib_size_fold[lib_size_fold > 1/40].index
+cres_to_use_libsize_high = lib_size_fold[(lib_size > 35)].index
 # remove CRE217
 cres_to_use_libsize_high = cres_to_use_libsize_high[cres_to_use_libsize_high != 'CRE217']
 non_negative_control_cres = lib_size.index[~lib_size.index.isin(starrfish2_filtered.get_negative_control_cres())]
+non_negative_control_cres_libsize_high = non_negative_control_cres.intersection(cres_to_use_libsize_high)
+negative_control_cres = starrfish1_filtered.get_negative_control_cres()
+negative_control_cres_libsize_high = negative_control_cres.intersection(cres_to_use_libsize_high)
 len(cres_to_use_libsize_high), lib_size.loc[cres_to_use_libsize_high].min()
 # %%
 # define cell types to use for filtered data
@@ -127,29 +133,42 @@ cell_types_to_use_1 = cell_types_counts1[cell_types_counts1 > 500].index
 cell_types_to_use_2 = cell_types_counts2[cell_types_counts2 > 500].index
 cell_types_to_use = cell_types_to_use_1.intersection(cell_types_to_use_2)
 # check the negative control counts for those cell types
-negative_control_counts1 = starrfish1_filtered.get_cre_expression()[starrfish1_filtered.get_negative_control_cres()].sum(axis=1).groupby(starrfish1_filtered.get_celltypes()).sum()
-negative_control_counts2 = starrfish2_filtered.get_cre_expression()[starrfish2_filtered.get_negative_control_cres()].sum(axis=1).groupby(starrfish2_filtered.get_celltypes()).sum()
+negative_control_counts1 = starrfish1_filtered.get_cre_expression()[negative_control_cres].groupby(starrfish1_filtered.get_celltypes()).sum()
+negative_control_counts2 = starrfish2_filtered.get_cre_expression()[negative_control_cres].groupby(starrfish2_filtered.get_celltypes()).sum()
+negative_control_sum_counts1 = starrfish1_filtered.get_cre_expression()[starrfish1_filtered.get_negative_control_cres()].sum(axis=1).groupby(starrfish1_filtered.get_celltypes()).sum()
+negative_control_sum_counts2 = starrfish2_filtered.get_cre_expression()[starrfish2_filtered.get_negative_control_cres()].sum(axis=1).groupby(starrfish2_filtered.get_celltypes()).sum()
 # define the cell types by the negative control counts > 50
-cell_types_to_use_nc_1 = negative_control_counts1[negative_control_counts1 > 40].index
-cell_types_to_use_nc_2 = negative_control_counts2[negative_control_counts2 > 40].index
+cell_types_to_use_nc_1 = negative_control_sum_counts1[negative_control_sum_counts1 > 40].index
+cell_types_to_use_nc_2 = negative_control_sum_counts2[negative_control_sum_counts2 > 40].index
 cell_types_to_use_nc = cell_types_to_use_nc_1.intersection(cell_types_to_use_nc_2)
 target_cres = starrfish2_filtered.get_creinfo().index[starrfish2_filtered.get_creinfo()['best_subclass'].isin(cell_types_to_use_nc_2)]
 len(cell_types_to_use), len(cell_types_to_use_nc), len(cell_types_to_use_nc_2), len(target_cres)
 # %% fold change test
-fold_change_test_config = {"cell_types_to_use": None,
-                           "normalize_by_cell_rna": False,
-                           "normalize_by_cell_volume": False,
-                           "normalize_by_celltype_rna": False,
-                           "normalize_by_celltype_volume": False,
-                           "normalize_by_negative_control": True,
-                           "normalize_by_infected_cell": False,
-                           "normalize_by_libsize": False,
-                           "log_transform": False,
-                           "rank_transform": None,
-                           "filter_zero_counts": False,
-                           "bootstrap_number": 5000}
-# res1 = starrfish1_filtered.fold_change_test(**fold_change_test_config)
-res2 = starrfish2_filtered.fold_change_test(**fold_change_test_config)
+for ct in [None, cell_types_to_use.tolist(), cell_types_to_use_nc.tolist(), cell_types_to_use_1.tolist(), cell_types_to_use_nc_1.tolist()]: 
+    fold_change_test_config = {
+        "cell_types_to_use": ct,
+        "normalize_by_cell_rna": False, "normalize_by_cell_volume": False, 
+        "normalize_by_celltype_rna": False, "normalize_by_celltype_volume": False,
+        "normalize_by_negative_control": True, 
+        "normalize_by_infected_cell": False, "normalize_by_libsize": False,
+        "log_transform": False, "rank_transform": None,
+        "filter_zero_counts": False,
+        "bootstrap_number": 10000, "n_jobs": 296}
+    res=starrfish1.fold_change_test(**fold_change_test_config)
+    res=starrfish1_filtered.fold_change_test(**fold_change_test_config)
+for ct in [None, cell_types_to_use.tolist(), cell_types_to_use_nc.tolist(), cell_types_to_use_2.tolist(), cell_types_to_use_nc_2.tolist()]:
+    fold_change_test_config = {
+        "cell_types_to_use": ct,
+        "normalize_by_cell_rna": False, "normalize_by_cell_volume": False, 
+        "normalize_by_celltype_rna": False, "normalize_by_celltype_volume": False,
+        "normalize_by_negative_control": True, 
+        "normalize_by_infected_cell": False, "normalize_by_libsize": False,
+        "log_transform": False, "rank_transform": None,
+        "filter_zero_counts": False,
+        "bootstrap_number": 10000, "n_jobs": 296}
+    res=starrfish2.fold_change_test(**fold_change_test_config)
+    res=starrfish2_filtered.fold_change_test(**fold_change_test_config)
+# do for cells with high nc
 # %% negative control regression test, failed
 # neg_controls_to_check = starrfish2_filtered.get_negative_control_cres()
 # neg_controls_to_check = neg_controls_to_check[neg_controls_to_check != 'CRE334'].tolist()
@@ -164,6 +183,12 @@ res2 = starrfish2_filtered.fold_change_test(**fold_change_test_config)
 #     'log_transform': True,
 # }
 # res2 = starrfish2_filtered.neg_control_regression_test(**neg_control_regression_test_config)
+# %% scvi
+scvi_test_config = {'use_model': 'SCVI'}
+adata2_mvi = starrfish2.scvi(**scvi_test_config)
+adata2_mvi = preprocess(adata2_mvi)
+starrfish2_mvi = STARRFISH(adata2_mvi, atac_cpm='Data/ATAC_cpm_peakBysubclass.csv')
+starrfish2_mvi
 # %% save the test results
 starrfish1 = reload(starrfish1)
 starrfish1.save('results/starrfish1.pkl')
@@ -174,7 +199,6 @@ starrfish2.save('results/starrfish2.pkl')
 starrfish2_filtered = reload(starrfish2_filtered)
 starrfish2_filtered.save('results/starrfish2_filtered.pkl')
 # %% plot figures
-# cell types to use are cell types that have at least 50 cells
 def plot_text(ax, toplot, x, y, adjust=True):
     texts = []
     for i, row in toplot.iterrows():
@@ -1065,7 +1089,7 @@ def plot_cre_activity_distribution_compare(obj1: STARRFISH, obj2: STARRFISH, cel
         ncol = test_results1.shape[1]
     fig = scatter_plot_with_margin_density_by_cre(
         test_results1, test_results2, cres_to_use, 
-        ncol=ncol, nrow=nrow, log=log,
+        ncol=ncol, nrow=nrow, log1=log, log2=log,
         filter_zero=filter_zero, hist=hist, contour=contour)
     plt.close(fig)
     return fig
@@ -1200,11 +1224,12 @@ def negative_control_regression_plot(obj, cell_types_to_check):
         # pos_controls_to_check = starrfish2_filtered.get_positive_control_cres(cell_type)
         pos_controls_to_check = obj.get_atac_z_cres(cell_type, 2)
         # remove CRE217
-        pos_controls_to_check = pos_controls_to_check[pos_controls_to_check != 'CRE217']
+        if pos_controls_to_check is not None:
+            pos_controls_to_check = pos_controls_to_check[pos_controls_to_check != 'CRE217']
         cell_type_ng_counts = np.log1p(negative_control_counts2.loc[cell_type, neg_controls_to_check])
         cell_type_counts = np.log1p(counts2.loc[cell_type, other_to_check])
         # Fit model WITH INTERCEPT
-        X = sm.add_constant(np.log1p(ng_libsize))  # Add intercept term
+        X = sm.add_constant(ng_libsize)  # Add intercept term
         model = sm.OLS(cell_type_ng_counts, X).fit()
         # Generate predictions (include intercept)
         x_vals = np.linspace(np.log1p(lib_size).min(), np.log1p(lib_size).max(), 100)
@@ -1214,7 +1239,7 @@ def negative_control_regression_plot(obj, cell_types_to_check):
         conf_int = predictions.conf_int(alpha=0.05)
         # add a linear regression line
         # sns.scatterplot(x=np.log1p(ng_libsize), y=cell_type_ng_counts, ax=ax_, color='blue')
-        sns.scatterplot(x=np.log1p(ng_libsize), y=cell_type_ng_counts, ax=ax_, color='blue')
+        sns.scatterplot(x=ng_libsize, y=cell_type_ng_counts, ax=ax_, color='blue')
         # plot all other CREs
         sns.scatterplot(x=np.log1p(lib_size.loc[other_to_check]), y=cell_type_counts, ax=ax_, color='gray', alpha=0.5)
         # plot positive controls
@@ -1455,7 +1480,7 @@ def draw_custom_dendrogram(cre_order_token, ordered_cres, ax, reorder_penalty=0.
     D = squareform(dist_matrix)
     Z = linkage(D, method='average')
     Z_opt = optimal_leaf_ordering(Z, D)
-    dendrogram(Z_opt, labels=ordered_cres, orientation='left', ax=ax)
+    dendrogram(Z_opt, labels=ordered_cres, orientation='left', ax=ax, color_threshold=0.5 * np.max(Z_opt[:, 2]))
     ax.set_yticklabels([])
     ax.tick_params(left=False)
 
@@ -1479,8 +1504,16 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
         target_df = pd.DataFrame(index=q_value.index, columns=q_value.columns)
         for cre in q_value.columns:
             best_subclass = positive_control_info.loc[cre, 'best_subclass']
+            if best_subclass == 'Negative Control':
+                # if the best subclass is negative control, we skip this cre
+                target_df.loc[:, cre] = 'Negative Control'
+                continue
+            elif best_subclass == 'CRE':
+                # if the best subclass is CREs, we skip this cre
+                target_df.loc[:, cre] = 'CRE'
+                continue
             # significant cres
-            cell_types = q_value[cre].index[q_value[cre] <= 0.05]
+            cell_types = q_value[cre].index[q_value[cre] <= 0.01]
             # on target cell types
             if best_subclass in cell_types:
                 target_df.loc[best_subclass, cre] = 'on-target'
@@ -1494,7 +1527,11 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
                 target_df.loc[cell_types, cre] = 'off-target'
         # divide the cres into 4 categories: only on-target, on-target + off-target, only off-target, no target
         def assign_cre_type(x):
-            if 'on-target' in x.values:
+            if 'Negative Control' in x.values:
+                return 'Negative Controls'
+            elif 'CRE' in x.values:
+                return 'CREs'
+            elif 'on-target' in x.values:
                 if 'off-target' in x.values:
                     return 'Mix-target'
                 else:
@@ -1525,7 +1562,7 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
     size_min, size_max = toplot[size_name].min(), toplot[size_name].max()
     # plot dot plot, no edge color, use 4 sub plots
     # Set the height ratios for the subplots
-    cre_categories = np.array(['On-target', 'Mix-target', 'Off-target', 'No target', 'CREs'])
+    cre_categories = np.array(['On-target', 'Mix-target', 'Off-target', 'No target', 'CREs', 'Negative Controls'])
     height_ratios = np.array([sum(cre_type == category) for category in cre_categories])
     # remove the categories with 0 counts
     cre_categories = cre_categories[height_ratios != 0]
@@ -1546,14 +1583,14 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
         # Cluster CREs within category
         activity_subset = activity.loc[category_cres]  # Use pre-transposed data
         q_value_subset = q_value.loc[category_cres]
-        if cre_categories != 'No target':
+        if category == 'CREs':
             # set the orders based on q-value
             # create a order token for each CRE
-            max_sig_n = (q_value_subset >= -np.log10(0.05)).sum(axis=1).max()
+            max_sig_n = (q_value_subset >= -np.log10(0.01)).sum(axis=1).max()
             cre_order_token = []
             for j, cre in enumerate(category_cres):
                 # get significant cell types
-                significant_cell_types = q_value_subset.loc[cre][q_value_subset.loc[cre] >= -np.log10(0.05)].index
+                significant_cell_types = q_value_subset.loc[cre][q_value_subset.loc[cre] >= -np.log10(0.01)].index
                 # get the index of the cell types in cell_types_to_use
                 significant_cell_types_idx = cell_types_to_use.get_indexer(significant_cell_types) + 1
                 significant_q_value = q_value_subset.loc[cre][significant_cell_types].values
@@ -1565,26 +1602,21 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
             # sort the cres by the order token
             cre_order_token = np.array(cre_order_token)
             # sort cres by the order token
-            ordered_cres = category_cres[np.lexsort(cre_order_token.T[::-1,:])]
-            cre_order_token = cre_order_token[np.lexsort(cre_order_token.T[::-1,:])]
+            if cre_order_token.shape[1] > 0:
+                ordered_cres = category_cres[np.lexsort(cre_order_token.T[::-1,:])]
+                cre_order_token = cre_order_token[np.lexsort(cre_order_token.T[::-1,:])]
+            else:
+                ordered_cres = category_cres
+                cre_order_token = np.zeros((len(category_cres), 0))
             # Sort data by clustered order
             activity_subset = activity_subset.loc[ordered_cres].copy()
             q_value_subset = q_value.loc[ordered_cres].copy()
             target_df_subset = target_df.loc[:, ordered_cres].copy()
-        # do hierarchical clustering
-        # make in significant activity to 0
-        # hie_data = (q_value_subset >= -np.log10(0.05))
-        # # cos_dists = pdist(hie_data.values, metric='cosine')
-        # # Z = linkage(cos_dists, method='average')
-        # D = pdist(hie_data.values, metric='euclidean')
-        # Z = linkage(D, method='ward')
-        # Z_opt = optimal_leaf_ordering(Z, D)
-        # # get new ordered cres
-        # ordered_cres = hie_data.index[leaves_list(Z_opt)]
-        # Reorder activity_subset and q_value_subset based on ordered_cres
-        # activity_subset = activity_subset.loc[ordered_cres].copy()
-        # q_value_subset = q_value_subset.loc[ordered_cres].copy()
-        # target_df_subset = target_df_subset.loc[:, ordered_cres].copy()
+        else:
+            ordered_cres = category_cres
+            target_df_subset = target_df.loc[:, ordered_cres].copy()
+            cre_order_token = np.zeros((len(category_cres), 0))
+            max_sig_n = 0
         subset = pd.DataFrame({size_name: q_value_subset.T.values.flatten(),
                                hue_name: activity_subset.T.values.flatten(),
                                'cell_types': list(cell_types_to_use.values.repeat(len(ordered_cres))),
@@ -1596,7 +1628,6 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
                         hue_norm=(hue_min, hue_max), size_norm=(size_min, size_max),
                         sizes=(3, 250), alpha=0.8, palette='coolwarm', ax=ax)
         # dendrogram
-        # dendrogram(Z_opt, orientation='left', labels=ordered_cres, ax=ax_dend)
         draw_custom_dendrogram(cre_order_token[:, :max_sig_n], ordered_cres, ax_dend)
         # ax.invert_yaxis()
         ax_dend.axis('off')
@@ -1637,7 +1668,10 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
         if category == 'CREs':
             # remove y axis label
             ax.set_ylabel('')
-            ax.set_yticklabels([])
+            # set y ticks font size to 8
+            ax.tick_params(axis='y', which='both', labelsize=8)
+        elif category == 'Negative Controls':
+            ax.tick_params(axis='y', which='both', labelsize=8)
         else:
             ax.set_ylabel(category)
     # put legends to right of the plot
@@ -1646,12 +1680,28 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
     plt.close(fig)
     return fig
 # %% consistency between two experiments
+fold_change_test_config = {
+        "cell_types_to_use": cell_types_to_use_nc.tolist(),
+        "normalize_by_cell_rna": False, "normalize_by_cell_volume": False, 
+        "normalize_by_celltype_rna": False, "normalize_by_celltype_volume": False,
+        "normalize_by_negative_control": True, 
+        "normalize_by_infected_cell": False, "normalize_by_libsize": False,
+        "log_transform": False, "rank_transform": None,
+        "filter_zero_counts": False,
+        "bootstrap_number": 10000, "n_jobs": 296}
 fig = plot_celltype_activity_distribution_compare(
     starrfish1_filtered, starrfish2_filtered, cell_types_to_use=cell_types_to_use_nc, cres_to_use=cres_to_use_libsize_high,
     test_method='fold_change', test_configs=fold_change_test_config, log=True, filter_zero=False,
     show_mean_std=False, show_positive_control=False)
 fig.savefig(f'results/fold_change/expr1_expr2_celltype_distribution.pdf')
-# %% fold_change test, CRE-wise, just add up counts
+# consistency between two experiments, stats test
+res1 = starrfish1.fold_change_test(**fold_change_test_config)
+res2 = starrfish2.fold_change_test(**fold_change_test_config)
+res1_q = pd.DataFrame(multitest.multipletests(res1['pvalue_activity'].astype(float).values.flatten(), method='fdr_bh')[1].reshape(res1['pvalue_activity'].shape), 
+                      index=res1['pvalue_activity'].index, columns=res1['pvalue_activity'].columns)
+res2_q = pd.DataFrame(multitest.multipletests(res2['pvalue_activity'].astype(float).values.flatten(), method='fdr_bh')[1].reshape(res2['pvalue_activity'].shape), 
+                      index=res2['pvalue_activity'].index, columns=res2['pvalue_activity'].columns)
+# %%fold_change test, CRE-wise
 fold_change_test_config = {"cell_types_to_use": None,
                            "normalize_by_cell_rna": False,
                            "normalize_by_cell_volume": False,
@@ -1720,7 +1770,7 @@ fig.tight_layout()
 fig.savefig(f'results/fold_change/expr2_cre_cumulative_prob.pdf')
 # %%
 # get the p-value only in those cell types
-fold_change_test_config = {"cell_types_to_use": cell_types_to_use_nc_2.to_list(),
+fold_change_test_config = {"cell_types_to_use": cell_types_to_use_nc_2.tolist(),
                            "normalize_by_cell_rna": False,
                            "normalize_by_cell_volume": False,
                            "normalize_by_celltype_rna": False,
@@ -1731,19 +1781,33 @@ fold_change_test_config = {"cell_types_to_use": cell_types_to_use_nc_2.to_list()
                            "log_transform": False,
                            "rank_transform": None,
                            "filter_zero_counts": False,
-                           "bootstrap_number": 5000,
-                           'n_jobs': 256}
+                           "bootstrap_number": 10000,
+                           'fill_nan': True,
+                           'n_jobs': 256, 
+                           'load_stored': True,}
 res2 = starrfish2_filtered.fold_change_test(**fold_change_test_config)
 # for each CRE, do q-value correction
-res2_q = res2['qvalue_activity'].copy()
+res2_q = res2['pvalue_activity'].copy()
+# get the max cell for each CRE and cell type
+max_cell_activity = starrfish2_filtered.get_cre_expression().groupby(starrfish2_filtered.get_celltypes()).max()
+sum_cell_activity = starrfish2_filtered.get_cre_expression().groupby(starrfish2_filtered.get_celltypes()).sum()
+max_cell_contribution = (max_cell_activity / sum_cell_activity).loc[cell_types_to_use_nc_2]
+# for any max_cell_contribution > 0.5, we set the pvalue to 1
+res2_q[max_cell_contribution > 0.5] = 1
+# q-value correction
+res2_q = pd.DataFrame(multitest.multipletests(res2_q.values.flatten(), method='fdr_bh')[1].reshape(res2_q.shape),
+                      index=res2_q.index, columns=res2_q.columns)
+neg_q = res2_q[negative_control_cres]
+neg_q.loc[(neg_q <= 0.01).any(axis=1), (neg_q <= 0.01).any(axis=0)]
+# %%
 target_df = pd.DataFrame(index=res2_q.columns, columns=['on-target', 'off-target', 'best_subclass'])
 for cre in res2_q.columns:
     # get on-target cell types
     target_celltypes = starrfish2_filtered.get_creinfo().loc[cre, 'best_subclass']
     if isinstance(target_celltypes, str):
         target_celltypes = [target_celltypes]
-    target_df.loc[cre, 'on-target'] = res2_q.index[res2_q[cre] <= 0.05].isin(target_celltypes).sum()
-    target_df.loc[cre, 'off-target'] = len(res2_q.index[res2_q[cre] <= 0.05]) - target_df.loc[cre, 'on-target']
+    target_df.loc[cre, 'on-target'] = res2_q.index[res2_q[cre] <= 0.01].isin(target_celltypes).sum()
+    target_df.loc[cre, 'off-target'] = len(res2_q.index[res2_q[cre] <= 0.01]) - target_df.loc[cre, 'on-target']
     target_df.loc[cre, 'best_subclass'] = target_celltypes
 print(target_df['on-target'].sum(), (target_df['off-target'] > 0).sum(), ((target_df['off-target']==0) & (target_df['on-target'] > 0)).sum())
 # volcano plot to visualize the on-target q-value
@@ -1760,7 +1824,7 @@ fig, ax = plt.subplots(figsize=(6, 6))
 # clip min qvalue to 1e-5
 toplot['foldchange'] = toplot['foldchange'].clip(lower=1e-2)
 toplot['qvalue_activity'] = toplot['qvalue_activity'].clip(lower=1/5000)
-toplot['significant'] = (toplot['qvalue_activity'] <= 0.05) & (toplot['foldchange'] > 1)
+toplot['significant'] = (toplot['qvalue_activity'] <= 0.01) & (toplot['foldchange'] > 1)
 # log transform
 toplot['foldchange'] = np.log10(toplot['foldchange'])
 toplot['qvalue_activity'] = -np.log10(toplot['qvalue_activity'])
@@ -1774,11 +1838,19 @@ ax.set_ylabel('-log10(qvalue)')
 plt.close(fig)
 fig.savefig(f'results/fold_change/expr2_cre_volcano.pdf')
 #%% plot a dot plot of all cres
-fig = cre_pval_dotplot(res2['qvalue_activity'], res2['celltype_activity'], 
-                       target_df.index[(target_df['on-target']!=0) | (target_df['off-target']!=0)].intersection(non_negative_control_cres),
-                       cell_types_to_use_nc_2,
-                       positive_control_info=None, figsize=(8, 48))
+have_target_cres = target_df.index[(target_df['on-target']!=0) | (target_df['off-target']!=0)].intersection(non_negative_control_cres)
+cre_info = starrfish2_filtered.get_creinfo().copy()
+cre_info['best_subclass'] = 'CRE'
+cre_info.loc[negative_control_cres, 'best_subclass'] = 'Negative Control'
+fig = cre_pval_dotplot(res2_q, res2['celltype_activity'], 
+                       have_target_cres, cell_types_to_use_nc_2,
+                       positive_control_info=None, figsize=(8, 20))
 fig.savefig(f'results/fold_change/expr2_qvalue_dotplot_all_cres.pdf', bbox_inches='tight')
+# plot negative control cres + have target cres
+fig = cre_pval_dotplot(res2_q, res2['celltype_activity'], 
+                       negative_control_cres.union(have_target_cres), cell_types_to_use_nc_2,
+                       positive_control_info=cre_info, figsize=(8, 20))
+fig.savefig(f'results/fold_change/expr2_qvalue_dotplot_negative_control_cres.pdf', bbox_inches='tight')
 # %% visualization
 # visulization of a specific CRE by atac signals
 for cre in significant_cres:
@@ -1941,4 +2013,60 @@ for cell_type in cell_types_to_use_nc_2:
     genes_of_interest.extend(homer_genes_mouse)
 genes_of_interest = pd.Series(genes_of_interest).dropna().unique()
 np.save('results/homer_motif/genes_of_interest.npy', genes_of_interest)
+
+# %%
+# preprocess the chromatine state
+chromstate = pd.read_csv('Data/allCRE.amb.PairedTag.annot.tsv', sep='\t')
+chromstate_a = chromstate[chromstate['chromHMMState'] == 'Chr-A']
+chromstate_o = chromstate[chromstate['chromHMMState'] == 'Chr-O']
+# %%
+import pyranges as pr
+# Prepare CRE info
+creinfo = starrfish2_filtered.get_creinfo()
+creinfo = creinfo[creinfo['labeling_type'] != 'negative control']
+creinfo = creinfo[['Chrom', 'Start', 'End']].copy()
+creinfo.columns = ['Chromosome', 'Start', 'End']
+creinfo['Start'] = creinfo['Start'].astype(int)
+creinfo['End'] = creinfo['End'].astype(int)
+creinfo['CRE_ID'] = creinfo.index  # keep track of original rows
+cre_gr = pr.PyRanges(creinfo)
+
+# Output containers
+celltypes = chromstate['subclass'].unique()
+cre_chrom_a = pd.DataFrame(index=creinfo['CRE_ID'], columns=celltypes)
+cre_chrom_o = pd.DataFrame(index=creinfo['CRE_ID'], columns=celltypes)
+
+# Loop over cell types
+for celltype in celltypes:
+    for chrom_label, chrom_df, target_df in zip(
+        ['a', 'o'], [chromstate_a, chromstate_o], [cre_chrom_a, cre_chrom_o]
+    ):
+        subset = chrom_df[chrom_df['subclass'] == celltype].copy()
+        subset = subset[['chrom', 'startFrom', 'endTo']].copy()
+        subset.columns = ['Chromosome', 'Start', 'End']
+        subset['Start'] = subset['Start'].astype(int)
+        subset['End'] = subset['End'].astype(int)
+        subset_gr = pr.PyRanges(subset)
+
+        # Perform intersection
+        intersection = cre_gr.join(subset_gr)
+
+        # Compute overlap length
+        overlap_df = intersection.df
+        overlap_df['overlap'] = (
+            overlap_df[['Start_b', 'Start']].max(axis=1) -
+            overlap_df[['End_b', 'End']].min(axis=1)
+        ) * -1  # negative because min(start) - max(end) < 0
+
+        overlap_df = overlap_df[overlap_df['overlap'] > 0]
+
+        # Normalize by CRE length
+        overlap_df['cre_len'] = overlap_df['End'] - overlap_df['Start']
+        overlap_df['overlap_ratio'] = overlap_df['overlap'] / overlap_df['cre_len']
+
+        # Aggregate by CRE_ID: keep max overlap per CRE
+        best_overlap = overlap_df.groupby('CRE_ID')['overlap_ratio'].max()
+
+        # Fill results
+        target_df[celltype] = best_overlap.reindex(creinfo['CRE_ID']).fillna(0).values
 # %%
