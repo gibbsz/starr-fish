@@ -1583,7 +1583,7 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
         # Cluster CREs within category
         activity_subset = activity.loc[category_cres]  # Use pre-transposed data
         q_value_subset = q_value.loc[category_cres]
-        if category == 'CREs':
+        if category != 'No target':
             # set the orders based on q-value
             # create a order token for each CRE
             max_sig_n = (q_value_subset >= -np.log10(0.01)).sum(axis=1).max()
@@ -1851,6 +1851,16 @@ fig = cre_pval_dotplot(res2_q, res2['celltype_activity'],
                        negative_control_cres.union(have_target_cres), cell_types_to_use_nc_2,
                        positive_control_info=cre_info, figsize=(8, 20))
 fig.savefig(f'results/fold_change/expr2_qvalue_dotplot_negative_control_cres.pdf', bbox_inches='tight')
+# for each CRE, select the best subclass based on best atac_cpm
+for cre in cre_info.index:
+    if cre_info.loc[cre, 'best_subclass'] != 'Negative Control':
+        cre_atac = starrfish2_filtered.atac_cpm.loc[cell_types_to_use_nc_2.intersection(starrfish2_filtered.atac_cpm.index), cre]
+        best_subclass = cre_atac.idxmax()
+        cre_info.loc[cre, 'best_subclass'] = best_subclass
+fig = cre_pval_dotplot(res2_q, res2['celltype_activity'], 
+                       negative_control_cres.union(have_target_cres), cell_types_to_use_nc_2,
+                       positive_control_info=cre_info, figsize=(8, 20))
+fig.savefig(f'results/fold_change/expr2_qvalue_dotplot_best_atac.pdf', bbox_inches='tight')
 # %% visualization
 # visulization of a specific CRE by atac signals
 for cre in significant_cres:
