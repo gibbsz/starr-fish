@@ -591,7 +591,8 @@ class STARRFISH:
                  cre_tag = 'obsm:CRE', celltype_tag='obs:subclass', spatial_tag='obsm:X_spatial', creinfo_tag='uns:CRE_info',
                  atac_cpm: Union[pd.DataFrame, str] = 'Data/ATAC/cpm_peakBysubclass.csv',
                  atac_counts: Union[pd.DataFrame, str] = 'Data/ATAC/count_peakBysubclass.csv',
-                 lib_size: Union[pd.DataFrame, str] = 'Data/SFv8_400CRE_nanopore_counts.csv'):
+                 lib_size: Union[pd.DataFrame, str] = 'Data/SFv8_400CRE_nanopore_counts.csv',
+                 log_lib_size: bool = True):
         if isinstance(adata, str):
             self.adata_path = adata
             self.load_adata(adata)
@@ -692,6 +693,12 @@ class STARRFISH:
             lib_size = lib_size.loc[lib_size.index.isin(self.get_creinfo().index)]
             # reindex the lib_size to match the CRE_info
             lib_size = lib_size.reindex(self.get_creinfo().index, fill_value=0)
+            self.lib_size_raw = lib_size.copy()
+            if log_lib_size:
+                lib_size = np.log1p(lib_size)
+            else:
+                # assign 0.5 to the zeros
+                lib_size[lib_size == 0] = 0.5
             self.lib_size = lib_size
             
     def save(self, path, overwrite_adata=False):
@@ -742,7 +749,22 @@ class STARRFISH:
             cpm.index = cre_info.index
         # transpose the cpm
         self.__setattr__(attr_to_add, cpm.transpose())
-        
+    
+    def load_libsize(self, lib_size_path: str, log_transform: bool = True):
+        lib_size = pd.read_csv(lib_size_path, index_col=0)
+        # only keep the cres that are in cre_info
+        cre_info = self.get_creinfo().copy()
+        lib_size = lib_size.loc[lib_size.index.isin(cre_info.index)]
+        # reindex the lib_size to match the CRE_info
+        lib_size = lib_size.reindex(cre_info.index, fill_value=0)
+        self.lib_size_raw = lib_size.copy()
+        if log_transform:
+            lib_size = np.log1p(lib_size)
+        else:
+            # assign 0.5 to the zeros
+            lib_size[lib_size == 0] = 0.5
+        self.lib_size = lib_size
+    
     def get_tag(self, tag) -> Union[pd.DataFrame, pd.Series]:
         # get the CREs
         tag_attr = tag.split(':')[0]
@@ -1522,7 +1544,7 @@ class STARRFISH:
                 cre_cells_expression, cell_types_to_use.to_numpy(), np.unique(cell_types_to_use),
                 cre_info, rna_cells_expression, volm,
                 normalize_by_celltype_rna, normalize_by_celltype_volume,
-                normalize_by_negative_control, np.log1p(self.lib_size['counts'] + 1),
+                normalize_by_negative_control, self.lib_size['counts'],
                 normalize_by_infected_cell, normalize_by_libsize, filter_zero_counts,
                 rank_transform,
             )
@@ -1552,7 +1574,7 @@ class STARRFISH:
                     [(cre_cells_expression, cell_types_to_use.sample(frac=1, replace=False, random_state=i).to_numpy(), 
                       celltype_activity.index, cre_info, rna_cells_expression, volm,
                       normalize_by_celltype_rna, normalize_by_celltype_volume,
-                      normalize_by_negative_control, np.log1p(self.lib_size['counts'] + 1),
+                      normalize_by_negative_control, self.lib_size['counts'],
                       normalize_by_infected_cell, normalize_by_libsize, filter_zero_counts, rank_transform) 
                      for i in range(bootstrap_number)]
                 )
@@ -1684,7 +1706,11 @@ class STARRFISH:
         # if 'sum' in negative_control, then prepare a lib size for sum negative control
         if 'sum' in negative_control:
             tmp = [cre for cre in negative_control if cre != 'sum']
-            lib_size.loc['sum'] = lib_size.loc[tmp].sum()
+            # check if we log transform the lib or not
+            if self.lib_size_raw is not None:
+                lib_size.loc['sum'] = np.log1p(self.lib_size_raw['counts'].loc[tmp].sum())
+            else:
+                lib_size.loc['sum'] = lib_size.loc[tmp].sum()
             cre_celltypes_bulk_expression['sum'] = cre_celltypes_bulk_expression[tmp].sum(axis=1)
         # apply log transform
         if log_transform:
@@ -2233,7 +2259,7 @@ class STARRFISH:
         plot = igv(tracks, region={"chrom": chrom, "start": int(start)-padding, "end": int(end)+padding}, server_port=18089)
         return plot
     
-    def plot_pygenometracks(self, cell_types_to_use, cre, outFileName, region=None,
+    def plot_pygenometracks(self, cell_types_to_use, cre, mod, outFileName, region=None,
                             padding=2500, nbins=700, max=None, min=None, width=80, height=80):
         # order the cell_types_to_use by name order
         cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
@@ -2243,7 +2269,7 @@ class STARRFISH:
         cell_types_to_use = pd.Index(cell_types_to_use[np.argsort(cell_types_to_use_cluster_number)])
         track_file='tmp.ini'
         available_tracks = PlotTracks.get_available_tracks()
-        bw_list = pd.read_csv('Data/ATAC/bw_list.csv', index_col=0)
+        bw_list = pd.read_csv(f'Data/{mod}_meta.csv', index_col=0)
         # set index as cell types
         bw_list = bw_list.set_index('celltype')
         out = open(track_file, 'w')
@@ -2263,7 +2289,7 @@ class STARRFISH:
             track_added = False
             if cell_type in bw_list.index:
                 bw_file = bw_list.loc[cell_type]['path']
-                file_h = open(f'Data/ATAC/wmb_bigwig/subclass_macs2/{bw_file}', 'r')
+                file_h = open(f'{bw_file}', 'r')
             else:
                 continue
             for track_type, track_class in available_tracks.items():
