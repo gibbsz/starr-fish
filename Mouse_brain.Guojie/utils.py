@@ -327,7 +327,7 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
 def calculate_fold_change(cre_cells_expression: pd.DataFrame, cell_types_to_use: pd.Series, cell_types_order: pd.Series,
                           CRE_info: pd.DataFrame, rna_cells_expression: pd.DataFrame, volm: pd.Series,
                           normalize_by_celltype_rna=False, normalize_by_celltype_volume=False,
-                          normalize_by_negative_control=False, lib_size=None,
+                          normalize_by_negative_control=False, lib_size=None, normalize_by_total_cre=False,
                           normalize_by_infected_cell=False, normalize_by_libsize=False, filter_zero_counts=False,
                           rank_transform=None):
     foldchange = pd.DataFrame(index=cell_types_order, columns=cre_cells_expression.columns)
@@ -351,7 +351,7 @@ def calculate_fold_change(cre_cells_expression: pd.DataFrame, cell_types_to_use:
     if normalize_by_celltype_volume:
         # get cell type volume
         celltype_activity_matrix = celltype_activity_matrix / celltype_volm_matrix.values.reshape(-1, 1)
-    if normalize_by_libsize and not normalize_by_negative_control:
+    if normalize_by_libsize and not normalize_by_negative_control and not normalize_by_total_cre:
         # normalize by lib size
         celltype_activity_matrix = celltype_activity_matrix / lib_size.values.reshape(1, -1)
     if normalize_by_negative_control:
@@ -369,6 +369,12 @@ def calculate_fold_change(cre_cells_expression: pd.DataFrame, cell_types_to_use:
         # normalize by negative control
         celltype_activity_matrix = celltype_activity_matrix / negative_control_mean.values.reshape(-1, 1)
         celltype_proportion_matrix = celltype_proportion_matrix / negative_control_proportion_mean.values.reshape(-1, 1)
+    if normalize_by_total_cre:
+        # get total cre counts
+        total_cre = celltype_activity_matrix.sum(axis=1)
+        if normalize_by_libsize:
+            celltype_activity_matrix = celltype_activity_matrix / lib_size.values.reshape(1, -1)
+        celltype_activity_matrix = celltype_activity_matrix / total_cre.values.reshape(-1, 1)
     if normalize_by_infected_cell:
         # get infect rates per cell type
         infected = ((cre_cells_expression >= 1).sum(axis=1) > 0)
@@ -709,12 +715,12 @@ class STARRFISH:
             if not os.path.exists(self.adata_path) or overwrite_adata:
                 self.adata.write(self.adata_path)
         # drop self.adata and save other attributes
-        adata = self.adata.copy()
+        # adata = self.adata.copy()
         self.adata = None
         with open(path, 'wb') as f:
             pickle.dump(self, f)
         # put adata back
-        self.adata = adata
+        # self.adata = adata
             
     @staticmethod
     def load(path, adata: Union[sc.AnnData, str]=None) -> 'STARRFISH':
@@ -1486,7 +1492,7 @@ class STARRFISH:
                          normalize_by_cell_rna=False, normalize_by_cell_volume=False,
                          normalize_by_celltype_rna=False, normalize_by_celltype_volume=False,
                          normalize_by_negative_control=False, normalize_by_infected_cell=False,
-                         normalize_by_libsize=False,
+                         normalize_by_total_cre=False, normalize_by_libsize=False,
                          filter_zero_counts=False, log_transform=False,
                          rank_transform=None,
                          bootstrap_number=None, fill_nan=True, n_jobs=256, load_stored=True) -> dict:
@@ -1497,6 +1503,7 @@ class STARRFISH:
             'normalize_by_celltype_rna': normalize_by_celltype_rna,
             'normalize_by_celltype_volume': normalize_by_celltype_volume,
             'normalize_by_negative_control': normalize_by_negative_control,
+            'normalize_by_total_cre': normalize_by_total_cre,
             'normalize_by_infected_cell': normalize_by_infected_cell,
             'normalize_by_libsize': normalize_by_libsize,
             "filter_zero_counts": filter_zero_counts,
@@ -1544,7 +1551,7 @@ class STARRFISH:
                 cre_cells_expression, cell_types_to_use.to_numpy(), np.unique(cell_types_to_use),
                 cre_info, rna_cells_expression, volm,
                 normalize_by_celltype_rna, normalize_by_celltype_volume,
-                normalize_by_negative_control, self.lib_size['counts'],
+                normalize_by_negative_control, self.lib_size['counts'], normalize_by_total_cre, 
                 normalize_by_infected_cell, normalize_by_libsize, filter_zero_counts,
                 rank_transform,
             )
@@ -2283,7 +2290,15 @@ class STARRFISH:
         [spacer]
         # height of space in cm (optional)
         height = 0.5
-
+        
+        [test gtf collapsed]
+        file = /share/vault/Users/gz2294/Data/gencode.v48.annotation.gtf.gz # Replace with the path to your GTF file
+        height = 10
+        title = gtf from ensembl one entry per gene
+        merge_transcripts = true
+        prefered_name = gene_name
+        fontsize = 12
+        file_type = bed
         """)
         for i, cell_type in enumerate(cell_types_to_use):
             track_added = False
