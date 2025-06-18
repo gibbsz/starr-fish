@@ -84,7 +84,7 @@ def preprocess(adata_path):
 # %% preprocess and load data
 # load data and form STARRFISH object
 load = True
-load_full_stats = True
+load_full_stats = False
 if not load:
     adata1 = preprocess(f'{PWD}/Data/scdata_12_11NoT7_BRBB500gn_withCRE_final.h5ad')
     adata2 = preprocess(f'{PWD}/Data/scdata_03_14_BRBB500gn_withCRE_final.h5ad')
@@ -96,10 +96,10 @@ if load:
         starrfish1_filtered = STARRFISH.load('results/full_stats/starrfish1_filtered.pkl')
         starrfish2_filtered = STARRFISH.load('results/full_stats/starrfish2_filtered.pkl')
     else:
-        starrfish1 = STARRFISH.load('results/starrfish1.pkl')
-        starrfish2 = STARRFISH.load('results/starrfish2.pkl')
-        starrfish1_filtered = STARRFISH.load('results/starrfish1_filtered.pkl')
-        starrfish2_filtered = STARRFISH.load('results/starrfish2_filtered.pkl')
+        starrfish1 = STARRFISH.load('results/simple/starrfish1.pkl')
+        starrfish2 = STARRFISH.load('results/simple/starrfish2.pkl')
+        starrfish1_filtered = STARRFISH.load('results/simple/starrfish1_filtered.pkl')
+        starrfish2_filtered = STARRFISH.load('results/simple/starrfish2_filtered.pkl')
 else:
     starrfish1 = STARRFISH(adata1, atac_cpm=adata_cpm)
     starrfish2 = STARRFISH(adata2, atac_cpm=adata_cpm)
@@ -142,8 +142,8 @@ negative_control_sum_counts1 = starrfish1_filtered.get_cre_expression()[starrfis
 negative_control_sum_counts2 = starrfish2_filtered.get_cre_expression()[starrfish2_filtered.get_negative_control_cres()].sum(axis=1).groupby(starrfish2_filtered.get_celltypes()).sum()
 common_cell_types_sum_20_nc = negative_control_sum_counts1[negative_control_sum_counts1 > 20].index.intersection(negative_control_sum_counts2[negative_control_sum_counts2 > 20].index)
 # define the cell types by the negative control counts > 50
-cell_types_to_use_nc_1 = negative_control_sum_counts1[negative_control_sum_counts1 > 5].index
-cell_types_to_use_nc_2 = negative_control_sum_counts2[negative_control_sum_counts2 > 5].index
+cell_types_to_use_nc_1 = negative_control_sum_counts1[negative_control_sum_counts1 > 10].index
+cell_types_to_use_nc_2 = negative_control_sum_counts2[negative_control_sum_counts2 > 10].index
 cell_types_to_use_nc = cell_types_to_use_nc_1.intersection(cell_types_to_use_nc_2)
 target_cres = starrfish2_filtered.get_creinfo().index[starrfish2_filtered.get_creinfo()['best_subclass'].isin(cell_types_to_use_nc_2)]
 len(cell_types_to_use), len(cell_types_to_use_nc), len(cell_types_to_use_nc_2), len(target_cres)
@@ -1742,7 +1742,7 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
 # effective fold change test config, not used it
 fold_change_test_config = {
         "cell_types_to_use": None,
-        "normalize_by_cell_rna": True, "normalize_by_cell_volume": True, 
+        "normalize_by_cell_rna": False, "normalize_by_cell_volume": False, 
         "normalize_by_celltype_rna": False, "normalize_by_celltype_volume": False,
         "normalize_by_negative_control": True, 
         "normalize_by_infected_cell": False, "normalize_by_libsize": False,
@@ -1797,7 +1797,6 @@ res2_colsums = res2.loc[cell_types_to_use].sum(axis=0)
 res2_rowsums = res2.loc[cell_types_to_use].sum(axis=1)
 res2_norm = res2.loc[cell_types_to_use].div(res2_colsums, axis=1).div(res2_rowsums, axis=0)
 # plot the correlation between two experiments
-fig, ax = plt.subplots(figsize=(5, 5))
 res1_common = res1_norm.loc[cell_types_to_use]
 res2_common = res2_norm.loc[cell_types_to_use]
 # calculate pearson correlation and spearman correlation
@@ -1825,8 +1824,9 @@ adjust_text(
     force_text=0.5,           # how much labels repel each other
     lim=100                   # max number of iterations
 )
-ax.xlabel('Experiment 1: Sum (log) of CRE counts in each cell type')
-ax.ylabel('Experiment 2: Sum (log) of CRE counts in each cell type')
+# change the x and y axis labels
+ax.set_xlabel('Experiment 1: Sum (log) of CRE counts in each cell type')
+ax.set_ylabel('Experiment 2: Sum (log) of CRE counts in each cell type')
 ax.title('Sum of CRE counts in each cell type')
 # log scale
 ax.set_xscale('log')
@@ -1837,8 +1837,8 @@ fold_change_test_config = {"cell_types_to_use": None,
                            "normalize_by_cell_volume": False,
                            "normalize_by_celltype_rna": False,
                            "normalize_by_celltype_volume": False,
-                           "normalize_by_negative_control": False,
-                           'normalize_by_total_cre': True,
+                           "normalize_by_negative_control": True,
+                           'normalize_by_total_cre': False,
                            "normalize_by_infected_cell": False,
                            "normalize_by_libsize": False,
                            "log_transform": False,
@@ -1897,8 +1897,8 @@ fold_change_test_config = {"cell_types_to_use": None,
                            "normalize_by_cell_volume": False,
                            "normalize_by_celltype_rna": False,
                            "normalize_by_celltype_volume": False,
-                           "normalize_by_negative_control": False, # normalize by negative control
-                           'normalize_by_total_cre': True,
+                           "normalize_by_negative_control": True, # normalize by negative control
+                           'normalize_by_total_cre': False,
                            "normalize_by_infected_cell": False,
                            "normalize_by_libsize": False,
                            "log_transform": False,
@@ -2136,13 +2136,13 @@ for cell_type in cell_types_to_use_nc_2.intersection(cre_atac_peaks.index).inter
         sns.violinplot(data=toplot, x='peak', y='activity', inner='quartile', scale='width', ax=ax)
 # %%
 # get the p-value only in those cell types
-fold_change_test_config = {"cell_types_to_use": cell_types_to_use_2.to_list(),
+fold_change_test_config = {"cell_types_to_use": cell_types_to_use_nc_2.to_list(),
                            "normalize_by_cell_rna": False,
                            "normalize_by_cell_volume": False,
                            "normalize_by_celltype_rna": False,
                            "normalize_by_celltype_volume": False,
-                           "normalize_by_negative_control": False,
-                           'normalize_by_total_cre': True,
+                           "normalize_by_negative_control": True,
+                           'normalize_by_total_cre': False,
                            "normalize_by_infected_cell": False,
                            "normalize_by_libsize": False,
                            "log_transform": False,
@@ -2155,7 +2155,7 @@ fold_change_test_config = {"cell_types_to_use": cell_types_to_use_2.to_list(),
 res2 = starrfish2_filtered.fold_change_test(**fold_change_test_config)
 # for each CRE, do q-value correction
 res2_p = res2['pvalue_activity'].copy()
-res2_p = res2_p.loc[cell_types_to_use_2]
+res2_p = res2_p.loc[cell_types_to_use_nc_2]
 # get the max cell for each CRE and cell type
 max_cell_activity = starrfish2_filtered.get_cre_expression().groupby(starrfish2_filtered.get_celltypes()).max()
 sum_cell_activity = starrfish2_filtered.get_cre_expression().groupby(starrfish2_filtered.get_celltypes()).sum()

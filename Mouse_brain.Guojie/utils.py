@@ -31,6 +31,7 @@ from cmdstanpy import CmdStanModel, cmdstan_path, set_cmdstan_path
 from scipy.stats import linregress
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 import logging
 from typing import Literal
 from genomespy import igv
@@ -715,12 +716,12 @@ class STARRFISH:
             if not os.path.exists(self.adata_path) or overwrite_adata:
                 self.adata.write(self.adata_path)
         # drop self.adata and save other attributes
-        # adata = self.adata.copy()
+        adata = self.adata.copy()
         self.adata = None
         with open(path, 'wb') as f:
             pickle.dump(self, f)
         # put adata back
-        # self.adata = adata
+        self.adata = adata
             
     @staticmethod
     def load(path, adata: Union[sc.AnnData, str]=None) -> 'STARRFISH':
@@ -974,7 +975,15 @@ class STARRFISH:
                 fig = plt.figure(figsize=figsize, facecolor='k')
                 gs = fig.add_gridspec(1, 3, width_ratios=[0.49, 0.02, 0.49], wspace=0.05)
                 ax_main = fig.add_subplot(gs[0])
-                ax_cbar = fig.add_subplot(gs[1])
+                ax_cbar = inset_axes(
+                                ax_main,
+                                width="15%",  # Width of inset
+                                height="40%",  # Height of inset
+                                loc='upper right',  # Position inside ax_main
+                                bbox_to_anchor=(0, 0, 0.9, 1.5),
+                                bbox_transform=ax_main.transAxes,
+                                borderpad=1
+                            )
                 ax_ctypes = fig.add_subplot(gs[2])
                 plot_cluster_scdata(self.adata, clusters=best_celltype, use='subclass', 
                                     transpose=transpose, flipx=flipx, flipy=flipy, 
@@ -986,7 +995,6 @@ class STARRFISH:
                 ax_cbar = fig.add_subplot(gs[1])
             ax_main.set_title(f'{gene}', color='white', fontsize=20)
             ax_main.set_facecolor('black')
-            
             # Plot data
             cell_with_genes = np.where(cts > 0)[0]
             # first plot cells without genes, then plot cells with genes
@@ -999,24 +1007,43 @@ class STARRFISH:
             ax_main.set_yticks([])
             ax_main.set_aspect('equal')
             
-            # Set colorbar axis background
+            # Format colorbar
             ax_cbar.set_facecolor('black')
+            ax_cbar.axis('off')
 
-            # Create colorbar in the dedicated axis
-            sm = plt.cm.ScalarMappable(cmap=plt.get_cmap(cmap_name), norm=plt.Normalize(vmin=0, vmax=nmax))
-            cbar = plt.colorbar(
-                sm,
-                cax=ax_cbar,  # Use dedicated axis
-                orientation='vertical',
-                shrink=0.1          # Scale height of colorbar (0.8 = 80% of plot height)
-            )
+            # Define scale bar points
+            legend_vals = np.linspace(0, 1.0, 7)  # Normalized from 0 to 1
+            legend_cts = legend_vals * nmax
+
+            # Reuse the size and alpha scaling from main plot
+            legend_scaled_sizes = legend_vals ** 3  # Same emphasis
+            legend_sizes = sz_min + (sz_max - sz_min) * legend_scaled_sizes
+            legend_alphas = legend_vals  # Directly scale alpha from value
+
+            # Plot circles in ax_cbar
+            dot_spacing = 0.15  # smaller = tighter packing
+            for i, (val, sz, alpha) in enumerate(zip(legend_cts, legend_sizes, legend_alphas)):
+                x = i * dot_spacing
+                ax_cbar.scatter(x, 0.25, s=sz, alpha=alpha, color='#00FF00', edgecolors='none')
+
+            # Add only min and max labels
+            ax_cbar.text(-0.6, 0.25, f'{legend_cts[0]:.2f}', va='center', ha='center', color='white', fontsize=12)
+            ax_cbar.text(1.4, 0.25, f'{legend_cts[-1]:.2f}', va='center', ha='center', color='white', fontsize=12)
+
+            # Set limits and aesthetics
+            ax_cbar.set_xlim(0, 2)
+            ax_cbar.set_xlim(-0.5, (len(legend_cts)-1) * dot_spacing + 0.5)
+            ax_cbar.set_ylim(0, 1.5)  # Enough vertical space for dots + labels
+            # ax_cbar.set_ylim(-0.5, len(legend_cts) - 0.5)
+            ax_cbar.text(0.5 * (len(legend_cts)-1) * dot_spacing, 0.4, 'Normalized Counts',
+            ha='center', va='top', color='white', fontsize=12)
 
             # Format colorbar
-            cbar.set_label('Normalized Counts', color='white', fontsize=16)
-            cbar.ax.yaxis.set_tick_params(color='white')
-            cbar.ax.tick_params(labelcolor='white', labelsize=10)
-            cbar.ax.set_yticks(np.linspace(0, nmax, 5))
-            cbar.ax.set_yticklabels([f'{i:.2f}' for i in np.linspace(0, nmax, 5)], color='white')
+            # cbar.set_label('Normalized Counts', color='white', fontsize=16)
+            # cbar.ax.yaxis.set_tick_params(color='white')
+            # cbar.ax.tick_params(labelcolor='white', labelsize=10)
+            # cbar.ax.set_yticks(np.linspace(0, nmax, 5))
+            # cbar.ax.set_yticklabels([f'{i:.2f}' for i in np.linspace(0, nmax, 5)], color='white')
 
             # Remove axis spines from colorbar
             ax_cbar.spines['top'].set_visible(False)
@@ -1495,7 +1522,8 @@ class STARRFISH:
                          normalize_by_total_cre=False, normalize_by_libsize=False,
                          filter_zero_counts=False, log_transform=False,
                          rank_transform=None,
-                         bootstrap_number=None, fill_nan=True, n_jobs=256, load_stored=True) -> dict:
+                         bootstrap_number=None, fill_nan=True, 
+                         n_jobs=256, load_stored=True, dry_run=False) -> dict:
         config = {
             'cell_types_to_use': cell_types_to_use,
             'normalize_by_cell_rna': normalize_by_cell_rna,
@@ -1523,6 +1551,10 @@ class STARRFISH:
                     if stored_config['bootstrap_number'] == config['bootstrap_number'] or config['bootstrap_number'] is None:
                         print('Results already exist, return stored results')
                         return fold_change_test_result
+        if dry_run:
+            if fold_change_test_result is None:
+                print('Dry run, no results loaded or calculated.')
+            return fold_change_test_result
         if fold_change_test_result is not None:
             partial_loaded = True
         if cell_types_to_use is not None:
