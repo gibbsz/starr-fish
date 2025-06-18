@@ -31,6 +31,7 @@ from cmdstanpy import CmdStanModel, cmdstan_path, set_cmdstan_path
 from scipy.stats import linregress
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
+from sklearn.preprocessing import MinMaxScaler
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes
 import logging
 from typing import Literal
@@ -998,9 +999,14 @@ class STARRFISH:
             # Plot data
             cell_with_genes = np.where(cts > 0)[0]
             # first plot cells without genes, then plot cells with genes
-            ax_main.scatter(Xcells[:, 0], Xcells[:, 1], c='grey', s=sz_min, marker='.', rasterized=True)
-            ax_main.scatter(Xcells[cell_with_genes, 0], Xcells[cell_with_genes, 1], c=cmap[cell_with_genes], sizes=size[cell_with_genes], rasterized=True)
-            
+            ax_main.scatter(Xcells[:, 0], Xcells[:, 1], c='grey', s=3, marker='.', alpha=0.7, rasterized=True, edgecolors='none')
+            # scale the alpha values for the points based on counts
+            scaler = MinMaxScaler(feature_range=(0, 1))
+            scaled_alpha = scaler.fit_transform(ncts.reshape(-1,1)).flatten()
+            # plot the CRE counts
+            # ax_main.scatter(Xcells[cell_with_genes, 0], Xcells[cell_with_genes, 1], c='#00FF00', sizes=size[cell_with_genes], alpha=scaled_alpha[cell_with_genes], rasterized=True)
+            ax_main.scatter(Xcells[:, 0], Xcells[:, 1], c='#00FF00', sizes=size, alpha=scaled_alpha, rasterized=True, edgecolors='none')
+
             # Format axes
             ax_main.grid(False)
             ax_main.set_xticks([])
