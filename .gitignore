@@ -192,6 +192,7 @@ cython_debug/
 *.bw
 *.bed
 *.html
+*.out
 
 # data folder
 Mouse_brain.Guojie/Data/ATAC/wmb_bigwig

@@ -266,7 +266,7 @@ def plot_gene_scdata(scdata2, gene='SOX9', use='X', nmax=None, sz_min=5, sz_max=
 def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass', 
                         transpose=1, flipx=1, flipy=1, sbig=30, small=5, 
                         x_region=None, y_region=None, cmap=None,
-                        ax=None, plot_legend = False, tag='X_spatial',
+                        ax=None, plot_legend = False, show_title=False, tag='X_spatial', 
                         figsize=(20,10)):
     Xcells = scdata.obsm[tag][:, ::transpose] * [flipx, flipy]
     if cmap is None:
@@ -295,7 +295,13 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
         inds = scdata.obs[use] == cluster_
         x_ = x[inds]
         y_ = y[inds]
-        col = cmap[i % len(cmap)]
+        if isinstance(cmap, dict):
+            if cluster in cmap.keys():
+                col = cmap[cluster]
+            else:
+                col = list(cmap.values())[-i % len(cmap)-1]
+        else:
+            col = cmap[i % len(cmap)]
         if x_region is not None:
             select_region = (x_ > x_region[0]) & (x_ < x_region[1])
             x_ = x_[select_region]
@@ -307,7 +313,8 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
         ax.scatter(x_, y_, c=col, s=sbig, marker='.',label = cluster_, rasterized=True)
     
     # if cluster len is 1, then plot title
-    ax.set_title(f"Cell types", color='white', fontsize=20)
+    if show_title:
+        ax.set_title(f"Cell types", color='white', fontsize=20)
     if plot_legend:
         # if cluster len larger than 5, plot it outside
         if len(clusters) > 5:
@@ -867,7 +874,8 @@ class STARRFISH:
                   cell_types_to_use=None, cell_types_to_visualize=None, 
                   nmin=None, nmax=None, sz_min=5, sz_max=30, scale_size_by: Literal['counts', 'celltype_number']='counts',  
                   cmap_name='Reds',
-                  x_region=None, y_region=None, select_region_by_best_celltype=False, show_celltypes=True,
+                  x_region=None, y_region=None, select_region_by_best_celltype=False, 
+                  show_celltypes=True, show_scalebar=True, show_title=True,
                   transpose=1, flipx=1, flipy=1, smooth_k=None, figsize=(30, 10)):
         tag = self.spatial_tag.split(':')[1]
         Xcells = self.adata.obsm[tag][:, ::transpose] * [flipx, flipy]
@@ -989,12 +997,13 @@ class STARRFISH:
                 plot_cluster_scdata(self.adata, clusters=best_celltype, use='subclass', 
                                     transpose=transpose, flipx=flipx, flipy=flipy, 
                                     x_region=x_region, y_region=y_region,
-                                    sbig=np.minimum(sz_max, 30), small=sz_min, ax=ax_ctypes, plot_legend=True)
+                                    sbig=20, small=3, ax=ax_ctypes, plot_legend=True, show_title=show_title)
             else:
                 gs = fig.add_gridspec(1, 3, width_ratios=[0.95, 0.05], wspace=0.05)
                 ax_main = fig.add_subplot(gs[0])
                 ax_cbar = fig.add_subplot(gs[1])
-            ax_main.set_title(f'{gene}', color='white', fontsize=20)
+            if show_title:
+                ax_main.set_title(f'{gene}', color='white', fontsize=20)
             ax_main.set_facecolor('black')
             # Plot data
             cell_with_genes = np.where(cts > 0)[0]
@@ -1012,50 +1021,50 @@ class STARRFISH:
             ax_main.set_xticks([])
             ax_main.set_yticks([])
             ax_main.set_aspect('equal')
-            
-            # Format colorbar
-            ax_cbar.set_facecolor('black')
-            ax_cbar.axis('off')
+            if show_scalebar:
+                # Format colorbar
+                ax_cbar.set_facecolor('black')
+                ax_cbar.axis('off')
 
-            # Define scale bar points
-            legend_vals = np.linspace(0, 1.0, 7)  # Normalized from 0 to 1
-            legend_cts = legend_vals * nmax
+                # Define scale bar points
+                legend_vals = np.linspace(0, 1.0, 7)  # Normalized from 0 to 1
+                legend_cts = legend_vals * nmax
 
-            # Reuse the size and alpha scaling from main plot
-            legend_scaled_sizes = legend_vals ** 3  # Same emphasis
-            legend_sizes = sz_min + (sz_max - sz_min) * legend_scaled_sizes
-            legend_alphas = legend_vals  # Directly scale alpha from value
+                # Reuse the size and alpha scaling from main plot
+                legend_scaled_sizes = legend_vals ** 3  # Same emphasis
+                legend_sizes = sz_min + (sz_max - sz_min) * legend_scaled_sizes
+                legend_alphas = legend_vals  # Directly scale alpha from value
 
-            # Plot circles in ax_cbar
-            dot_spacing = 0.15  # smaller = tighter packing
-            for i, (val, sz, alpha) in enumerate(zip(legend_cts, legend_sizes, legend_alphas)):
-                x = i * dot_spacing
-                ax_cbar.scatter(x, 0.25, s=sz, alpha=alpha, color='#00FF00', edgecolors='none')
+                # Plot circles in ax_cbar
+                dot_spacing = 0.15  # smaller = tighter packing
+                for i, (val, sz, alpha) in enumerate(zip(legend_cts, legend_sizes, legend_alphas)):
+                    x = i * dot_spacing
+                    ax_cbar.scatter(x, 0.25, s=sz, alpha=alpha, color='#00FF00', edgecolors='none')
 
-            # Add only min and max labels
-            ax_cbar.text(-0.6, 0.25, f'{legend_cts[0]:.2f}', va='center', ha='center', color='white', fontsize=12)
-            ax_cbar.text(1.4, 0.25, f'{legend_cts[-1]:.2f}', va='center', ha='center', color='white', fontsize=12)
+                # Add only min and max labels
+                ax_cbar.text(-0.6, 0.25, f'{legend_cts[0]:.2f}', va='center', ha='center', color='white', fontsize=12)
+                ax_cbar.text(1.4, 0.25, f'{legend_cts[-1]:.2f}', va='center', ha='center', color='white', fontsize=12)
 
-            # Set limits and aesthetics
-            ax_cbar.set_xlim(0, 2)
-            ax_cbar.set_xlim(-0.5, (len(legend_cts)-1) * dot_spacing + 0.5)
-            ax_cbar.set_ylim(0, 1.5)  # Enough vertical space for dots + labels
-            # ax_cbar.set_ylim(-0.5, len(legend_cts) - 0.5)
-            ax_cbar.text(0.5 * (len(legend_cts)-1) * dot_spacing, 0.4, 'Normalized Counts',
-            ha='center', va='top', color='white', fontsize=12)
+                # Set limits and aesthetics
+                ax_cbar.set_xlim(0, 2)
+                ax_cbar.set_xlim(-0.5, (len(legend_cts)-1) * dot_spacing + 0.5)
+                ax_cbar.set_ylim(0, 1.5)  # Enough vertical space for dots + labels
+                # ax_cbar.set_ylim(-0.5, len(legend_cts) - 0.5)
+                ax_cbar.text(0.5 * (len(legend_cts)-1) * dot_spacing, 0.4, 'Normalized Counts',
+                ha='center', va='top', color='white', fontsize=12)
 
-            # Format colorbar
-            # cbar.set_label('Normalized Counts', color='white', fontsize=16)
-            # cbar.ax.yaxis.set_tick_params(color='white')
-            # cbar.ax.tick_params(labelcolor='white', labelsize=10)
-            # cbar.ax.set_yticks(np.linspace(0, nmax, 5))
-            # cbar.ax.set_yticklabels([f'{i:.2f}' for i in np.linspace(0, nmax, 5)], color='white')
+                # Format colorbar
+                # cbar.set_label('Normalized Counts', color='white', fontsize=16)
+                # cbar.ax.yaxis.set_tick_params(color='white')
+                # cbar.ax.tick_params(labelcolor='white', labelsize=10)
+                # cbar.ax.set_yticks(np.linspace(0, nmax, 5))
+                # cbar.ax.set_yticklabels([f'{i:.2f}' for i in np.linspace(0, nmax, 5)], color='white')
 
-            # Remove axis spines from colorbar
-            ax_cbar.spines['top'].set_visible(False)
-            ax_cbar.spines['right'].set_visible(False)
-            ax_cbar.spines['bottom'].set_visible(False)
-            ax_cbar.spines['left'].set_visible(False)
+                # Remove axis spines from colorbar
+                ax_cbar.spines['top'].set_visible(False)
+                ax_cbar.spines['right'].set_visible(False)
+                ax_cbar.spines['bottom'].set_visible(False)
+                ax_cbar.spines['left'].set_visible(False)
         else:
             fig, ax = plt.subplots(figsize=(10, 10), facecolor='black')
             ax.set_title(f'{gene} - N max {nmax}', color='white')
@@ -1150,11 +1159,17 @@ class STARRFISH:
             inds = self.adata.obs[use] == cluster_
             x_ = x[inds]
             y_ = y[inds]
-            col = cmap[i % len(cmap)]
+            if isinstance(cmap, list):
+                col = cmap[i % len(cmap)]
+            else:
+                if cluster_ in cmap.keys():
+                    col = cmap[cluster_]
+                else:
+                    col = list(cmap.values())[-i % len(cmap)-1]
             ax.scatter(x_, y_, c=col, s=size, marker='.',label = cluster_, rasterized=True)
         
         # if cluster len is 1, then plot title
-        ax.set_title(f"Cell types", color='black', fontsize=20)
+        ax.set_title(f"Cell types", color='white', fontsize=20)
         if plot_legend:
             # if cluster len larger than 5, plot it outside
             if len(clusters) > 5:
@@ -1166,7 +1181,7 @@ class STARRFISH:
         ax.set_xticks([])
         ax.set_yticks([])
         ax.set_aspect('equal')
-        ax.set_facecolor('white')
+        ax.set_facecolor('black')
         if toreturn:
             fig.tight_layout()
             plt.close(fig)
