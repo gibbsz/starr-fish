@@ -89,19 +89,24 @@ for bigwig_path, modality in zip([f'{PWD}/ATAC/snATACbw_bamCoverage/', f'{PWD}/H
         for f in bigwig_files:
             if f.endswith(pattern):
                 # get the cell type name from cluster_annotation_term
-                celltype = cluster_annotation_term.loc[cluster_annotation_term['subclass_number'] == int(f[:3]), 'subclass'].values[0]
-                celltypes.append(celltype)
+                subclass_number = int(f.split('_')[0])
+                if subclass_number in cluster_annotation_term['subclass_number'].values:
+                    celltype = cluster_annotation_term.loc[cluster_annotation_term['subclass_number'] == subclass_number, 'subclass'].values[0]
+                    celltypes.append(celltype)
         histone_df = pd.DataFrame(index=cres, columns=celltypes)
         for f in bigwig_files:
             if f.endswith(pattern):
                 print(f)
-                celltype = cluster_annotation_term.loc[cluster_annotation_term['subclass_number'] == int(f[:3]), 'subclass'].values[0]
-                bw = pyBigWig.open(bigwig_path + f)
-                for i in cres:
-                    histone_df.loc[i, celltype] = bw.stats(adata2.uns['CRE_info']['Chrom'].loc[i], 
-                                                           int(adata2.uns['CRE_info']['Start'].loc[i])-500, 
-                                                           int(adata2.uns['CRE_info']['End'].loc[i])+500, type='sum')[0] / bw.header()['sumData'] * 1e5
-                bw.close()
+                # get the cell type name from cluster_annotation_term
+                subclass_number = int(f.split('_')[0])
+                if subclass_number in cluster_annotation_term['subclass_number'].values:
+                    celltype = cluster_annotation_term.loc[cluster_annotation_term['subclass_number'] == subclass_number, 'subclass'].values[0]
+                    bw = pyBigWig.open(bigwig_path + f)
+                    for i in cres:
+                        histone_df.loc[i, celltype] = bw.stats(adata2.uns['CRE_info']['Chrom'].loc[i], 
+                                                            int(adata2.uns['CRE_info']['Start'].loc[i])-500, 
+                                                            int(adata2.uns['CRE_info']['End'].loc[i])+500, type='sum')[0] / bw.header()['sumData'] * 1e5
+                    bw.close()
         histone_df.to_csv(f'{PWD}/{mod}_cpm_peak_pad_500_Bysubclass.csv')
 # %% write meta files
 # cluster names
@@ -124,9 +129,11 @@ for mod, bigwig_path in zip(modality, bigwig_paths):
     for f in bigwig_files:
         if f.endswith(pattern):
             # get the cell type name from cluster_annotation_term
-            celltype = cluster_annotation_term.loc[cluster_annotation_term['subclass_number'] == int(f[:3]), 'subclass'].values[0]
-            celltypes.append(celltype)
-            files.append(f'{bigwig_path}{f}')
+            subclass_number = int(f.split('_')[0])
+            if subclass_number in cluster_annotation_term['subclass_number'].values:
+                celltype = cluster_annotation_term.loc[cluster_annotation_term['subclass_number'] == subclass_number, 'subclass'].values[0]
+                celltypes.append(celltype)
+                files.append(f'{bigwig_path}{f}')
     meta_df = pd.DataFrame({
         'celltype': celltypes,
         'path': files

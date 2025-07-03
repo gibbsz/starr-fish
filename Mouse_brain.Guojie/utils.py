@@ -4,6 +4,7 @@ import pandas as pd
 import warnings
 import time
 import multiprocessing
+from joblib import Parallel, delayed
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -28,7 +29,7 @@ PWD = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(PWD)
 from starr_fish_vae import STARRFISHVI
 from tracksClass import PlotTracks
-from cmdstanpy import CmdStanModel, cmdstan_path, set_cmdstan_path
+from cmdstanpy import CmdStanModel
 from scipy.stats import linregress
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
@@ -39,7 +40,6 @@ from typing import Literal
 from genomespy import igv
 from pygenometracks.utilities import get_region
 from get_preprocess_utils import get_motif, query_motif
-set_cmdstan_path('/share/vault/Users/gz2294/miniconda3/envs/scvi/bin/cmdstan/')
 cmdstanpy_logger = logging.getLogger("cmdstanpy")
 cmdstanpy_logger.disabled = True
 
@@ -1674,7 +1674,6 @@ class STARRFISH:
             if n_jobs is None:
                 n_jobs = int(multiprocessing.cpu_count()*0.8)
             bootstrap_prep_args = [(i, cell_types_to_use, bootstrap_to_fixed_sample_size) for i in range(bootstrap_number)]
-            from joblib import Parallel, delayed
             # Prepare kwargs for calculate_fold_change
             calc_kwargs = {
                 'normalize_by_celltype_rna': normalize_by_celltype_rna,
@@ -2372,8 +2371,8 @@ class STARRFISH:
         plot = igv(tracks, region={"chrom": chrom, "start": int(start)-padding, "end": int(end)+padding}, server_port=18089)
         return plot
     
-    def plot_pygenometracks(self, cell_types_to_use, cre, mod, outFileName, region=None,
-                            padding=2500, nbins=700, max=None, min=None, width=80, height=80):
+    def plot_pygenometracks(self, cell_types_to_use, cre, mod, outFileName, region=None, show_gene=True,
+                            activity_df=None, padding=2500, nbins=700, max=None, min=None, width=80, height=80):
         # order the cell_types_to_use by name order
         cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
         cluster_annotation_term['subclass'] = cluster_annotation_term['subclass'].str.replace('/', '-')
@@ -2386,31 +2385,35 @@ class STARRFISH:
         # set index as cell types
         bw_list = bw_list.set_index('celltype')
         out = open(track_file, 'w')
-        out.write("""
-        [x-axis]
-        # optional
-        #fontsize = 20
-        # default is bottom meaning below the axis line
-        # where = top
+        out.write(f"""
+[x-axis]
+# optional
+fontsize = {0.4 * width}
+# default is bottom meaning below the axis line
+where = top
 
-        [spacer]
-        # height of space in cm (optional)
-        height = 0.5
-        
-        [test gtf collapsed]
-        file = /share/vault/Users/gz2294/Data/gencode.v48.annotation.gtf.gz # Replace with the path to your GTF file
-        height = 10
-        title = gtf from ensembl one entry per gene
-        merge_transcripts = true
-        prefered_name = gene_name
-        fontsize = 12
-        file_type = bed
-        """)
+[spacer]
+# height of space in cm (optional)
+height = {height / 160}
+""")
+        if show_gene:
+            out.write(
+f"""
+[gtf]
+file = /share/vault/Users/gz2294/Data/gencode.v48.annotation.gtf.gz
+height = 10
+title = gene
+merge_transcripts = true
+prefered_name = gene_name
+fontsize = {0.3 * width}
+file_type = bed""")
+        cell_types_in_plot = []
         for i, cell_type in enumerate(cell_types_to_use):
             track_added = False
             if cell_type in bw_list.index:
                 bw_file = bw_list.loc[cell_type]['path']
                 file_h = open(f'{bw_file}', 'r')
+                cell_types_in_plot.append(cell_type)
             else:
                 continue
             for track_type, track_class in available_tracks.items():
@@ -2452,12 +2455,12 @@ class STARRFISH:
         dpi = 500
         trackLabelFraction = 0.1
         trackLabelHAlign = 'left'
-        plotWidth = None # width of the plot
+        plotWidth = width * 0.5 # width of the plot
         decreasingXAxis = False
-        title = 'Plot'
+        title = None
         fontSize=0.3 * width
         # Create all the tracks
-        trp = PlotTracks(tracks.name, width, fig_height=height,
+        trp = PlotTracks(tracks.name, fig_width=width, fig_height=height,
                          fontsize=fontSize, dpi=dpi,
                          track_label_width=trackLabelFraction,
                          plot_regions=regions, plot_width=plotWidth)
@@ -2467,9 +2470,25 @@ class STARRFISH:
         os.makedirs(os.path.dirname(os.path.abspath(outFileName)), exist_ok=True)
 
         # Plot them
+        # if activity_df is not None, we add highlight_region_height
+        if activity_df is not None:
+            # get the activity for the cre
+            activity = activity_df.loc[cell_types_in_plot, cre].values
+            # get the min and max of the activity
+            activity_min = np.nanmin(activity)
+            activity_max = np.nanmax(activity)
+            # normalize the activity to 0-1
+            activity_norm = (activity - activity_min) / (activity_max - activity_min)
+            # set highlight_region_height to 0.5 * height
+            highlight_region_height = activity_norm
+            # turn into a dictionary
+            highlight_region_height = {cell_type: activity for cell_type, activity in zip(cell_types_in_plot, highlight_region_height)}
+        else:
+            highlight_region_height = None
         current_fig = trp.plot(outFileName, *regions[0], title=title,
                                highlight_region=(int(region_start), int(region_end)),
-                               h_align_titles=trackLabelHAlign,
+                               highlight_region_height=highlight_region_height,
+                               h_align_titles=trackLabelHAlign, remove_y_axis=max is not None,
                                decreasing_x_axis=decreasingXAxis)
         plt.close(current_fig)
         # remove the track file
@@ -2717,4 +2736,233 @@ class STARRFISH:
         # do row wise correlation
         row_result = row_corr(activity_df1, activity_df2)
         return col_result, row_result
+    
+    def negbiom_cmdstanpy(self, cell_types_to_use, cres_to_use, 
+                         stan_model_bg='NegBinom.stan', stan_model_main='NegBinom2.stan',
+                         chains=1, iter_warmup=1000, iter_sampling=2000, 
+                         n_jobs=None):
+        """
+        Negative binomial Bayesian analysis using CmdStanPy (Python port of R cmdstanr workflow)
+        
+        Parameters:
+        -----------
+        rna_file : str, path to RNA transcript counts CSV
+        df_file : str, path to negative control transcript counts CSV  
+        lib_file : str, path to library size CSV
+        df_all_file : str, path to all element transcript counts CSV
+        lib_all_file : str, path to all element library sizes CSV
+        atac_file : str, path to ATAC data CSV
+        stan_model_bg : str, path to background Stan model
+        stan_model_main : str, path to main Stan model
+        chains : int, number of MCMC chains
+        iter_warmup : int, warmup iterations
+        iter_sampling : int, sampling iterations
+        n_jobs : int, number of parallel jobs (None = all cores)
+        output_file : str, output pickle file path
+        """
+        if n_jobs is None:
+            n_jobs = os.cpu_count() * 0.8  # Use 80% of available cores
+        config = {
+            'cell_types_to_use': cell_types_to_use,
+            'cres_to_use': cres_to_use,
+            'stan_model_bg': stan_model_bg,
+            'stan_model_main': stan_model_main,
+            'chains': chains,
+            'iter_warmup': iter_warmup,
+            'iter_sampling': iter_sampling,
+        }
+        # Check if results already exist
+        if hasattr(self, 'negbiom_results') and hasattr(self, 'negbiom_configs'):
+            for stored_config, negbiom_result in zip(self.negbiom_configs, self.negbiom_results):
+                if stored_config == config:
+                    # If results already exist, return them
+                    print('Results already exist, returning stored results')
+                    return negbiom_result.copy()
+        # Load data
+        if cell_types_to_use is not None:
+            cre_cells_expression, rna_cells_expression, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
+        else:
+            cre_cells_expression = self.get_cre_expression().copy()
+            rna_cells_expression = self.get_rna_expression().copy()
+            cell_types_to_use = self.get_celltypes()
+        if cres_to_use is not None:
+            cre_cells_expression = cre_cells_expression[cres_to_use]
+        fdc_df = pd.DataFrame(index=cell_types_to_use.unique(), columns=cre_cells_expression.columns)
+        ess_df = pd.DataFrame(index=cell_types_to_use.unique(), columns=cre_cells_expression.columns)
+        bkg_df = pd.DataFrame(index=cell_types_to_use.unique(), columns=['mean_x_mean', 'beta_x_mean', 'mean_x_std', 'beta_x_std'])
+        # First run all background models in parallel
+        def run_background_model(cell_type):
+            """Run background model for a single cell type"""
+            df_all = cre_cells_expression[cell_types_to_use == cell_type].copy()
+            rna = rna_cells_expression[cell_types_to_use == cell_type].copy().sum(axis=1)
+            # fit negative control elements first
+            df = df_all[self.get_negative_control_cres()].copy()
+            # Add row-wise sum as additional column
+            df['row_sum'] = df.sum(axis=1)
+            N = len(df)  # number of cells
+            E = len(df.columns)  # number of negative control elements (including row_sum)
+            # Prepare library sizes with sum of all negative controls
+            lib_sizes = self.lib_size.loc[self.get_negative_control_cres(), 'counts'].astype(float)
+            lib_sum = lib_sizes.sum()
+            lib_sizes_extended = np.append(lib_sizes.values, lib_sum)
+            # Prepare data for background model
+            stan_data_bg = {
+                'N': N,
+                'E': E,
+                'x': df.values.astype(int),
+                'xx': rna.astype(float),
+                'L': lib_sizes_extended
+            }
+            # Compile model once
+            model_bg = CmdStanModel(stan_file=stan_model_bg)
+            # Iterative fitting until ESS > 1000
+            max_iterations = 2
+            iteration = 0
+            ess_threshold = 1000
+            while iteration < max_iterations:
+                iteration += 1
+                # Run background model
+                fit_bg = model_bg.sample(
+                    data=stan_data_bg,
+                    chains=chains,
+                    iter_warmup=iter_warmup,
+                    iter_sampling=iter_sampling,
+                    show_progress=False
+                )
+                # Extract background parameters
+                bg_summary = fit_bg.summary()
+                mean_x_mean = bg_summary.loc['mean_x', 'Mean']
+                beta_x_mean = bg_summary.loc['beta_x', 'Mean']
+                mean_x_std = bg_summary.loc['mean_x', 'StdDev']
+                beta_x_std = bg_summary.loc['beta_x', 'StdDev']
+                # Check ESS for all parameters
+                if 'N_Eff' not in bg_summary.columns:
+                    print(f"Cell type {cell_type}: N_Eff not available, continuing sampling...")
+                    continue
+                ess_mean_x = bg_summary.loc['mean_x', 'N_Eff']
+                ess_beta_x = bg_summary.loc['beta_x', 'N_Eff']
+                min_ess = min(ess_mean_x, ess_beta_x)
+                if min_ess >= ess_threshold:
+                    print(f"Cell type {cell_type}: Converged after {iteration} iterations (min ESS: {min_ess:.0f})")
+                    break
+                else:
+                    print(f"Cell type {cell_type}: Iteration {iteration}, min ESS: {min_ess:.0f} < {ess_threshold}, refitting...")
+            if 'N_Eff' in bg_summary.columns and min_ess < ess_threshold:
+                print(f"Cell type {cell_type}: Warning - Did not converge after {max_iterations} iterations (final min ESS: {min_ess:.0f})")
+            elif 'N_Eff' not in bg_summary.columns:
+                print(f"Cell type {cell_type}: Warning - N_Eff not available, completed {max_iterations} iterations")
+            return cell_type, {
+                'mean_x_mean': mean_x_mean,
+                'beta_x_mean': beta_x_mean,
+                'mean_x_std': mean_x_std,
+                'beta_x_std': beta_x_std,
+                'background': bg_summary,
+                'final_ess': min_ess if 'N_Eff' in bg_summary.columns else None,
+                'iterations': iteration
+            }
+        print(f"Running background models for {len(cell_types_to_use.unique())} cell types in parallel...")
+        background_results = Parallel(n_jobs=min(n_jobs, len(cell_types_to_use.unique())))(
+            delayed(run_background_model)(cell_type) 
+            for cell_type in cell_types_to_use.unique()
+        )
+        # Store background results
+        background_params = {}
+        for cell_type, bg_result in background_results:
+            background_params[cell_type] = bg_result
+            bkg_df.loc[cell_type] = {
+                'mean_x_mean': bg_result['mean_x_mean'],
+                'beta_x_mean': bg_result['beta_x_mean'],
+                'mean_x_std': bg_result['mean_x_std'],
+                'beta_x_std': bg_result['beta_x_std']
+            }
+        # Now run element models for each cell type
+        for cell_type in cell_types_to_use.unique():
+            df_all = cre_cells_expression[cell_types_to_use == cell_type].copy()
+            rna = rna_cells_expression[cell_types_to_use == cell_type].copy().sum(axis=1)
+            # Get background parameters for this cell type
+            bg_params = background_params[cell_type]
+            results = {'background': bg_params['background']}
+            # Load all elements data
+            N_all = len(df_all)
+            def run_single_element(col_name):
+                """Run Stan model for a single element with ESS checking"""
+                stan_data = {
+                    'N': N_all,
+                    'E': 1,
+                    'x': df_all[col_name].values.astype(int).reshape(-1, 1),
+                    'xx': rna.astype(float),
+                    'L': np.array([self.lib_size.loc[col_name, 'counts']], dtype=float),
+                    'mean_x_mean': bg_params['mean_x_mean'],
+                    'beta_x_mean': bg_params['beta_x_mean'],
+                    'mean_x_std': bg_params['mean_x_std'],
+                    'beta_x_std': bg_params['beta_x_std']
+                }
+                # Compile model once
+                model = CmdStanModel(stan_file=stan_model_main)
+                # Iterative fitting until ESS > 1000
+                max_iterations = 5
+                iteration = 0
+                ess_threshold = 1000
+                while iteration < max_iterations:
+                    iteration += 1
+                    # Run model
+                    fit = model.sample(
+                        data=stan_data,
+                        chains=chains,
+                        iter_warmup=iter_warmup,
+                        iter_sampling=iter_sampling,
+                        show_progress=False
+                    )
+                    # Check ESS for fold_x parameter
+                    summary = fit.summary()
+                    try:
+                        fold_x_ess = summary.loc['fold_x', 'N_Eff']
+                        if fold_x_ess >= ess_threshold:
+                            return col_name, summary
+                        else:
+                            if iteration < max_iterations:
+                                continue  # Try again
+                            else:
+                                # Return result even if ESS is low after max iterations
+                                return col_name, summary
+                    except KeyError:
+                        # fold_x parameter not found, return summary anyway
+                        return col_name, summary
+                return col_name, summary
+            # Run models in parallel
+            print(f"Running {len(df_all.columns)} element models in parallel...")
+            parallel_results = Parallel(n_jobs=n_jobs)(
+                delayed(run_single_element)(col_name) 
+                for col_name in df_all.columns
+            )
+            # Collect results
+            for col_name, summary in parallel_results:
+                results[col_name] = summary
+            # Quality check (similar to R version)
+            for col_name in df_all.columns:
+                if col_name in results:
+                    summary = results[col_name]
+                    try:
+                        fold_x_row = summary.loc['fold_x']
+                        ess_val = fold_x_row['N_Eff']
+                        ess_df.loc[cell_type, col_name] = ess_val
+                        fdc_df.loc[cell_type, col_name] = fold_x_row['Mean']
+                    except KeyError:
+                        # fold_x parameter not found in summary
+                        pass
+            # Background parameters already stored above
+        res = {
+            'ess': ess_df,
+            'fdc': fdc_df,
+            'background': bkg_df,
+            'background_results': background_results,
+            'results': results
+        }
+        # save results to attribute
+        if not hasattr(self, 'negbiom_results') or not hasattr(self, 'negbiom_configs'):
+            self.negbiom_results = []
+            self.negbiom_configs = []
+        self.negbiom_results.append(res)
+        self.negbiom_configs.append(config)
+        return res
         

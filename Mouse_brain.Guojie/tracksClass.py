@@ -46,7 +46,7 @@ log.setLevel(logging.DEBUG)
 
 DEFAULT_TRACK_HEIGHT = 0.5  # in centimeters
 DEFAULT_FIGURE_WIDTH = 40  # in centimeters
-DEFAULT_MARGINS = {'left': 0.04, 'right': 0.92, 'bottom': 0.03, 'top': 0.97}
+DEFAULT_MARGINS = {'left': 0.04, 'right': 0.7, 'bottom': 0.03, 'top': 0.97}
 
 
 class VType(object):
@@ -471,7 +471,7 @@ class PlotTracks(object):
         return track_height
 
     def plot(self, file_name, chrom, start, end, title=None, highlight_region=None,
-             h_align_titles='left', decreasing_x_axis=False):
+             highlight_region_height=None, h_align_titles='left', remove_y_axis=False, decreasing_x_axis=False):
         track_height = self.get_tracks_height(start_region=start,
                                               end_region=end)
 
@@ -538,7 +538,8 @@ class PlotTracks(object):
             else:
                 plot_axis.set_xlim(start, end)
             track.plot(plot_axis, chrom, start, end)
-            track.plot_y_axis(y_axis, plot_axis)
+            if not remove_y_axis:
+                track.plot_y_axis(y_axis, plot_axis)
             track.plot_label(label_axis, width_dpi=width_dpi,
                              h_align=h_align_titles)
 
@@ -561,6 +562,31 @@ class PlotTracks(object):
                     zorder=-1,  # Ensure shadow is behind other elements
                     linewidth=0  # Remove border
                 )
+            
+            # Add track-specific highlighting rectangles on top
+            if highlight_region_height is not None:
+                for ax, track_obj in zip(axis_list, self.track_obj_list):
+                    # get cell type name
+                    section_name = track_obj.properties.get('section_name', '')
+                    # cell type is what ever inside [] in the section name
+                    cell_type = section_name.split('[')[-1].split(']')[0]
+                    if cell_type not in highlight_region_height.keys():
+                        continue
+                    height = highlight_region_height[cell_type]
+                    if height > 0:
+                        # Get the y-axis limits to position the rectangle
+                        ylim = ax.get_ylim()
+                        # Add rectangle on top of the existing one
+                        ax.axvspan(
+                            h_start,
+                            h_end,
+                            ymin=0,
+                            ymax=height,  # Use the specified height for this track
+                            color='red',
+                            alpha=0.3,
+                            zorder=1,  # Ensure it's on top of the grey rectangle
+                            linewidth=0
+                        )
 
         for current_type in self.type_obj_list:
             current_type.plot(axis_list, fig, chrom, start, end)
