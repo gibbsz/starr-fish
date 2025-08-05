@@ -76,7 +76,7 @@ class STARRFISHVAE(MULTIVAE):
         protein_dispersion: str = "protein",
         infection_rate_inference: str = "encoder",
         infection_rate_generative: str = "sample",
-        infection_rate_type: Literal["gene", "gene-cell"] = "gene-cell",
+        infection_rate_type: Literal["gene", "gene-cell"] = "gene",
         accessibility_generative: str = "split",
         kl_infection_rate_type: Literal["gene-multinomial", "global-poisson", "gene-multinomial+global-poisson", "gene-cosine", "gene-cosine+global-poisson"] = "gene-cosine",
         infection_rate_library_size = None,
@@ -138,7 +138,8 @@ class STARRFISHVAE(MULTIVAE):
         # if kl_infection_rate_type contains "gene-multinomial" or "gene-cosine", we need to add a new parameter
         if "gene-multinomial" in kl_infection_rate_type or "gene-cosine" in kl_infection_rate_type:
             assert infection_rate_library_size is not None, "infection_rate_library_size should be provided"
-            assert infection_rate_type == "gene", "infection_rate_type should be gene"
+            if infection_rate_inference == 'encoder':
+                assert infection_rate_type == "gene", "infection_rate_type should be gene"
             self.infection_rate_library_size = torch.tensor(infection_rate_library_size, dtype=torch.long).reshape(-1)
         if self.infection_rate_type == "gene-cell":
             n_output_infection_rate = self.n_input_regions
@@ -181,7 +182,12 @@ class STARRFISHVAE(MULTIVAE):
                 use_layer_norm=self.use_layer_norm_decoder,
                 deep_inject_covariates=self.deeply_inject_covariates,
             )
-    
+        # set T7 decoder parameters
+        self.py_scale = torch.nn.Parameter(torch.zeros(1))
+        self.py_r = torch.nn.Parameter(torch.zeros(1))
+        self.py_rate = torch.nn.Parameter(torch.zeros(1))
+        self.py_dropout = torch.nn.Parameter(torch.zeros(1))
+
     @auto_move_data
     def inference(
         self,
@@ -289,7 +295,7 @@ class STARRFISHVAE(MULTIVAE):
         z = self.z_encoder_accessibility.z_transformation(untran_z)
         # sample infection rate from libsize_acc
         libsize_expr = {"libsize_expr": libsize_expr, "libsize_acc": libsize_acc, "z_acc": z_acc}
-        if self.infection_rate_generative == "sample":
+        if self.infection_rate_inference == 'encoder' and self.infection_rate_generative == "sample":
             libsize_acc = torch.poisson(libsize_acc)
         outputs = {
             "x": x,
@@ -380,18 +386,7 @@ class STARRFISHVAE(MULTIVAE):
             px_r = self.px_r
         px_r = torch.exp(px_r)
 
-        # Protein Decoder
-        py_, log_pro_back_mean = self.z_decoder_pro(decoder_input, batch_index, *categorical_input)
-        # Protein Dispersion
-        if self.protein_dispersion == "protein-label":
-            # py_r gets transposed - last dimension is n_proteins
-            py_r = F.linear(F.one_hot(label.squeeze(-1), self.n_labels).float(), self.py_r)
-        elif self.protein_dispersion == "protein-batch":
-            py_r = F.linear(F.one_hot(batch_index.squeeze(-1), self.n_batch).float(), self.py_r)
-        elif self.protein_dispersion == "protein":
-            py_r = self.py_r
-        py_r = torch.exp(py_r)
-        py_["r"] = py_r
+        # T7 Decoder, should only have two parameters, py_scale, py_rate, py_dropout, should be independent from the latent expression
         return {
             # reporter activity
             "pa_inf_rate": pa_infection_rate,
@@ -405,8 +400,10 @@ class STARRFISHVAE(MULTIVAE):
             "px_rate": px_rate,
             "px_dropout": px_dropout,
             # protein, not used in the current model
-            "py_": py_,
-            "log_pro_back_mean": log_pro_back_mean,
+            "py_scale": torch.nn.functional.softplus(self.py_scale),
+            'py_r': torch.exp(self.py_r),  # Protein Dispersion
+            "py_rate": torch.nn.functional.softplus(self.py_rate),
+            "py_dropout": self.py_dropout,
         }
     
     # NOTE: 
@@ -425,7 +422,7 @@ class STARRFISHVAE(MULTIVAE):
 
         mask_expr = x_rna.sum(dim=1) > 0
         mask_acc = x_atac.sum(dim=1) > 0
-        mask_pro = y.sum(dim=1) > 0
+        mask_t7 = y.sum(dim=1) > 0
 
         # NOTE: Compute Accessibility loss, modified here
         pa_infection_rate = generative_outputs["pa_inf_rate"]
@@ -435,28 +432,28 @@ class STARRFISHVAE(MULTIVAE):
         pa_rate = generative_outputs["pa_rate"]
         pa_dropout = generative_outputs["pa_dropout"]
         rl_accessibility = self.get_reconstruction_loss_accessibility(x_atac, pa_infection_rate, pa_rate, pa_scale, pa_dropout)
+        
+        # compute T7 loss
+        if mask_t7.sum().gt(0):
+            py_scale = generative_outputs["py_scale"]
+            py_rate = generative_outputs["py_rate"]
+            py_dropout = generative_outputs["py_dropout"]
+            rl_t7 = self.get_reconstruction_loss_accessibility(y, pa_infection_rate, py_rate, py_scale, py_dropout)
+        else:
+            rl_t7 = torch.zeros(x.shape[0], device=x.device, requires_grad=False)
 
         # Compute Expression loss
         px_rate = generative_outputs["px_rate"]
         px_r = generative_outputs["px_r"]
         px_dropout = generative_outputs["px_dropout"]
         x_expression = x[:, : self.n_input_genes]
-        rl_expression = self.get_reconstruction_loss_expression(
-            x_expression, px_rate, px_r, px_dropout
-        )
-
-        # Compute Protein loss - No ability to mask minibatch (Param:None)
-        if mask_pro.sum().gt(0):
-            py_ = generative_outputs["py_"]
-            rl_protein = get_reconstruction_loss_protein(y, py_, None)
-        else:
-            rl_protein = torch.zeros(x.shape[0], device=x.device, requires_grad=False)
+        rl_expression = self.get_reconstruction_loss_expression(x_expression, px_rate, px_r, px_dropout)
 
         # calling without weights makes this act like a masked sum
         recon_loss_expression = rl_expression * mask_expr
         recon_loss_accessibility = rl_accessibility * mask_acc
-        recon_loss_protein = rl_protein * mask_pro
-        recon_loss = recon_loss_expression + recon_loss_accessibility + recon_loss_protein
+        recon_loss_t7 = rl_t7 * mask_t7
+        recon_loss = recon_loss_expression + recon_loss_accessibility + recon_loss_t7
 
         # Compute KLD between Z and N(0,I)
         qz_m = inference_outputs["qz_m"]
@@ -473,13 +470,13 @@ class STARRFISHVAE(MULTIVAE):
             (inference_outputs["qzm_pro"], inference_outputs["qzv_pro"]),
             mask_expr,
             mask_acc,
-            mask_pro,
+            mask_t7,
         )
 
         # split kl_infection_rate_type by "+"
         kl_div_infection_rate = 0
         for i in self.kl_infection_rate_type.split("+"):
-            if i not in ["gene-multinomial", "global-poisson", "gene-cosine"]:
+            if i not in ["gene-multinomial", "global-poisson", "gene-cosine", '']:
                 raise ValueError(f"Invalid kl_infection_rate_type: {i}")
             if i == "global-poisson":
                 kl_div_infection_rate += kld(
@@ -487,15 +484,22 @@ class STARRFISHVAE(MULTIVAE):
                     Poisson(self.infection_rate_prior),
                 ).sum(axis=1)
             elif i == "gene-multinomial":
+                if self.infection_rate_inference == 'encoder':
+                    probs = torch.nn.functional.softplus(self.infection_rate_gene)
+                else:
+                    probs = generative_outputs["pa_inf_rate"].mean(dim=0)
                 kl_div_infection_rate += -torch.distributions.Multinomial(
                     total_count=self.infection_rate_library_size.sum().item(),
-                    probs=torch.nn.functional.softplus(self.infection_rate_gene),
+                    probs=probs,
                 ).log_prob(self.infection_rate_library_size.to(self.infection_rate_gene.device)).sum()
             elif i == "gene-cosine":
                 # cosine similarity 
-                lib_size = self.infection_rate_library_size.log1p()
+                lib_size = self.infection_rate_library_size.to(torch.float)
                 lib_size_centered = lib_size - lib_size.mean()
-                infection_rate = torch.nn.functional.softplus(self.infection_rate_gene)
+                if self.infection_rate_inference == 'encoder':
+                    infection_rate = torch.nn.functional.softplus(self.infection_rate_gene)
+                else:
+                    infection_rate = generative_outputs["pa_inf_rate"].mean(dim=0)
                 infection_rate_centered = infection_rate - infection_rate.mean()
                 kl_div_infection_rate += -torch.nn.functional.cosine_similarity(
                     lib_size_centered.to(infection_rate_centered.device), infection_rate_centered, dim=0
@@ -510,7 +514,7 @@ class STARRFISHVAE(MULTIVAE):
         recon_losses = {
             "reconstruction_loss_expression": recon_loss_expression,
             "reconstruction_loss_accessibility": recon_loss_accessibility,
-            "reconstruction_loss_protein": recon_loss_protein,
+            "reconstruction_loss_protein": recon_loss_t7,
         }
         kl_local = {
             "kl_divergence_z": kl_div_z + kl_div_infection_rate,
@@ -518,34 +522,14 @@ class STARRFISHVAE(MULTIVAE):
         }
         return LossOutput(loss=loss, reconstruction_loss=recon_losses, kl_local=kl_local)
 
-    def get_reconstruction_loss_accessibility(self, x, pa_infection_rate, pa_rate, pa_r, pa_dropout):
+    def get_reconstruction_loss_accessibility(self, x, infection_rate, rate, r, dropout):
         """Computes the reconstruction loss for the reporter activity data."""
-        if self.infection_rate_generative == "sample":
-            # mu is porportion to the infected number of AAV, r is the number of infected AAV
-            pa_rate_r = pa_rate * pa_infection_rate
-            pa_r_r = pa_r * (pa_infection_rate + 1e-8)
-        else:
-            # first get the max of r, the infected AAV number
-            if self.r_max is None:
-                with torch.no_grad():
-                    stddev = torch.sqrt(pa_infection_rate + 1e-8)
-                    r_max = torch.ceil(pa_infection_rate + 10 * stddev).max().int().item()
-                    r_max = max(r_max, 1)
-            else:
-                r_max = self.r_max
-            # Create grid of possible r values
-            r = torch.arange(0, r_max + 1, device=pa_infection_rate.device)
-            # Compute Poisson probabilities (batch_size, r_max+1)
-            poisson_log_probs = Poisson(pa_infection_rate.unsqueeze(-1)).log_prob(r.unsqueeze(0))
-            # mu is porportion to the infected number of AAV, r is the number of infected AAV
-            pa_rate_r = pa_rate.unsqueeze(-1) * r.unsqueeze(0)
-            pa_dropout = pa_dropout.unsqueeze(-1)
-            # theta is porportion to the infected number of AAV, r is the number of infected AAV
-            pa_r_r = pa_r.unsqueeze(-1) * r.unsqueeze(0)
-            x = x.unsqueeze(-1)
+        # mu is porportion to the infected number of AAV, r is the number of infected AAV
+        pa_rate_r = rate * infection_rate
+        pa_r_r = r * (infection_rate + 1e-64)  # avoid division by zero
         if self.gene_likelihood == "zinb":
             rl = (
-                ZeroInflatedNegativeBinomial(mu=pa_rate_r, theta=pa_r_r, zi_logits=pa_dropout)
+                ZeroInflatedNegativeBinomial(mu=pa_rate_r, theta=pa_r_r, zi_logits=dropout)
                 .log_prob(x)
             )
         elif self.gene_likelihood == "nb":
@@ -555,13 +539,7 @@ class STARRFISHVAE(MULTIVAE):
         else:
             raise NotImplementedError("Invalid gene_likelihood")
         # times up the poisson probability and the likelihood
-        if self.infection_rate_generative == "sample":
-            rl = -rl.sum(dim=-1)
-        else:
-            # first apply mask to rl
-            mask = pa_rate_r > 0
-            rl = rl * mask
-            rl = -torch.logsumexp(poisson_log_probs + rl, dim=-1).sum(dim=-1)
+        rl = -rl.sum(dim=-1)
         return rl
 
         
@@ -595,9 +573,13 @@ class STARRFISHVI(MULTIVI):
                          dispersion=dispersion, use_batch_norm=use_batch_norm, use_layer_norm=use_layer_norm, latent_distribution=latent_distribution, 
                          deeply_inject_covariates=deeply_inject_covariates, encode_covariates=encode_covariates, fully_paired=fully_paired, 
                          protein_dispersion=protein_dispersion, **model_kwargs)
+        if "n_proteins" in self.summary_stats:
+            n_proteins = self.summary_stats.n_proteins
+        else:
+            n_proteins = 0
         self._model_summary_string = (
             f"STARRFISHVI Model with the following params: \nn_genes: {n_genes}, "
-            f"n_regions: {n_regions}, n_proteins: {0}, n_hidden: {self.module.n_hidden}, "
+            f"n_regions: {n_regions}, T7: {n_proteins}, n_hidden: {self.module.n_hidden}, "
             f"n_latent: {self.module.n_latent}, n_layers_encoder: {n_layers_encoder}, "
             f"n_layers_decoder: {n_layers_decoder}, dropout_rate: {dropout_rate}, "
             f"latent_distribution: {latent_distribution}, "

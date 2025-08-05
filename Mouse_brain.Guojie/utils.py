@@ -43,31 +43,39 @@ from get_preprocess_utils import get_motif, query_motif
 cmdstanpy_logger = logging.getLogger("cmdstanpy")
 cmdstanpy_logger.disabled = True
 
-def fit_glm(formula, y, x, volm, fov, only_keep_positive_per_cre=True):
+def fit_glm(formula, y, x, volm, fov, rna, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False):
     try:
-        # remove zeros in x
-        if only_keep_positive_per_cre:
-            to_keep = y > 0
+        # remove zeros in y
+        if positive_x_or_y:
+            to_keep = (y > 0) | (x > 0)
         else:
             to_keep = np.ones(len(x), dtype=bool)
+        if only_keep_positive_x:
+            to_keep &= x > 0
+        if only_keep_positive_y:
+            to_keep &= y > 0
         y = y[to_keep]
         x = x[to_keep]
         volm = volm[to_keep]
         fov = fov[to_keep]
+        rna = rna[to_keep] if rna is not None else None
         # if data points too few, return NaN
-        if len(y) < 10:
-            return pd.DataFrame({'coef': [np.nan], 'P>|t|': [np.nan]}, index=['x'])
-        fit_data=pd.DataFrame({'y': y, 'x': x, 'volm': volm, 'fov': fov})
+        if len(y) < 3:
+            return {'coef': np.nan, 'pvalue': np.nan}
+        fit_data=pd.DataFrame({'y': y, 'x': x, 'volm': volm, 'fov': fov, 'RNA': rna})
         glm_results = smf.ols(formula, data=fit_data).fit()
-        glm_summary = pd.read_html(glm_results.summary().tables[1].as_html(), header=0, index_col=0)[0]
-        glm_summary = pd.DataFrame(glm_summary.loc['x']).T
+        # Direct access to coefficients and p-values instead of HTML parsing
+        coef = glm_results.params.get('x', np.nan)
+        pvalue = glm_results.pvalues.get('x', np.nan)
+        return {'coef': coef, 'pvalue': pvalue}
     except Exception as e:
-        return pd.DataFrame({'coef': [np.nan], 'P>|t|': [np.nan]}, index=['x'])
-    return glm_summary
+        return {'coef': np.nan, 'pvalue': np.nan}
 
 
-def glm(adata, cell_types_to_use=None, CREs=None, norm_by_volm=False, volm_covariate=False, fov_covariate=False, 
-        filter_infected_cells=True, only_keep_positive_per_cre=True, multiprocess_threads=256, verbose=False):
+def glm(adata, variate='RNA', cell_types_to_use=None, CREs=None, norm_by_volm=False, 
+        volm_covariate=False, fov_covariate=False, rna_covariate=False,
+        filter_infected_cells=True, positive_x_or_y=True, only_keep_positive_x=True, only_keep_positive_y=True, 
+        multiprocess_threads=256, verbose=False):
     # result is a matrix of cell_types x CREs
     if CREs is None:
         CREs = adata.uns['CRE_info'].index
@@ -80,56 +88,104 @@ def glm(adata, cell_types_to_use=None, CREs=None, norm_by_volm=False, volm_covar
         cell_types_to_use = adata.obs['subclass'].value_counts()
         # filter out the cell types with less than 20 cells
         cell_types_to_use = cell_types_to_use[cell_types_to_use >= 20].index.tolist()
-    adata.obsm['RNA'] = adata.obsm['X_raw'].copy()
+    if variate == 'RNA' or rna_covariate:
+        # if variate is RNA, then use the RNA data
+        if 'X_raw' not in adata.obsm.keys():
+            raise ValueError("X_raw not found in adata.obsm. Please run adata.raw = adata before running this function.")
+        if 'RNA' not in adata.obsm.keys():
+            adata.obsm['RNA'] = adata.obsm['X_raw'].copy()
+    if variate == 'RNA':
+        variate = adata.obsm['RNA'].copy().sum(axis=1)
+        # repeat # of CREs times
+        variate = np.repeat(variate[:, np.newaxis], len(CREs), axis=1)
+        # make it to a DataFrame
+        variate = pd.DataFrame(variate, index=adata.obs_names, columns=CREs)
+    elif variate == 'T7':
+        variate = adata.obsm['T7CRE'].copy()
+    else:
+        raise ValueError("variate must be 'RNA' or 'T7'.")
     if norm_by_volm:
-        adata.obsm['RNA'] = adata.obsm['RNA'] / adata.obs['volm'].values[:, np.newaxis]
-    coef = pd.DataFrame(index=cell_types_to_use, columns=CREs)
-    pvalue = pd.DataFrame(index=cell_types_to_use, columns=CREs)
+        variate = variate / adata.obs['volm'].values[:, np.newaxis]
+    
+    # Prepare formula
     formula = 'y ~ x'
     if volm_covariate:
         formula += ' + volm'
     if fov_covariate:
         formula += ' + C(fov)'
-    if multiprocess_threads is not None:
-        pool = multiprocessing.Pool(processes=min(multiprocess_threads, int(multiprocessing.cpu_count()*0.8)))
-    for k, cell_type in enumerate(cell_types_to_use):
-        start = time.time()
-        # get the data for the cell type
-        adata_cell_type = adata[adata.obs['subclass'] == cell_type].copy()
-        # get the data for the CREs
-        adata_cre = adata_cell_type.obsm['CRE'][CREs]
-        # get the data for the RNA
-        adata_rna = adata_cell_type.obsm['RNA'].sum(axis=1)
-        # fit the model, use multiprocessing to speed up the process
-        if multiprocess_threads is not None:
-            results = pool.starmap(fit_glm, [(formula, adata_cre[cre], adata_rna, 
-                                              adata_cell_type.obs['volm'].values, 
-                                              adata_cell_type.obs['fov'].values,
-                                              only_keep_positive_per_cre) for cre in CREs])
-            if verbose:
-                print('Finished fitting for cell type:', cell_type, ' (', k+1, '/', len(cell_types_to_use), ')',  
-                      'Time taken:', time.time() - start, 'seconds')
-            # get the results
-            for i, glm_summary in enumerate(results):
-                coef.loc[cell_type, CREs[i]] = glm_summary['coef'].loc['x']
-                pvalue.loc[cell_type, CREs[i]] = glm_summary['P>|t|'].loc['x']
-        else:
-            for cre in CREs:
-                glm_summary = fit_glm(formula, adata_cre[cre], adata_rna, 
-                                      adata_cell_type.obs['volm'].values, 
-                                      adata_cell_type.obs['fov'].values,
-                                      only_keep_positive_per_cre)
-                coef.loc[cell_type, cre] = glm_summary['coef'].values[0]
-                pvalue.loc[cell_type, cre] = glm_summary['P>|t|'].values[0]
-            # print the time taken
-            if verbose:
-                print('Finished fitting for cell type:', cell_type, ' (', k+1, '/', len(cell_types_to_use), ')',  
-                      'Time taken:', time.time() - start, 'seconds')
-    # return is coef and pvalue
-    if multiprocess_threads is not None:
-        pool.close()
-    result = {'coef': coef, 'pvalue': pvalue}
-    return result
+    if rna_covariate:
+        formula += ' + rna'
+    
+    # Prepare arguments for all GLM fits using pre-allocated arrays (eliminates slow append operations)
+    total_combinations = len(cell_types_to_use) * len(CREs)
+    
+    # Pre-allocate arrays to avoid slow append operations
+    glm_args = [None] * total_combinations
+    cell_type_indices = [0] * total_combinations
+    cre_indices = [0] * total_combinations
+    
+    # Pre-compute all cell masks to avoid repeated boolean indexing
+    cell_masks = [adata.obs['subclass'] == cell_type for cell_type in cell_types_to_use]
+    
+    # Pre-compute data arrays that will be reused
+    obs_names_array = adata.obs_names.values
+    volm_values = adata.obs['volm'].values
+    fov_values = adata.obs['fov'].values
+    cre_data = adata.obsm['CRE']
+    rna_data = adata.obsm['RNA'] if rna_covariate else None
+    
+    idx = 0
+    for k, cell_mask in enumerate(cell_masks):
+        # Pre-slice all arrays for this cell type once
+        cell_obs_names = obs_names_array[cell_mask]
+        cell_volm = volm_values[cell_mask]
+        cell_fov = fov_values[cell_mask]
+        cell_rna_sum = rna_data[cell_mask].sum(axis=1) if rna_covariate else None
+        
+        # Extract all CRE data for this cell type at once (vectorized)
+        cell_cre_matrix = cre_data.loc[cell_mask, CREs]
+        cell_variate_matrix = variate.loc[cell_obs_names, CREs]
+        
+        # Use list comprehension for remaining loop
+        args_batch = [(
+            formula,
+            cell_cre_matrix.iloc[:, j].values,
+            cell_variate_matrix.iloc[:, j].values,
+            cell_volm,
+            cell_fov,
+            cell_rna_sum,
+            positive_x_or_y, only_keep_positive_x, only_keep_positive_y
+        ) for j in range(len(CREs))]
+        
+        # Batch assignment
+        glm_args[idx:idx+len(CREs)] = args_batch
+        cell_type_indices[idx:idx+len(CREs)] = [k] * len(CREs)
+        cre_indices[idx:idx+len(CREs)] = list(range(len(CREs)))
+        idx += len(CREs)
+    
+    # Run all GLM fits in parallel
+    if multiprocess_threads is not None and multiprocess_threads > 1:
+        results = Parallel(n_jobs=min(multiprocess_threads, int(multiprocessing.cpu_count()*0.8)))(
+            delayed(fit_glm)(*args) for args in glm_args)
+    else:
+        results = [fit_glm(*args) for args in glm_args]
+    
+    # Populate results matrix
+    coef = pd.DataFrame(index=cell_types_to_use, columns=CREs, dtype=float)
+    pvalue = pd.DataFrame(index=cell_types_to_use, columns=CREs, dtype=float)
+    
+    for i, result in enumerate(results):
+        cell_type_idx = cell_type_indices[i]
+        cre_idx = cre_indices[i]
+        cell_type = cell_types_to_use[cell_type_idx]
+        cre = CREs[cre_idx]
+        coef.loc[cell_type, cre] = result['coef']
+        pvalue.loc[cell_type, cre] = result['pvalue']
+    
+    if verbose:
+        print(f'Finished fitting GLM for {len(cell_types_to_use)} cell types and {len(CREs)} CREs')
+    
+    return {'coef': coef, 'pvalue': pvalue}
 
 
 def create_pseudo_bulk(i, adata_cell_type: pd.DataFrame, adata_non_cell_type: pd.DataFrame, percentage_bootstrap):
@@ -334,45 +390,92 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
         return fig
 
 
-def _calculate_fold_change_with_bootstrap(cre_cells_expression, cell_types_order, CRE_info, rna_cells_expression, volm, calc_kwargs, bootstrap_args):
+def _calculate_fold_change_with_bootstrap(cre_cells_expression, cell_types_order, CRE_info, rna_cells_expression, volm, t7_cells_expression, calc_kwargs, bootstrap_args):
     i, cell_types_to_use, bootstrap_to_fixed_sample_size = bootstrap_args
     if bootstrap_to_fixed_sample_size is not None:
         # if bootstrap_to_fixed_sample is -1, then only select the corresponding cell type of cells
         if bootstrap_to_fixed_sample_size == -1:
-            cells_bootstrap = pd.concat([cell_types_to_use[cell_types_to_use == celltype].sample(sum(cell_types_to_use == celltype), replace=True, random_state=i) for celltype in cell_types_to_use.unique()])
+            cells_bootstrap = pd.concat(
+                [cell_types_to_use[cell_types_to_use == celltype].sample(
+                    sum(cell_types_to_use == celltype), replace=True, random_state=i
+                ) for celltype in cell_types_to_use.unique()]
+            )
             # randomly assign the cell idxs
-            cells_idx = pd.concat([cell_types_to_use[cell_types_to_use != celltype].sample(sum(cell_types_to_use == celltype), replace=True, random_state=i) for celltype in cell_types_to_use.unique()])
+            cells_idx = pd.concat(
+                [cell_types_to_use[cell_types_to_use != celltype].sample(
+                    sum(cell_types_to_use == celltype), replace=True, random_state=i
+                ) for celltype in cell_types_to_use.unique()]
+            )
         else:
             # for each cell_types_to_use, sample the same number of cells
-            cells_bootstrap = pd.concat([cell_types_to_use[cell_types_to_use == celltype].sample(bootstrap_to_fixed_sample_size, replace=True, random_state=i) for celltype in cell_types_to_use.unique()])
+            cells_bootstrap = pd.concat(
+                [cell_types_to_use[cell_types_to_use == celltype].sample(
+                    bootstrap_to_fixed_sample_size, replace=True, random_state=i
+                ) for celltype in cell_types_to_use.unique()]
+            )
             # randomly assign the cell idxs
-            cells_idx = pd.concat([cell_types_to_use[cell_types_to_use != celltype].sample(bootstrap_to_fixed_sample_size, replace=True, random_state=i) for celltype in cell_types_to_use.unique()])
+            cells_idx = pd.concat(
+                [cell_types_to_use[cell_types_to_use != celltype].sample(
+                    bootstrap_to_fixed_sample_size, replace=True, random_state=i
+                ) for celltype in cell_types_to_use.unique()]
+            )
         cells_bootstrap.index = cells_idx.index
     else:
         cells_bootstrap = cell_types_to_use.sample(frac=1, replace=False, random_state=i)
         cells_bootstrap.index = cell_types_to_use.index
-    return calculate_fold_change(cre_cells_expression, cells_bootstrap, cell_types_order, CRE_info, rna_cells_expression, volm, **calc_kwargs)
+    return calculate_fold_change(cre_cells_expression, cells_bootstrap, cell_types_order, CRE_info, 
+                                 rna_cells_expression, volm, t7_cells_expression, **calc_kwargs)
+
+
+def _calculate_average_with_bootstrap(cre_cells_expression, cell_types_order, CRE_info, rna_cells_expression, volm, t7_cells_expression, calc_kwargs, bootstrap_args):
+    i, cell_types_to_use, bootstrap_to_fixed_sample_size, bootstrap_to_fixed_pct = bootstrap_args
+    if bootstrap_to_fixed_sample_size is not None:
+        # if bootstrap_to_fixed_sample is -1, then only select the corresponding cell type of cells
+        if bootstrap_to_fixed_sample_size == -1:
+            cells_bootstrap = pd.concat(
+                [cell_types_to_use[cell_types_to_use == celltype].sample(
+                    sum(cell_types_to_use == celltype), replace=True, random_state=i
+                ) for celltype in cell_types_to_use.unique()]
+            )
+        else:
+            # for each cell_types_to_use, sample the same number of cells
+            cells_bootstrap = pd.concat(
+                [cell_types_to_use[cell_types_to_use == celltype].sample(
+                    bootstrap_to_fixed_sample_size, replace=True, random_state=i
+                ) for celltype in cell_types_to_use.unique()]
+            )
+    else:
+        cells_bootstrap = cell_types_to_use.sample(frac=bootstrap_to_fixed_pct, replace=True, random_state=i)
+    return calculate_fold_change(cre_cells_expression, cells_bootstrap, cell_types_order, CRE_info, 
+                                 rna_cells_expression, volm, t7_cells_expression, **calc_kwargs)
 
 
 def calculate_fold_change(cre_cells_expression: pd.DataFrame, cell_types_to_use: pd.Series, cell_types_order: pd.Series,
-                          CRE_info: pd.DataFrame, rna_cells_expression: pd.DataFrame, volm: pd.Series,
+                          CRE_info: pd.DataFrame, rna_cells_expression: pd.DataFrame, volm: pd.Series, t7_cells_expression: pd.DataFrame =None,
                           normalize_by_celltype_rna=False, normalize_by_celltype_volume=False,
-                          normalize_by_negative_control=False, lib_size=None, normalize_by_total_cre=False,
-                          normalize_by_infected_cell=False, normalize_by_libsize=False, filter_zero_counts=False,
-                          rank_transform=None):
+                          normalize_by_negative_control=False, normalize_by_total_cre=False, normalize_by_infected_cell=False,
+                          normalize_by_celltype_t7=False, normalize_by_libsize=False, lib_size=None,
+                          filter_zero_counts=False, rank_transform=None, calculate_fdc=False):
     foldchange = pd.DataFrame(index=cell_types_order, columns=cre_cells_expression.columns)
     if filter_zero_counts:
         # get the number of infected cells for each CRE in each cell type
-        celltype_activity_matrix = cre_cells_expression.loc[cell_types_to_use.index].groupby(cell_types_to_use.to_numpy()).sum()
-        non_zero_cells = (cre_cells_expression > 0).loc[cell_types_to_use.index].groupby(cell_types_to_use.to_numpy()).sum()
+        celltype_activity_matrix = cre_cells_expression.loc[cell_types_to_use.index].groupby(cell_types_to_use.to_numpy()).agg(np.nansum)
+        celltype_t7_matrix = t7_cells_expression.loc[cell_types_to_use.index].groupby(cell_types_to_use.to_numpy()).agg(np.nansum) if t7_cells_expression is not None else None
+        non_zero_cells = (cre_cells_expression > 0).loc[cell_types_to_use.index].groupby(cell_types_to_use.to_numpy()).agg(np.nansum)
         # before division, fill zeros with 1
         non_zero_cells[non_zero_cells == 0] = 1
         celltype_activity_matrix = celltype_activity_matrix / non_zero_cells
+        if t7_cells_expression is not None:
+            celltype_t7_matrix = celltype_t7_matrix / non_zero_cells
     else:
         # just average
-        celltype_activity_matrix = cre_cells_expression.loc[cell_types_to_use.index].groupby(cell_types_to_use.to_numpy()).mean()
+        celltype_activity_matrix = cre_cells_expression.loc[cell_types_to_use.index].groupby(cell_types_to_use.to_numpy()).agg(np.nanmean)
+        celltype_t7_matrix = t7_cells_expression.loc[cell_types_to_use.index].groupby(cell_types_to_use.to_numpy()).agg(np.nanmean) if t7_cells_expression is not None else None
+    # store raw celltype_activity_matrix
+    celltype_activity_matrix_raw = {'CRE': celltype_activity_matrix.copy(),
+                                    'T7': celltype_t7_matrix.copy() if t7_cells_expression is not None else None}
     # get proportion of cells express the CRE in each cell type
-    celltype_proportion_matrix = (cre_cells_expression > 0).loc[cell_types_to_use.index].groupby(cell_types_to_use.to_numpy()).mean()
+    celltype_proportion_matrix = (cre_cells_expression > 0).loc[cell_types_to_use.index].groupby(cell_types_to_use.to_numpy()).agg(np.nanmean)
     if normalize_by_celltype_rna:
         # get cell type RNA
         celltype_rna_matrix = rna_cells_expression.mean(axis=1).loc[cell_types_to_use.index].groupby(cell_types_to_use.to_numpy()).mean()
@@ -384,10 +487,19 @@ def calculate_fold_change(cre_cells_expression: pd.DataFrame, cell_types_to_use:
     if normalize_by_libsize:
         # normalize by lib size
         celltype_activity_matrix = celltype_activity_matrix / lib_size.values.reshape(1, -1)
+    if normalize_by_celltype_t7:
+        assert t7_cells_expression is not None, "t7_cells_expression must be provided if normalize_by_celltype_t7 is True"
+        # divided by t7 cells expression
+        celltype_activity_matrix = celltype_activity_matrix / celltype_t7_matrix
     if normalize_by_negative_control:
         # get the negative control
         negative_control = CRE_info[CRE_info['labeling_type'] == 'negative control'].index
-        negative_control_mean = celltype_activity_matrix.loc[:, negative_control].mean(axis=1)
+        # if we already divided by t7 cells expression, we do geometric mean
+        if normalize_by_celltype_t7:
+            from scipy.stats import gmean
+            negative_control_mean = celltype_activity_matrix.loc[:, negative_control].apply(lambda x: gmean(x[~np.isnan(x)]), axis=1)
+        else:
+            negative_control_mean = celltype_activity_matrix.loc[:, negative_control].apply(lambda x: np.nanmean(x), axis=1)
         negative_control_proportion_mean = celltype_proportion_matrix.loc[:, negative_control].mean(axis=1)
         # normalize by negative control
         celltype_activity_matrix = celltype_activity_matrix / negative_control_mean.values.reshape(-1, 1)
@@ -412,30 +524,37 @@ def calculate_fold_change(cre_cells_expression: pd.DataFrame, cell_types_to_use:
             celltype_activity_matrix = celltype_activity_matrix.sample(frac=1, axis=0, random_state=0)
             celltype_activity_matrix = celltype_activity_matrix.rank(axis=0, method='first')
         return celltype_activity_matrix, celltype_activity_matrix
-    for celltype in np.unique(cell_types_to_use):
-        # get the data for the cell type
-        celltype_activity = celltype_activity_matrix.loc[celltype]
-        # get non_celltype activity
-        non_celltype_activity = cre_cells_expression.loc[cell_types_to_use.index][cell_types_to_use != celltype].mean(axis=0)
-        if normalize_by_celltype_rna:
-            non_celltype_rna = rna_cells_expression.mean(axis=1).loc[cell_types_to_use.index][cell_types_to_use != celltype].mean(axis=0)
-            non_celltype_activity = non_celltype_activity / non_celltype_rna
-        if normalize_by_celltype_volume:
-            non_celltype_volm = volm.loc[cell_types_to_use.index][cell_types_to_use != celltype].mean()
-            non_celltype_activity = non_celltype_activity / non_celltype_volm
-        if normalize_by_libsize:
-            non_celltype_activity = non_celltype_activity / lib_size
-        if normalize_by_negative_control:
-            non_celltype_negative_control = non_celltype_activity[negative_control].sum()
-            non_celltype_activity = non_celltype_activity / non_celltype_negative_control
-        if normalize_by_infected_cell:
-            non_celltype_infect_rate = infected.loc[cell_types_to_use.index][cell_types_to_use != celltype].mean(axis=0)
-            non_celltype_activity = non_celltype_activity / non_celltype_infect_rate
-        foldchange.loc[celltype] = celltype_activity / non_celltype_activity
+    if calculate_fdc:
+        for celltype in np.unique(cell_types_to_use):
+            # get the data for the cell type
+            celltype_activity = celltype_activity_matrix.loc[celltype]
+            # get non_celltype activity
+            non_celltype_activity = np.nanmean(cre_cells_expression.loc[cell_types_to_use.index][cell_types_to_use != celltype].mean(axis=0))
+            non_celltype_t7 = np.nanmean(t7_cells_expression.loc[cell_types_to_use.index][cell_types_to_use != celltype].mean(axis=0)) if t7_cells_expression is not None else None
+            if normalize_by_celltype_rna:
+                non_celltype_rna = np.nanmean(rna_cells_expression.mean(axis=1).loc[cell_types_to_use.index][cell_types_to_use != celltype].mean(axis=0))
+                non_celltype_activity = non_celltype_activity / non_celltype_rna
+            if normalize_by_celltype_volume:
+                non_celltype_volm = volm.loc[cell_types_to_use.index][cell_types_to_use != celltype].mean()
+                non_celltype_activity = non_celltype_activity / non_celltype_volm
+            if normalize_by_libsize:
+                non_celltype_activity = non_celltype_activity / lib_size
+            if normalize_by_celltype_t7:
+                assert non_celltype_t7 is not None, "t7_cells_expression must be provided if normalize_by_celltype_t7 is True"
+                non_celltype_activity = non_celltype_activity / non_celltype_t7
+            if normalize_by_negative_control:
+                non_celltype_negative_control = non_celltype_activity[negative_control].sum()
+                non_celltype_activity = non_celltype_activity / non_celltype_negative_control
+            if normalize_by_infected_cell:
+                non_celltype_infect_rate = infected.loc[cell_types_to_use.index][cell_types_to_use != celltype].mean(axis=0)
+                non_celltype_activity = non_celltype_activity / non_celltype_infect_rate
+            foldchange.loc[celltype] = celltype_activity / non_celltype_activity
     # remap by cell_types_order
     foldchange = foldchange.reindex(cell_types_order)
     celltype_activity_matrix = celltype_activity_matrix.reindex(cell_types_order)
-    return foldchange, celltype_activity_matrix, celltype_proportion_matrix
+    celltype_activity_matrix_raw['CRE'] = celltype_activity_matrix_raw['CRE'].reindex(cell_types_order)
+    celltype_activity_matrix_raw['T7'] = celltype_activity_matrix_raw['T7'].reindex(cell_types_order) if t7_cells_expression is not None else None
+    return foldchange, celltype_activity_matrix, celltype_proportion_matrix, celltype_activity_matrix_raw
 
 
 def col_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_threshold2=None):
@@ -612,7 +731,7 @@ def motif_enrichment(ranked_scores: pd.DataFrame):
 
 class STARRFISH:
     def __init__(self, adata: Union[sc.AnnData, str], 
-                 cre_tag = 'obsm:CRE', celltype_tag='obs:subclass', spatial_tag='obsm:X_spatial', creinfo_tag='uns:CRE_info',
+                 cre_tag = 'obsm:CRE', t7_tag = 'obsm:T7CRE', celltype_tag='obs:subclass', spatial_tag='obsm:X_spatial', creinfo_tag='uns:CRE_info',
                  atac_cpm: Union[pd.DataFrame, str] = 'Data/ATAC/cpm_peakBysubclass.csv',
                  atac_counts: Union[pd.DataFrame, str] = 'Data/ATAC/count_peakBysubclass.csv',
                  lib_size: Union[pd.DataFrame, str] = 'Data/SFv8_400CRE_nanopore_counts.csv',
@@ -627,6 +746,7 @@ class STARRFISH:
         self.celltype_tag = celltype_tag
         self.spatial_tag = spatial_tag
         self.cre_info_tag = creinfo_tag
+        self.t7_tag = t7_tag
         # change the "/" to "-" in obs:subclass
         self.adata.obs['subclass'] = self.adata.obs['subclass'].str.replace('/', '-')
         # if celltype tag is "obs:class", we transform atac_cpm to class level
@@ -793,14 +913,45 @@ class STARRFISH:
         # get the CREs
         tag_attr = tag.split(':')[0]
         tag_col = tag.split(':')[1]
+        if tag_col not in self.adata.__getattribute__(tag_attr).keys():
+            return None
         return self.adata.__getattribute__(tag_attr)[tag_col]
     
     def get_cre_expression(self) -> pd.DataFrame:
         return self.get_tag(self.cre_tag)
 
+    def get_t7_expression(self) -> pd.DataFrame:
+        if not hasattr(self, 't7_tag') or self.t7_tag is None:
+            return None
+        return self.get_tag(self.t7_tag)
+
     def get_rna_expression(self) -> pd.DataFrame:
         # get the RNA expression
         return self.get_tag('obsm:X_raw')
+
+    def get_k_nearest_neighbors(self, cell_id, k=10, spatial_tag='obsm:X_spatial') -> pd.DataFrame:
+        # get the k nearest neighbors based on coordinates
+        spatial_coords = self.get_tag(spatial_tag)
+        cell_mask = self.adata.obs_names == cell_id
+        if not cell_mask.any():
+            raise ValueError(f"Cell ID {cell_id} not found.")
+        # Get target cell coordinates
+        cell_coordinates = spatial_coords[cell_mask][0]
+        # Vectorized distance calculation to all cells
+        distances = np.linalg.norm(spatial_coords - cell_coordinates, axis=1)
+        # Exclude the target cell itself
+        other_cell_mask = ~cell_mask
+        other_distances = distances[other_cell_mask]
+        other_cell_names = self.adata.obs_names[other_cell_mask]
+        # Get k nearest neighbor indices
+        k_nearest_idx = np.argpartition(other_distances, min(k-1, len(other_distances)-1))[:k]
+        # Create result DataFrame with cell indices and distances
+        result_df = pd.DataFrame({
+            'distance': other_distances[k_nearest_idx],
+            'X': spatial_coords[other_cell_mask][k_nearest_idx, 0],
+            'Y': spatial_coords[other_cell_mask][k_nearest_idx, 1]
+        }, index=other_cell_names[k_nearest_idx])
+        return result_df.sort_values('distance')
 
     def get_cre_expression_normalized(self, cell_types_to_use=None, normalize_by_cell_rna=True, normalize_by_volume=True, log_transform=False) -> pd.DataFrame:
         if cell_types_to_use is not None:
@@ -859,11 +1010,37 @@ class STARRFISH:
         cres = cres[cres['labeling_type'] == 'negative control']
         return cres.index
     
-    def get_positive_control_cres(self, cell_type) -> pd.Series:
+    def get_positive_control_cres(self, cell_type, use='define') -> pd.Series:
         # get the positive control cres
-        cres = self.get_creinfo().copy()
-        cres = cres[cres['best_subclass'] == cell_type]
-        return cres.index
+        if use == 'define':
+            cres = self.get_creinfo().copy()
+            cres = cres[cres['best_subclass'] == cell_type]
+            return cres.index
+        elif use == 'atac-peak':
+            cre_atac_peaks = pd.read_csv('Data/cre_atac_peaks.csv', index_col=0)
+            if cell_type not in cre_atac_peaks.index:
+                return None
+            cre_atac_peaks = cre_atac_peaks.loc[cell_type]
+            cres = cre_atac_peaks[cre_atac_peaks > 0.5].index
+            return cres
+        elif use == 'chromatin-a':
+            chromatin_a = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
+            # get the chromatin-a cres for the cell type
+            if cell_type not in chromatin_a.index:
+                return None
+            chromatin_a = chromatin_a.loc[cell_type]
+            cres = chromatin_a[chromatin_a > 0.5].index
+            return cres
+        elif use == 'chromatin-o':
+            chromatin_o = pd.read_csv('Data/cre_chromatin_state_o.csv', index_col=0)
+            chromatin_a = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
+            # get the chromatin-o cres for the cell type
+            if cell_type not in chromatin_o.index or cell_type not in chromatin_a.index:
+                return None
+            chromatin_o = chromatin_o.loc[cell_type]
+            chromatin_a = chromatin_a.loc[cell_type]
+            cres = chromatin_o[chromatin_o > 0.5].index.union(chromatin_a[chromatin_a > 0.5].index)
+            return cres
     
     def get_atac_z_cres(self, cell_type, z=2) -> pd.Series:
         # get the positive control cres
@@ -881,7 +1058,8 @@ class STARRFISH:
                   norm_by_negative_control_cell_type_mean=False, norm_by_negative_control_cell_type_sum=True, 
                   norm_by_negative_control_single_cell=False, log=True,
                   cell_types_to_use=None, cell_types_to_visualize=None, 
-                  nmin=None, nmax=None, sz_min=5, sz_max=30, scale_size_by: Literal['counts', 'celltype_number']='counts',  
+                  nmin=None, nmax=None, sz_background=3, sz_min=5, sz_max=30, 
+                  scale_size_by: Literal['counts', 'celltype_number']='counts',  
                   cmap_name='Reds',
                   x_region=None, y_region=None, select_region_by_best_celltype=False, 
                   show_celltypes=True, show_scalebar=True, show_title=True,
@@ -889,7 +1067,7 @@ class STARRFISH:
         tag = self.spatial_tag.split(':')[1]
         Xcells = self.adata.obsm[tag][:, ::transpose] * [flipx, flipy]
         # get best cell type
-        if use == 'CRE':
+        if use == 'CRE' or use == 'T7CRE':
             if cell_types_to_visualize is None:
                 best_celltype = [self.adata.uns['CRE_info'].loc[gene, 'best_subclass']]
             else:
@@ -933,23 +1111,6 @@ class STARRFISH:
             _, indices = knn.kneighbors(Xcells)
             # smooth the data
             cts = np.nanmean(cts[indices], axis=1)
-        # filter out nmin
-        if nmin is not None:
-            cts[cts < nmin] = 0
-        nmax = np.nanmax(cts) if nmax is None else nmax
-        ncts = np.clip(cts/nmax, 0, 1)
-        if scale_size_by == 'counts':
-            size = sz_min + ncts * (sz_max - sz_min)
-        elif scale_size_by == 'celltype_number':
-            # get the number of cell types
-            celltype_number = self.get_celltypes().value_counts().loc[self.get_celltypes()].values
-            # if not in cell_types_to_use, then set to 0
-            celltype_number[~self.get_celltypes().isin(cell_types_to_use)] = 0
-            # normalize the celltype_number
-            celltype_number = celltype_number.max() - celltype_number + 1
-            celltype_number = np.clip(celltype_number / celltype_number.max(), 0, 1)
-            size = sz_min + celltype_number * (sz_max - sz_min)
-        cmap = plt.get_cmap(cmap_name)(ncts)
         if select_region_by_best_celltype:
             # select region by best_celltype
             xmin = Xcells[:, 0].min()
@@ -979,16 +1140,29 @@ class STARRFISH:
             select_region = (Xcells[:, 0] > x_region[0]) & (Xcells[:, 0] < x_region[1])
             Xcells = Xcells[select_region]
             cts = cts[select_region]
-            cmap = cmap[select_region]
-            size = size[select_region]
         if y_region is not None:
             select_region = (Xcells[:, 1] > y_region[0]) & (Xcells[:, 1] < y_region[1])
             Xcells = Xcells[select_region]
             cts = cts[select_region]
-            cmap = cmap[select_region]
-            size = size[select_region]
+        # filter out nmin
+        if nmin is not None:
+            cts[cts < nmin] = 0
+        nmax = np.nanmax(cts) if nmax is None else nmax
+        ncts = np.clip(cts/nmax, 0, 1)
+        if scale_size_by == 'counts':
+            size = sz_min + ncts * (sz_max - sz_min)
+        elif scale_size_by == 'celltype_number':
+            # get the number of cell types
+            celltype_number = self.get_celltypes().value_counts().loc[self.get_celltypes()].values
+            # if not in cell_types_to_use, then set to 0
+            celltype_number[~self.get_celltypes().isin(cell_types_to_use)] = 0
+            # normalize the celltype_number
+            celltype_number = celltype_number.max() - celltype_number + 1
+            celltype_number = np.clip(celltype_number / celltype_number.max(), 0, 1)
+            size = sz_min + celltype_number * (sz_max - sz_min)
+        cmap = plt.get_cmap(cmap_name)(ncts)
         # Create single figure and axes
-        if use == 'CRE':
+        if use == 'CRE' or use == 'T7CRE':
             if show_celltypes:
                 fig = plt.figure(figsize=figsize, facecolor='k')
                 gs = fig.add_gridspec(1, 3, width_ratios=[0.49, 0.02, 0.49], wspace=0.05)
@@ -1008,7 +1182,8 @@ class STARRFISH:
                                     x_region=x_region, y_region=y_region,
                                     sbig=20, small=3, ax=ax_ctypes, plot_legend=show_title, show_title=show_title)
             else:
-                gs = fig.add_gridspec(1, 3, width_ratios=[0.95, 0.05], wspace=0.05)
+                fig = plt.figure(figsize=figsize, facecolor='k')
+                gs = fig.add_gridspec(1, 2, width_ratios=[0.95, 0.05], wspace=0.05)
                 ax_main = fig.add_subplot(gs[0])
                 ax_cbar = fig.add_subplot(gs[1])
             if show_title:
@@ -1017,10 +1192,12 @@ class STARRFISH:
             # Plot data
             cell_with_genes = np.where(cts > 0)[0]
             # first plot cells without genes, then plot cells with genes
-            ax_main.scatter(Xcells[:, 0], Xcells[:, 1], c='grey', s=3, marker='.', alpha=0.7, rasterized=True, edgecolors='none')
+            ax_main.scatter(Xcells[:, 0], Xcells[:, 1], c='grey', s=sz_background, marker='.', alpha=0.7, rasterized=True, edgecolors='none')
             # scale the alpha values for the points based on counts
             scaler = MinMaxScaler(feature_range=(0, 1))
             scaled_alpha = scaler.fit_transform(ncts.reshape(-1,1)).flatten()
+            # np clip the scaled_alpha to [0, 1]
+            scaled_alpha = np.clip(scaled_alpha, 0, 1)
             # plot the CRE counts
             # ax_main.scatter(Xcells[cell_with_genes, 0], Xcells[cell_with_genes, 1], c='#00FF00', sizes=size[cell_with_genes], alpha=scaled_alpha[cell_with_genes], rasterized=True)
             ax_main.scatter(Xcells[:, 0], Xcells[:, 1], c='#00FF00', sizes=size, alpha=scaled_alpha, rasterized=True, edgecolors='none')
@@ -1168,7 +1345,7 @@ class STARRFISH:
             inds = self.adata.obs[use] == cluster_
             x_ = x[inds]
             y_ = y[inds]
-            if isinstance(cmap, list):
+            if isinstance(cmap, list) or isinstance(cmap, np.ndarray):
                 col = cmap[i % len(cmap)]
             else:
                 if cluster_ in cmap.keys():
@@ -1546,22 +1723,25 @@ class STARRFISH:
         return cre_info
     
     def fold_change_test(self, cell_types_to_use: List=None, 
-                         normalize_by_cell_rna=False, normalize_by_cell_volume=False,
+                         normalize_by_cell_rna=False, normalize_by_cell_volume=False, normalize_by_cell_t7=False, filter_by_cell_t7=None,
                          normalize_by_celltype_rna=False, normalize_by_celltype_volume=False,
                          normalize_by_negative_control=False, normalize_by_infected_cell=False,
-                         normalize_by_total_cre=False, normalize_by_libsize=False,
-                         filter_zero_counts=False, log_transform=False, rank_transform=None,
+                         normalize_by_celltype_t7=False, normalize_by_total_cre=False, normalize_by_libsize=False,
+                         filter_zero_counts=False, log_transform=False, bulk_log_transform=False, rank_transform=None,
                          bootstrap_number=None, bootstrap_to_fixed_sample_size=None, apply_bootstrap_in_observation=False,
-                         fill_nan=True, n_jobs=256, load_stored=True, dry_run=False) -> dict:
+                         calculate_fdc=False, fill_nan=True, n_jobs=256, load_stored=True, dry_run=False) -> dict:
         config = {
             'cell_types_to_use': cell_types_to_use,
             'normalize_by_cell_rna': normalize_by_cell_rna,
             'normalize_by_cell_volume': normalize_by_cell_volume,
+            'normalize_by_cell_t7': normalize_by_cell_t7,
+            'filter_by_cell_t7': filter_by_cell_t7,
             'normalize_by_celltype_rna': normalize_by_celltype_rna,
             'normalize_by_celltype_volume': normalize_by_celltype_volume,
             'normalize_by_negative_control': normalize_by_negative_control,
             'normalize_by_total_cre': normalize_by_total_cre,
             'normalize_by_infected_cell': normalize_by_infected_cell,
+            'normalize_by_celltype_t7': normalize_by_celltype_t7,
             'normalize_by_libsize': normalize_by_libsize,
             "filter_zero_counts": filter_zero_counts,
             'log_transform': log_transform,
@@ -1569,17 +1749,18 @@ class STARRFISH:
             'bootstrap_number': bootstrap_number,
             'bootstrap_to_fixed_sample_size': bootstrap_to_fixed_sample_size,
             'apply_bootstrap_in_observation': apply_bootstrap_in_observation,
+            'calculate_fdc': calculate_fdc,
             'fill_nan': fill_nan,}
         default_config = {
             'cell_types_to_use': None,
-            'normalize_by_cell_rna': False, 'normalize_by_cell_volume': False,
-            'normalize_by_celltype_rna': False, 'normalize_by_celltype_volume': False,
+            'normalize_by_cell_rna': False, 'normalize_by_cell_volume': False, 'normalize_by_cell_t7': False, 'filter_by_cell_t7': None,
+            'normalize_by_celltype_rna': False, 'normalize_by_celltype_volume': False, 'normalize_by_celltype_t7': False,
             'normalize_by_negative_control': False, 'normalize_by_infected_cell': False,
             'normalize_by_total_cre': False, 'normalize_by_libsize': False,
             'filter_zero_counts': False, 'log_transform': False, 'rank_transform': None,
             'bootstrap_number': None, 
             'bootstrap_to_fixed_sample_size': None, 'apply_bootstrap_in_observation': False,
-            'fill_nan': True,
+            'calculate_fdc': False, 'fill_nan': True,
         }
         # check if the results already exist
         partial_loaded = False
@@ -1626,6 +1807,9 @@ class STARRFISH:
         volm = volm.loc[cell_types_to_use.index]
         # transform rna_celltypes_expression to dataframe
         rna_cells_expression = pd.DataFrame(rna_cells_expression, index=cell_types_to_use.index)
+        t7_cells_expression = self.get_t7_expression()
+        if t7_cells_expression is not None:
+            t7_cells_expression = t7_cells_expression.loc[cre_cells_expression.index]
         if normalize_by_cell_rna and normalize_by_cell_volume:
             rna_per_volume = rna_cells_expression / volm.values.reshape(-1, 1)
             cre_cells_expression = cre_cells_expression / rna_per_volume.mean(axis=1).values.reshape(-1, 1)
@@ -1633,6 +1817,18 @@ class STARRFISH:
             cre_cells_expression = cre_cells_expression / rna_cells_expression.mean(axis=1).values.reshape(-1, 1)
         elif normalize_by_cell_volume and not normalize_by_cell_rna:
             cre_cells_expression = cre_cells_expression / volm.values.reshape(-1, 1)
+        if filter_by_cell_t7 is not None:
+            # filter out the cells that don't have t7 expression above the filter_by_cell_t7 threshold
+            if t7_cells_expression is not None:
+                cre_cells_expression[t7_cells_expression < filter_by_cell_t7] = np.nan
+                t7_cells_expression[t7_cells_expression < filter_by_cell_t7] = np.nan
+        if normalize_by_cell_t7:
+            assert t7_cells_expression is not None, "t7_cells_expression is required when normalize_by_cell_t7 is True"
+            cre_cells_expression = cre_cells_expression / t7_cells_expression
+            # if we encounter NaN or Inf, we will fill them with 0
+            cre_cells_expression = cre_cells_expression.fillna(0).replace([np.inf, -np.inf], 0)
+        if not normalize_by_cell_t7 and not normalize_by_celltype_t7:
+            t7_cells_expression = None
         if log_transform:
             cre_cells_expression = np.log1p(cre_cells_expression)
         cre_info = self.get_creinfo().copy()
@@ -1642,17 +1838,17 @@ class STARRFISH:
             'cell_types_order': np.unique(cell_types_to_use),
             'CRE_info': cre_info, 'rna_cells_expression': rna_cells_expression, 'volm': volm,
             'normalize_by_celltype_rna': normalize_by_celltype_rna, 'normalize_by_celltype_volume': normalize_by_celltype_volume,
-            'normalize_by_negative_control': normalize_by_negative_control, 'lib_size': self.lib_size['counts'], 
-            'normalize_by_total_cre': normalize_by_total_cre, 'normalize_by_infected_cell': normalize_by_infected_cell, 
-            'normalize_by_libsize': normalize_by_libsize,
-            'filter_zero_counts': filter_zero_counts, 'rank_transform': rank_transform,
+            'normalize_by_negative_control': normalize_by_negative_control, 'normalize_by_total_cre': normalize_by_total_cre, 'normalize_by_infected_cell': normalize_by_infected_cell, 
+            'normalize_by_celltype_t7': normalize_by_celltype_t7, 't7_cells_expression': t7_cells_expression,
+            'normalize_by_libsize': normalize_by_libsize, 'lib_size': self.lib_size['counts'], 
+            'filter_zero_counts': filter_zero_counts, 'rank_transform': rank_transform, 'calculate_fdc': calculate_fdc
         }
         if not partial_loaded:
             if bootstrap_to_fixed_sample_size is not None and apply_bootstrap_in_observation:
                 # for each cell_types_to_use, sample the same number of cells
                 cells_bootstrap = pd.concat([cell_types_to_use[cell_types_to_use == celltype].sample(bootstrap_to_fixed_sample_size, replace=True, random_state=2**32-1) for celltype in cell_types_to_use.unique()])
                 calculate_fold_change_args['cell_types_to_use'] = cells_bootstrap
-            foldchange, celltype_activity, celltype_proportion = calculate_fold_change(**calculate_fold_change_args)
+            foldchange, celltype_activity, celltype_proportion, _ = calculate_fold_change(**calculate_fold_change_args)
             # get the foldchange for the CREs
             for cre in cre_info.index:
                 # get the best subclass
@@ -1683,17 +1879,22 @@ class STARRFISH:
                 'normalize_by_total_cre': normalize_by_total_cre,
                 'normalize_by_infected_cell': normalize_by_infected_cell,
                 'normalize_by_libsize': normalize_by_libsize,
+                'normalize_by_celltype_t7': normalize_by_celltype_t7,
                 'filter_zero_counts': filter_zero_counts,
                 'rank_transform': rank_transform,
+                'calculate_fdc': calculate_fdc,
             }
             print('Finished preparing bootstrap args, start calculating bootstrap')
             bootstrap_results = Parallel(n_jobs=n_jobs, backend='loky', batch_size=1)(
-                delayed(_calculate_fold_change_with_bootstrap)(cre_cells_expression, np.unique(cell_types_to_use), cre_info, rna_cells_expression, volm, calc_kwargs, args) for args in bootstrap_prep_args
+                delayed(_calculate_fold_change_with_bootstrap)(
+                    cre_cells_expression, np.unique(cell_types_to_use), cre_info, 
+                    rna_cells_expression, volm, t7_cells_expression, calc_kwargs, args
+                ) for args in bootstrap_prep_args
             )
             foldchange_array = np.ndarray((bootstrap_number, foldchange.shape[0], foldchange.shape[1]))
             activity_array = np.ndarray((bootstrap_number, celltype_activity.shape[0], celltype_activity.shape[1]))
             proportion_array = np.ndarray((bootstrap_number, celltype_proportion.shape[0], celltype_proportion.shape[1]))
-            for i, (fc, act, porp) in enumerate(bootstrap_results):
+            for i, (fc, act, porp, _) in enumerate(bootstrap_results):
                 foldchange_array[i] = fc
                 activity_array[i] = act
                 proportion_array[i] = porp
@@ -1755,7 +1956,208 @@ class STARRFISH:
         self.fold_change_test_results.append(fold_change_test_result)
         self.fold_change_test_configs.append(config)
         return fold_change_test_result
-    
+
+    def average_bootstrap_test(self, cell_types_to_use, normalize_by_cell_rna=False, normalize_by_cell_volume=False, normalize_by_cell_t7=False,
+                               normalize_by_celltype_rna=False, normalize_by_celltype_volume=False,
+                               normalize_by_negative_control=False, normalize_by_celltype_t7=False, filter_by_cell_t7=None,
+                               normalize_by_libsize=False, log_transform=False, 
+                               bootstrap_number=None, bootstrap_to_fixed_sample_size=None, bootstrap_to_fixed_pct=None,
+                               fill_nan=True, n_jobs=256, load_stored=True, dry_run=False) -> dict:
+        # This function is similar to fold_change_test but only do bootstrap within each cell type.
+        config = {
+            'cell_types_to_use': cell_types_to_use,
+            'normalize_by_cell_rna': normalize_by_cell_rna,
+            'normalize_by_cell_volume': normalize_by_cell_volume,
+            'normalize_by_cell_t7': normalize_by_cell_t7,
+            'normalize_by_celltype_rna': normalize_by_celltype_rna,
+            'normalize_by_celltype_volume': normalize_by_celltype_volume,
+            'normalize_by_negative_control': normalize_by_negative_control,
+            'normalize_by_celltype_t7': normalize_by_celltype_t7,
+            'filter_by_cell_t7': filter_by_cell_t7,
+            'normalize_by_libsize': normalize_by_libsize,
+            'log_transform': log_transform,
+            'bootstrap_number': bootstrap_number,
+            'bootstrap_to_fixed_sample_size': bootstrap_to_fixed_sample_size,
+            'bootstrap_to_fixed_pct': bootstrap_to_fixed_pct,
+            'fill_nan': fill_nan,
+        }
+        # check if the results already exist
+        if load_stored and hasattr(self, 'average_bootstrap_test_results') and hasattr(self, 'average_bootstrap_test_configs'):
+            for stored_config, stored_result in zip(self.average_bootstrap_test_configs, self.average_bootstrap_test_results):
+                if all(stored_config[k] == config[k] for k in config if k in stored_config):
+                    # if the results already exist, return the results
+                    print('Results already exist, return stored results')
+                    return stored_result.copy()
+        if cell_types_to_use is not None:
+            # get the cell types
+            cre_cells_expression, rna_cells_expression, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
+        else:
+            cre_cells_expression = self.get_cre_expression().copy()
+            rna_cells_expression = self.get_rna_expression().copy()
+            cell_types_to_use = self.get_celltypes()
+        volm = self.get_tag('obs:volm').copy()
+        volm = volm.loc[cell_types_to_use.index]
+        # transform rna_celltypes_expression to dataframe
+        rna_cells_expression = pd.DataFrame(rna_cells_expression, index=cell_types_to_use.index)
+        t7_cells_expression = self.get_t7_expression()
+        if t7_cells_expression is not None:
+            t7_cells_expression = t7_cells_expression.loc[cre_cells_expression.index]
+        if normalize_by_cell_rna and normalize_by_cell_volume:
+            rna_per_volume = rna_cells_expression / volm.values.reshape(-1, 1)
+            cre_cells_expression = cre_cells_expression / rna_per_volume.mean(axis=1).values.reshape(-1, 1)
+        elif normalize_by_cell_rna and not normalize_by_cell_volume:
+            cre_cells_expression = cre_cells_expression / rna_cells_expression.mean(axis=1).values.reshape(-1, 1)
+        elif normalize_by_cell_volume and not normalize_by_cell_rna:
+            cre_cells_expression = cre_cells_expression / volm.values.reshape(-1, 1)
+        if normalize_by_cell_t7:
+            assert t7_cells_expression is not None, "t7_cells_expression is required when normalize_by_cell_t7 is True"
+            cre_cells_expression = cre_cells_expression / t7_cells_expression
+            # fill inf values with nan
+            cre_cells_expression[np.isinf(cre_cells_expression)] = np.nan
+            # if normalize_by_cell_t7 is a numeric value, fill nan for cells with t7 smaller than that value
+            if isinstance(normalize_by_cell_t7, (int, float)):
+                cre_cells_expression[t7_cells_expression < normalize_by_cell_t7] = np.nan
+        if filter_by_cell_t7 is not None:
+            # filter the cells with t7 expression smaller than filter_by_cell_t7
+            if t7_cells_expression is not None:
+                cre_cells_expression[t7_cells_expression < filter_by_cell_t7] = np.nan
+                t7_cells_expression[t7_cells_expression < filter_by_cell_t7] = np.nan
+        if not normalize_by_cell_t7 and not normalize_by_celltype_t7:
+            t7_cells_expression = None
+        if log_transform:
+            cre_cells_expression = np.log(cre_cells_expression)
+        cre_info = self.get_creinfo().copy()
+        # Prepare kwargs for calculate_fold_change
+        calc_kwargs = {
+            'normalize_by_celltype_rna': normalize_by_celltype_rna,
+            'normalize_by_celltype_volume': normalize_by_celltype_volume,
+            'normalize_by_negative_control': normalize_by_negative_control,
+            'lib_size': self.lib_size['counts'],
+            'normalize_by_libsize': normalize_by_libsize,
+            'normalize_by_celltype_t7': normalize_by_celltype_t7,
+            'calculate_fdc': False,
+        }
+        if bootstrap_number is not None:
+            if n_jobs is None:
+                n_jobs = int(multiprocessing.cpu_count()*0.8)
+            bootstrap_prep_args = [(i, cell_types_to_use, bootstrap_to_fixed_sample_size, bootstrap_to_fixed_pct) for i in range(bootstrap_number)]
+            print('Finished preparing bootstrap args, start calculating bootstrap')
+            bootstrap_results = Parallel(n_jobs=n_jobs, backend='loky', batch_size=1)(
+                delayed(_calculate_average_with_bootstrap)(
+                    cre_cells_expression, np.unique(cell_types_to_use), cre_info, 
+                    rna_cells_expression, volm, t7_cells_expression, calc_kwargs, args
+                ) for args in bootstrap_prep_args
+            )
+            # store into an array
+            celltype_activity_array = np.ndarray((bootstrap_number, len(np.unique(cell_types_to_use)), cre_cells_expression.shape[1]))
+            celltype_CRE_raw = np.ndarray((bootstrap_number, len(np.unique(cell_types_to_use)), cre_cells_expression.shape[1]))
+            celltype_T7_raw = np.ndarray((bootstrap_number, len(np.unique(cell_types_to_use)), cre_cells_expression.shape[1]))
+            for i, (_, act, _, raw) in enumerate(bootstrap_results):
+                celltype_activity_array[i] = act
+                celltype_CRE_raw[i] = raw['CRE']
+                celltype_T7_raw[i] = raw['T7']
+            # replace inf with NaN
+            tmp = celltype_activity_array.copy()
+            tmp[np.isinf(tmp)] = np.nan
+            cre_celltype_activity = np.nanmean(tmp, axis=0)
+            # transform to DataFrame
+            cre_celltype_activity = pd.DataFrame(cre_celltype_activity, index=np.unique(cell_types_to_use), 
+                                                 columns=cre_cells_expression.columns)
+        else:
+            # just calculate the fold change without bootstrap
+            res = calculate_fold_change(cre_cells_expression, cell_types_to_use, np.unique(cell_types_to_use), cre_info, 
+                                        rna_cells_expression, volm, t7_cells_expression, **calc_kwargs)
+            celltype_activity_array = None
+            celltype_CRE_raw = None
+            celltype_T7_raw = None
+            cre_celltype_activity = res[1]
+        # store the results
+        if not hasattr(self, 'average_bootstrap_test_results') or not hasattr(self, 'average_bootstrap_test_configs'):
+            self.average_bootstrap_test_results = []
+            self.average_bootstrap_test_configs = []
+        res = {'celltype_activity_array': celltype_activity_array,
+               'celltype_CRE_raw': celltype_CRE_raw,
+               'celltype_T7_raw': celltype_T7_raw,
+               'celltype_activity': cre_celltype_activity}
+        self.average_bootstrap_test_results.append(res)
+        self.average_bootstrap_test_configs.append(config)
+        return res
+
+    def average_bootstrap_test_q(self, res, threshold: Literal['0', 'total', 'total_dist', 'neg_control', 'neg_control_dist'] = '0', 
+                                 norm='T7', tail='right'):
+        # fold change to T7 array
+        res_array = res['celltype_activity_array'].copy()
+        # log then average
+        res_array = np.log(res_array)
+        # assign inf to NaN
+        res_array[np.isinf(res_array)] = np.nan
+        neg_control_array = res_array[:, :, res['celltype_activity'].columns.isin(self.get_negative_control_cres())]
+        neg_control_array = np.nanmean(neg_control_array, axis=2)
+        # turn to DataFrame
+        res_df = pd.DataFrame(np.nanmean(res_array, axis=0), index=res['celltype_activity'].index, columns=res['celltype_activity'].columns)
+        # for each cell type, calculate the fold change of total CRE / total T7
+        res_p1 = pd.DataFrame(index=res['celltype_activity'].index, columns=res['celltype_activity'].columns)
+        res_p2 = pd.DataFrame(index=res['celltype_activity'].index, columns=res['celltype_activity'].columns)
+        for cell_type in res['celltype_activity'].index:
+            cre_ct = self.get_cre_expression().loc[self.get_celltypes() == cell_type].copy()
+            t7_ct = self.get_t7_expression().loc[self.get_celltypes() == cell_type].copy()
+            total_cre = cre_ct.sum(axis=0).sum()
+            total_t7 = t7_ct.sum(axis=0).sum() if t7_ct is not None else 0
+            total_libsize = self.lib_size['counts'].sum() if self.lib_size is not None else 0
+            total_neg_control_cre = cre_ct[self.get_negative_control_cres()].sum(axis=0).sum()
+            total_neg_control_t7 = t7_ct[self.get_negative_control_cres()].sum(axis=0).sum() if t7_ct is not None else 0
+            total_neg_control_libsize = self.lib_size['counts'][self.get_negative_control_cres()].sum() if self.lib_size is not None else 0
+            # calculate the fold change
+            if threshold == '0':
+                fdc_u = 0
+                fdc_l = fdc_u
+            elif threshold == 'total':
+                if norm == 'T7':
+                    fdc_u = np.log(total_cre / total_t7)
+                elif norm == 'libsize':
+                    fdc_u = np.log(total_cre / total_libsize)
+                fdc_l = fdc_u
+            elif threshold == 'total_dist':
+                # use the distribution of total CREs to set the threshold
+                fdc = np.nanmean(res_array[:, res['celltype_activity'].index == cell_type])
+                fdc_std = np.nanstd(res_array[:, res['celltype_activity'].index == cell_type])
+                fdc_u = fdc + 2 * fdc_std
+                fdc_l = fdc - 2 * fdc_std
+            elif threshold == 'neg_control':
+                if norm == 'T7':
+                    fdc_u = np.log(total_neg_control_cre / total_neg_control_t7)
+                elif norm == 'libsize':
+                    fdc_u = np.log(total_neg_control_cre / total_neg_control_libsize)
+                fdc_l = fdc_u
+            elif threshold == 'neg_control_dist':
+                # use the distribution of negative control CREs to set the threshold
+                fdc = np.nanmean(neg_control_array[:, res['celltype_activity'].index == cell_type])
+                fdc_std = np.nanstd(neg_control_array[:, res['celltype_activity'].index == cell_type])
+                fdc_u = fdc + 2 * fdc_std
+                fdc_l = fdc - 2 * fdc_std
+            if np.isnan(fdc_u) or np.isinf(fdc_u):
+                res_p1.loc[cell_type] = np.nan
+            else:
+                res_p1.loc[cell_type] = np.nanmean(res_array[:, res['celltype_activity'].index == cell_type, :] < fdc_u, axis=0)
+            if np.isnan(fdc_l) or np.isinf(fdc_l):
+                res_p2.loc[cell_type] = np.nan
+            else:
+                res_p2.loc[cell_type] = np.nanmean(res_array[:, res['celltype_activity'].index == cell_type, :] > fdc_l, axis=0)
+            # if too many nan, the test is failed
+            res_nansum = (~np.isnan(res_array[:, res['celltype_activity'].index == cell_type, :])).sum(axis=0)
+            res_p1.loc[cell_type][res_nansum[0] < res_array.shape[0] * 0.01] = np.nan
+            res_p2.loc[cell_type][res_nansum[0] < res_array.shape[0] * 0.01] = np.nan
+        # do q-value correction
+        res2_q1 = pd.DataFrame(multitest.multipletests(res_p1.values.flatten(), method='fdr_bh')[1].reshape(res_p1.shape), index=res_p1.index, columns=res_p1.columns)
+        res2_q2 = pd.DataFrame(multitest.multipletests(res_p2.values.flatten(), method='fdr_bh')[1].reshape(res_p2.shape), index=res_p2.index, columns=res_p2.columns)
+        res2_q = pd.DataFrame(np.minimum(res2_q1.values, res2_q2.values), index=res_p1.index, columns=res_p1.columns)
+        if tail == 'right':
+            return res2_q1, res_df
+        elif tail == 'left':
+            return res2_q2, res_df
+        elif tail == 'both':
+            return res2_q, res_df
+
     def neg_control_regression_test(self, cell_types_to_use: List=None, 
                                     negative_control=None,
                                     normalize_by_cell_rna=False, normalize_by_cell_volume=False,
@@ -1982,27 +2384,33 @@ class STARRFISH:
         self.mixture_model_test_results.append(res)
         self.mixture_model_test_configs.append(config)
         return res
-    
-    def glm_test(self, cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, fov_covariate=False, 
-                 filter_infected_cells=True, only_keep_positive_per_cre=True, multiprocess_threads=256) -> dict:
+
+    def glm_test(self, variate='RNA', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, fov_covariate=False, rna_covariate=False,
+                 filter_infected_cells=True, positive_x_or_y = True, only_keep_positive_x=False, only_keep_positive_y = False, multiprocess_threads=256) -> dict:
         config = {
+            'variate': variate,
             'norm_by_volm': norm_by_volm,
             'volm_covariate': volm_covariate,
             'fov_covariate': fov_covariate,
+            'rna_covariate': rna_covariate,
             'filter_infected_cells': filter_infected_cells,
-            'only_keep_positive_per_cre': only_keep_positive_per_cre
+            'positive_x_or_y': positive_x_or_y,
+            'only_keep_positive_x': only_keep_positive_x,
+            'only_keep_positive_y': only_keep_positive_y,
         }
         # if the results already exist, return the results
-        if hasattr(self, 'glm_results') and hasattr(self, 'glm_configs'):
-            for stored_config, glm_result in zip(self.glm_configs, self.glm_results):
+        if hasattr(self, 'glm_test_results') and hasattr(self, 'glm_test_configs'):
+            for stored_config, glm_result in zip(self.glm_test_configs, self.glm_test_results):
                 if stored_config == config:
                     # if the results already exist, return the results
                     print('Results already exist, return stored results')
                     return glm_result.copy()
-        result = glm(self.adata, cell_types_to_use=cell_types_to_use, norm_by_volm=norm_by_volm, 
-                     volm_covariate=volm_covariate, fov_covariate=fov_covariate, 
+        result = glm(self.adata, variate=variate, cell_types_to_use=cell_types_to_use, norm_by_volm=norm_by_volm, 
+                     volm_covariate=volm_covariate, fov_covariate=fov_covariate, rna_covariate=rna_covariate,
                      filter_infected_cells=filter_infected_cells, 
-                     only_keep_positive_per_cre=only_keep_positive_per_cre,
+                     positive_x_or_y=positive_x_or_y,
+                     only_keep_positive_x=only_keep_positive_x,
+                     only_keep_positive_y=only_keep_positive_y,
                      multiprocess_threads=multiprocess_threads)
         # add results to attribute
         if not hasattr(self, 'glm_test_results') or not hasattr(self, 'glm_test_configs'):
@@ -2012,16 +2420,18 @@ class STARRFISH:
         self.glm_test_configs.append(config)
         return result
 
-    def pseudo_bulk_glm_test(self, cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False,
-                             filter_infected_cells=True, only_keep_positive_per_cre=False, 
-                             pseudo_bulk_size=50, pseudo_bulk_percentage=None, 
-                             pseudo_bulk_number=1000, replace=True, multiprocess_threads=256) -> dict:
+    def pseudo_bulk_glm_test(self, variate='RNA', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, rna_covariate=False,
+                             filter_infected_cells=True, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False, 
+                             pseudo_bulk_size=50, pseudo_bulk_percentage=None, pseudo_bulk_number=1000, replace=True, 
+                             multiprocess_threads=256) -> dict:
         # check if the results already exist
         config = {'cell_types_to_use': cell_types_to_use, 
                   'norm_by_volm': norm_by_volm, 
                   'volm_covariate': volm_covariate,
                   'filter_infected_cells': filter_infected_cells,
-                  'only_keep_positive_per_cre': only_keep_positive_per_cre,
+                  'positive_x_or_y': positive_x_or_y,
+                  'only_keep_positive_x': only_keep_positive_x,
+                  'only_keep_positive_y': only_keep_positive_y,
                   'pseudo_bulk_size': pseudo_bulk_size,
                   'pseudo_bulk_percentage': pseudo_bulk_percentage,
                   'pseudo_bulk_number': pseudo_bulk_number,
@@ -2035,6 +2445,7 @@ class STARRFISH:
         # for each cell type to use, create a pseudo bulk
         celltypes = self.get_celltypes()
         cre_expression = self.get_cre_expression()
+        t7_expression = self.get_t7_expression()
         volumes = self.get_tag('obs:volm')
         if filter_infected_cells:
             # get the infected cells
@@ -2057,9 +2468,12 @@ class STARRFISH:
         # generate pseudo bulk for each cell type
         pseudo_bulk = pd.DataFrame()
         pseudo_bulk_obs = pd.DataFrame()
+        # if we have t7 expression, we will also create a pseudo bulk for t7
+        pseudo_bulk_t7 = pd.DataFrame()
         for cell_type in cell_types_to_use:
             # get the cre expression for the cell type cells
             cre_expression_cell_type = cre_expression[celltypes == cell_type]
+            t7_expression_cell_type = t7_expression[celltypes == cell_type] if t7_expression is not None else None
             volume_cell_type = volumes[celltypes == cell_type]
             if pseudo_bulk_size is None:
                 assert pseudo_bulk_percentage is not None, 'pseudo_bulk_size or pseudo_bulk_percentage must be set'
@@ -2073,6 +2487,12 @@ class STARRFISH:
             samples = pd.DataFrame(samples, index=[cell_type + ':sample_' + str(i) for i in range(pseudo_bulk_number)], columns=cre_expression_cell_type.columns)
             # add the pseudo bulk to the pseudo bulk dataframe
             pseudo_bulk = pd.concat([pseudo_bulk, samples])
+            if t7_expression_cell_type is not None:
+                # get the t7 expression for the cell type
+                t7_samples = t7_expression_cell_type.values[bootstrap_indices].sum(axis=1)
+                t7_samples = pd.DataFrame(t7_samples, index=[cell_type + ':sample_' + str(i) for i in range(pseudo_bulk_number)], columns=t7_expression_cell_type.columns)
+                # add the pseudo bulk to the pseudo bulk t7 dataframe
+                pseudo_bulk_t7 = pd.concat([pseudo_bulk_t7, t7_samples])
             # add volume to the observation
             sample_volumes = volume_cell_type.values[bootstrap_indices].sum(axis=1)
             sample_obs = pd.DataFrame(sample_volumes, index=[cell_type + ':sample_' + str(i) for i in range(pseudo_bulk_number)], columns=['volm'])
@@ -2084,11 +2504,15 @@ class STARRFISH:
         pseudo_bulk_adata = sc.AnnData(pseudo_bulk, obs=pseudo_bulk_obs)
         pseudo_bulk_adata.obsm['X_raw'] = pseudo_bulk
         pseudo_bulk_adata.obsm['CRE'] = pseudo_bulk
+        if t7_expression is not None:
+            pseudo_bulk_adata.obsm['T7CRE'] = pseudo_bulk_t7
         # perform glm test on the pseudo bulk
-        result = glm(pseudo_bulk_adata, cell_types_to_use=cell_types_to_use, CREs=pseudo_bulk.columns,
-                     norm_by_volm=norm_by_volm, volm_covariate=volm_covariate, 
+        result = glm(pseudo_bulk_adata, variate=variate, cell_types_to_use=cell_types_to_use, CREs=pseudo_bulk.columns,
+                     norm_by_volm=norm_by_volm, volm_covariate=volm_covariate, rna_covariate=rna_covariate,
                      fov_covariate=False, filter_infected_cells=False, 
-                     only_keep_positive_per_cre=only_keep_positive_per_cre,
+                     positive_x_or_y=positive_x_or_y,
+                     only_keep_positive_x=only_keep_positive_x,
+                     only_keep_positive_y=only_keep_positive_y,
                      multiprocess_threads=multiprocess_threads)
         pseudo_bulk_glm_test_result = {'pseudo_bulk_adata': pseudo_bulk_adata,
                                        'result': result}
@@ -2107,7 +2531,10 @@ class STARRFISH:
         elif use_model == 'SCVI':
             SCVIMODEL = scvi.model.SCVI
         # infer infection rate prior
-        non_infected_cells = ((self.adata.obsm['CRE'] > 0).sum(axis=1) == 0).sum()
+        if 'T7CRE' in self.adata.obsm.keys():
+            non_infected_cells = ((self.adata.obsm['T7CRE'] > 0).sum(axis=1) == 0).sum()
+        else:
+            non_infected_cells = ((self.adata.obsm['CRE'] > 0).sum(axis=1) == 0).sum()
         infection_rate = -np.log(non_infected_cells / self.adata.shape[0]).item()
         # first set the default arguments
         if model_args is None:
@@ -2157,8 +2584,10 @@ class STARRFISH:
                     print('Results already exist, return stored results')
                     return scvi_result.copy()
         # prepare adata_mvi for scvi
+        # RNA info
         gene_info = self.adata.var.copy()
         gene_info['modality'] = 'Gene Expression'
+        # CRE info, stored as ATAC peaks
         CRE_info = self.adata.uns['CRE_info'].copy()
         CRE_info['modality'] = 'Peaks'
         paired_info = pd.concat([gene_info, CRE_info], axis=0)
@@ -2170,8 +2599,17 @@ class STARRFISH:
         )
         adata_mvi = scvi.data.organize_multiome_anndatas(adata_paired)
         adata_mvi = adata_mvi[:, adata_mvi.var["modality"].argsort()].copy()
+        # T7 info, stored as Protein
+        if 'T7CRE' in self.adata.obsm.keys():
+            t7cre = self.adata.obsm['T7CRE'].copy()
+            # set index of T7CRE
+            t7cre.index = pd.Series(t7cre.index) + '_paired'
+            adata_mvi.obsm['T7CRE'] = t7cre
+            adata_mvi.uns['T7CRE_info'] = self.adata.uns['CRE_info'].copy()
         # set up model
-        SCVIMODEL.setup_anndata(adata_mvi, batch_key="modality")
+        SCVIMODEL.setup_anndata(adata_mvi, batch_key="modality", 
+                                protein_expression_obsm_key='T7CRE' if 'T7CRE' in adata_mvi.obsm.keys() else None,
+                                protein_names_uns_key='T7CRE_info' if 'T7CRE' in adata_mvi.obsm.keys() else None,)
         if use_model == 'STARRFISHVI':
             model_args.update({
                 'n_genes': (adata_mvi.var["modality"] == "Gene Expression").sum(),
@@ -2191,7 +2629,8 @@ class STARRFISH:
             adata_mvi.obsm['CRE'] = access
             adata_mvi.obsm['infect_rate'] = infect_rate
             adata_mvi.obsm['lib_size'] = lib_size_estimate
-            adata_mvi.uns['infection_rate_gene'] = torch.nn.functional.softplus(model.module.infection_rate_gene).detach().cpu().numpy()
+            if model_args['infection_rate_type'] == 'gene':
+                adata_mvi.uns['infection_rate_gene'] = torch.nn.functional.softplus(model.module.infection_rate_gene).detach().cpu().numpy()
         elif use_model == 'SCVI':
             access = model.get_normalized_expression()
             adata_mvi.obsm['X_scvi'] = access[adata_mvi.var.index[adata_mvi.var['modality'] == 'Gene Expression']]
@@ -2200,8 +2639,11 @@ class STARRFISH:
         adata_mvi.uns['model'] = use_model
         adata_mvi.uns['model_args'] = model_args
         for k, v in self.adata.uns.items():
-            if k not in adata_mvi.uns:
+            if k not in adata_mvi.uns.keys():
                 adata_mvi.uns[k] = v.copy()
+        for k, v in self.adata.obsm.items():
+            if k not in adata_mvi.obsm.keys() and k not in ['X_raw', 'CRE']:
+                adata_mvi.obsm[k] = v.copy()
         # save to attribute
         if not hasattr(self, 'scvi_results') or not hasattr(self, 'scvi_configs'):
             self.scvi_results = []
@@ -2818,7 +3260,7 @@ file_type = bed""")
             # Iterative fitting until ESS > 1000
             max_iterations = 2
             iteration = 0
-            ess_threshold = 1000
+            ess_threshold = 500
             while iteration < max_iterations:
                 iteration += 1
                 # Run background model
@@ -2902,7 +3344,7 @@ file_type = bed""")
                 # Iterative fitting until ESS > 1000
                 max_iterations = 5
                 iteration = 0
-                ess_threshold = 1000
+                ess_threshold = 500
                 while iteration < max_iterations:
                     iteration += 1
                     # Run model
