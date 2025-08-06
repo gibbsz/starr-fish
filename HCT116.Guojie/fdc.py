@@ -114,10 +114,10 @@ average_bootstrap_test_config = {
     'normalize_by_cell_t7': False,  # normalize by T7, filter cells with T7 < 4
     'normalize_by_celltype_rna': False,
     'normalize_by_celltype_volume': False,
-    'normalize_by_celltype_t7': False,  # normalize by T7
+    'normalize_by_celltype_t7': True,  # normalize by T7
     'filter_by_cell_t7': None,
     'normalize_by_negative_control': False,  # normalize by negative control
-    'normalize_by_libsize': True,
+    'normalize_by_libsize': False,
     'log_transform': False,
     'bootstrap_number': 10000,
     'bootstrap_to_fixed_pct': 0.5,
@@ -133,3 +133,9 @@ res2 = starrfish_sept.average_bootstrap_test(**average_bootstrap_test_config)
 res_q2, res_df2 = starrfish_sept.average_bootstrap_test_q(res2, threshold=threshold, norm='libsize', tail='right')
 # %%
 # plot q value
+compare = pd.DataFrame({
+    'July': res_q1.loc['CellLine'],
+    'Sept': res_q2.loc['CellLine']
+})
+compare
+# %%
