@@ -1141,7 +1141,7 @@ average_bootstrap_test_config = {
 }
 res = starrfish2_filtered.average_bootstrap_test(**average_bootstrap_test_config)
 # fold change to T7 array
-res2_q, res2_df = average_bootstrap_test_q(res, starrfish2_filtered, threshold='total', norm='libsize', tail='right')
+res2_q, res2_df = starrfish2_filtered.average_bootstrap_test_q(res, threshold='total', norm='libsize', tail='right')
 
 
 
