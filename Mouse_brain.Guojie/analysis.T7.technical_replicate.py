@@ -1,5 +1,4 @@
 # %%
-from turtle import st
 import warnings
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="docrep")
 import scvi
@@ -109,7 +108,14 @@ def preprocess(adata_path):
 # starrfish3_sec2 = STARRFISH(adata3_sec2)
 starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.pkl')
 starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.pkl')
+starrfish2 = STARRFISH.load('results/starrfish2.pkl')
 starrfish3 = STARRFISH.load('results/starrfish3.pkl')
+# get subclass name and subclass transform
+subclass_annotation = pd.read_excel(f'Data/abc_atlas/allen_institute_nominature.xlsx')
+subclass_annotation['subclass'] = subclass_annotation['subclass_id_label'].str.replace('^[0-9]+ ', '', regex=True)
+subclass_annotation['subclass'] = subclass_annotation['subclass'].str.replace('/', '-', regex=True)
+subclass_to_subclass_name = subclass_annotation['subclass_id_label'].groupby(subclass_annotation['subclass']).first().to_dict()
+subclass_name_to_subclass = subclass_annotation['subclass'].groupby(subclass_annotation['subclass_id_label']).first().to_dict()
 # %% define cell types to use for filtered data
 negative_control_cres = starrfish3_sec1.get_negative_control_cres()
 cell_types_counts1 = starrfish3_sec1.get_celltypes().value_counts()
@@ -135,20 +141,33 @@ len(cell_types_to_use), len(cell_types_to_use_nc), len(cell_types_to_use_nc_2), 
 
 # %%
 # correlation of cell type counts
-cell_type_counts = pd.DataFrame(index=cell_types_counts2.index.intersection(cell_types_counts1.index), columns=['Exp2', 'Exp3'])
+cell_type_counts = pd.DataFrame(index=cell_types_counts2.index.intersection(cell_types_counts1.index).intersection(starrfish2.get_celltypes()), columns=['Sec1', 'Sec2', 'Exp2', 'Exp3'])
+cell_type_counts['Exp2'] = starrfish2.get_celltypes().value_counts().loc[cell_type_counts.index]
+cell_type_counts['Exp3'] = starrfish3.get_celltypes().value_counts().loc[cell_type_counts.index]
 cell_type_counts['Sec1'] = cell_types_counts1[cell_type_counts.index]
 cell_type_counts['Sec2'] = cell_types_counts2[cell_type_counts.index]
-fig, ax = plt.subplots(figsize=(5, 4))
-sns.scatterplot(x=cell_type_counts['Sec1'], y=cell_type_counts['Sec2'], ax=ax, alpha=0.5)
-ax.set_xlabel('Cell type counts in Sec1')
-ax.set_ylabel('Cell type counts in Sec2')
+fig, ax = plt.subplots(ncols=2, figsize=(10, 4))
+sns.scatterplot(x=cell_type_counts['Sec1'], y=cell_type_counts['Sec2'], ax=ax[0], alpha=0.5)
+ax[0].set_xlabel('Cell type counts in Sec1')
+ax[0].set_ylabel('Cell type counts in Sec2')
 # calculate the correlation
 to_test = cell_type_counts.index[cell_type_counts['Sec1'] > 0].intersection(cell_type_counts.index[cell_type_counts['Sec2'] > 0])
 corr, p_value = pearsonr(np.log(cell_type_counts['Sec1'].loc[to_test]), np.log(cell_type_counts['Sec2'].loc[to_test]))
 # plot text
-ax.text(0.05, 0.95, f'Pearson r: {corr:.2f}\np-value: {p_value:.2e}', transform=ax.transAxes, fontsize=12, verticalalignment='top')
-ax.set_xscale('log')
-ax.set_yscale('log')
+ax[0].text(0.05, 0.95, f'Pearson r: {corr:.2f}\np-value: {p_value:.2e}', transform=ax[0].transAxes, fontsize=12, verticalalignment='top')
+ax[0].set_xscale('log')
+ax[0].set_yscale('log')
+sns.scatterplot(x=cell_type_counts['Exp2'], y=cell_type_counts['Exp3'], ax=ax[1], alpha=0.5)
+ax[1].set_xlabel('Cell type counts in Exp2')
+ax[1].set_ylabel('Cell type counts in Exp3')
+# calculate the correlation
+to_test = cell_type_counts.index[cell_type_counts['Exp2'] > 0].intersection(cell_type_counts.index[cell_type_counts['Exp3'] > 0])
+corr, p_value = pearsonr(np.log(cell_type_counts['Exp2'].loc[to_test]), np.log(cell_type_counts['Exp3'].loc[to_test]))
+# plot text
+ax[1].text(0.05, 0.95, f'Pearson r: {corr:.2f}\np-value: {p_value:.2e}', transform=ax[1].transAxes, fontsize=12, verticalalignment='top')
+ax[1].set_xscale('log')
+ax[1].set_yscale('log')
+
 
 
 
@@ -159,10 +178,10 @@ cre_counts_sec1 = starrfish3_sec1.get_cre_expression().sum(axis=1)
 cre_counts_sec2 = starrfish3_sec2.get_cre_expression().sum(axis=1)
 t7_counts_sec1 = starrfish3_sec1.get_t7_expression().sum(axis=1)
 t7_counts_sec2 = starrfish3_sec2.get_t7_expression().sum(axis=1)
-cre_celltype_sec1 = cre_counts_sec1.groupby(starrfish3_sec1.get_tag('obs:subclass')).mean()
-cre_celltype_sec2 = cre_counts_sec2.groupby(starrfish3_sec2.get_tag('obs:subclass')).mean()
-t7_celltype_sec1 = t7_counts_sec1.groupby(starrfish3_sec1.get_tag('obs:subclass')).mean()
-t7_celltype_sec2 = t7_counts_sec2.groupby(starrfish3_sec2.get_tag('obs:subclass')).mean()
+cre_celltype_sec1 = cre_counts_sec1.groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean()
+cre_celltype_sec2 = cre_counts_sec2.groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean()
+t7_celltype_sec1 = t7_counts_sec1.groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean()
+t7_celltype_sec2 = t7_counts_sec2.groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean()
 common_celltypes = t7_celltype_sec1.index.intersection(t7_celltype_sec2.index)
 sns.scatterplot(x=t7_celltype_sec1.loc[common_celltypes], y=t7_celltype_sec2.loc[common_celltypes], ax=ax[0], alpha=0.5)
 to_test = t7_celltype_sec1.index[t7_celltype_sec1 > 0].intersection(t7_celltype_sec2.index[t7_celltype_sec2 > 0])
@@ -208,9 +227,107 @@ for p in ['CRE', 'T7', 'CRE/T7']:
     ax_work.text(0.05, 0.95, f'Pearson r: {corr:.2f}\np-value: {p_value:.2e}', transform=ax_work.transAxes, fontsize=12, verticalalignment='top')
     ax_work.set_xscale('log')
     ax_work.set_yscale('log')
-    ax_work.set_xlabel(f'Average {p} counts per cell type in Sec1')
-    ax_work.set_ylabel(f'Average {p} counts per cell type in Sec2')
+    ax_work.set_xlabel(f'Average NC {p} counts per cell type in Sec1')
+    ax_work.set_ylabel(f'Average NC {p} counts per cell type in Sec2')
 
+
+
+# %% Heatmap of CRE counts and T7 counts per cell type
+cell_types_to_use = cell_type_counts.index[(cell_type_counts['Sec1'] > 1000) & (cell_type_counts['Sec2'] > 1000) & 
+                                           (cell_type_counts['Exp2'] > 1000) & (cell_type_counts['Exp3'] > 1000)].map(subclass_to_subclass_name)
+cre_anno = pd.DataFrame(data = 0, index=cell_types_to_use.to_list() + ['Negative Control'], columns=starrfish3_sec1.get_creinfo().index)
+for i in cell_types_to_use:
+    cres = starrfish3_sec1.get_positive_control_cres(subclass_name_to_subclass[i], use='atac-peak')
+    cre_anno.loc[i, cres] = 1
+cre_anno.loc['Negative Control', starrfish3_sec1.get_negative_control_cres()] = 1
+
+def plot_heatmap(expression_mat_sec1, expression_mat_sec2, cell_type_sec1, cell_type_sec2, cell_types_to_use, cre_anno):
+    cre_celltype_sec1 = expression_mat_sec1.groupby(cell_type_sec1).mean()
+    cre_celltype_sec2 = expression_mat_sec2.groupby(cell_type_sec2).mean()
+    fig, ax = plt.subplots(nrows=3, figsize=(24, 12), height_ratios=[1, 1, 0.1])
+    toplot1 = cre_celltype_sec1.loc[cell_types_to_use].copy()
+    toplot2 = cre_celltype_sec2.loc[cell_types_to_use].copy()
+    # toplot1 = toplot1.div(toplot1.max(axis=0), axis=1)
+    # toplot2 = toplot2.div(toplot2.max(axis=0), axis=1)
+    sns.heatmap(toplot1, cmap='coolwarm', ax=ax[0])
+    ax[0].set_xticks([])
+    sns.heatmap(toplot2, cmap='coolwarm', ax=ax[1])
+    ax[1].set_xticks([])
+    # mark negative control
+    sns.heatmap(cre_anno.loc[['Negative Control']], cmap='coolwarm', ax=ax[2])
+    ax[2].set_xticks([])
+
+cell_type_sec1 = starrfish3_sec1.get_tag('obs:subclass_name')
+cell_type_sec2 = starrfish3_sec2.get_tag('obs:subclass_name')
+plot_heatmap(starrfish3_sec1.get_cre_expression(), starrfish3_sec2.get_cre_expression(), cell_type_sec1, cell_type_sec2, cell_types_to_use, cre_anno)
+plot_heatmap(starrfish3_sec1.get_t7_expression(), starrfish3_sec2.get_t7_expression(), cell_type_sec1, cell_type_sec2, cell_types_to_use, cre_anno)
+plot_heatmap(starrfish3_sec1.get_cre_expression()>0, starrfish3_sec2.get_cre_expression()>0, cell_type_sec1, cell_type_sec2, cell_types_to_use, cre_anno)
+plot_heatmap(starrfish3_sec1.get_t7_expression()>0, starrfish3_sec2.get_t7_expression()>0, cell_type_sec1, cell_type_sec2, cell_types_to_use, cre_anno)
+
+
+
+# %% correlation of T7/CRE counts
+# cell_types_to_use = cre_celltype_sec1.index.intersection(cre_celltype_sec2.index)
+cell_types_to_use = cell_type_counts.index[(cell_type_counts['Sec1'] > 1000) & (cell_type_counts['Sec2'] > 1000) & 
+                                           (cell_type_counts['Exp2'] > 1000) & (cell_type_counts['Exp3'] > 1000)].map(subclass_to_subclass_name)
+# pick the cres that have target in any of the 5 cell types
+cres_to_use = starrfish3_sec1.lib_size.index[starrfish3_sec1.lib_size['counts'] >= 7]
+# cres_to_use = []
+# for i in cell_types_to_use:
+#     cres_to_use.extend(starrfish3_sec1.get_positive_control_cres(subclass_name_to_subclass[i], use='atac-peak'))
+# cres_to_use = np.unique(cres_to_use)
+def plot_corr(activity_df1, activity_df2, cell_types_to_use, cres_to_use, cre_anno):
+    cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(activity_df1=activity_df1.loc[cell_types_to_use, cres_to_use],
+                                                             activity_df2=activity_df2.loc[cell_types_to_use, cres_to_use])
+    cre_corr['lib_size'] = starrfish3_sec1.lib_size['counts'].loc[cre_corr.index]
+    celltype_corr['cell_type_size_sec1'] = starrfish3_sec1.get_celltypes().value_counts().loc[celltype_corr.index.map(subclass_name_to_subclass)].values
+    celltype_corr['cell_type_size_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index.map(subclass_name_to_subclass)].values
+    celltype_corr['cell_type_size'] = celltype_corr[['cell_type_size_sec1', 'cell_type_size_sec2']].min(axis=1)
+    fig, ax = plt.subplots(nrows=2, figsize=(5, 10))
+    sns.scatterplot(x=cre_corr.loc[cres_to_use, 'lib_size'], y=cre_corr.loc[cres_to_use, 'pearson'], ax=ax[0], alpha=0.5)
+    sns.scatterplot(x=celltype_corr.loc[cell_types_to_use, 'cell_type_size'], y=celltype_corr.loc[cell_types_to_use, 'pearson'], ax=ax[1], alpha=0.5)
+    ax[0].axhline(y=0.6, color='red', linestyle='--')
+    ax[1].axhline(y=0.6, color='red', linestyle='--')
+    ax[1].set_xscale('log')
+    ax[0].set_xlabel('log(lib_size)')
+    # mark negative control CREs
+    neg_control_cres = cre_anno.loc['Negative Control'].index[cre_anno.loc['Negative Control'] == 1]
+    neg_control_cres = neg_control_cres[neg_control_cres.isin(cre_corr.index)]
+    sns.scatterplot(x=cre_corr.loc[neg_control_cres, 'lib_size'], y=cre_corr.loc[neg_control_cres, 'pearson'], ax=ax[0], color='orange', label='Negative Control CREs')
+
+plot_corr(starrfish3_sec1.get_cre_expression().groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean(), 
+          starrfish3_sec2.get_cre_expression().groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean(), 
+          cell_types_to_use, cres_to_use, cre_anno)
+plot_corr(starrfish3_sec1.get_t7_expression().groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean(), 
+          starrfish3_sec2.get_t7_expression().groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean(), 
+          cell_types_to_use, cres_to_use, cre_anno)
+plot_corr((starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean(), 
+          (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean(), 
+          cell_types_to_use, cres_to_use, cre_anno)
+plot_corr((starrfish3_sec1.get_t7_expression() > 0).groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean(), 
+          (starrfish3_sec2.get_t7_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean(), 
+          cell_types_to_use, cres_to_use, cre_anno)
+# %%
+cell_types_to_use = cell_type_counts.index[(cell_type_counts['Sec1'] > 1000) & (cell_type_counts['Sec2'] > 1000) & 
+                                           (cell_type_counts['Exp2'] > 1000) & (cell_type_counts['Exp3'] > 1000)].map(subclass_to_subclass_name)
+# pick the cres that have target in any of the 5 cell types
+cres_to_use = starrfish3_sec1.lib_size.index[starrfish3_sec1.lib_size['counts'] >= 7]
+# use the cell types with ≥ 0.6 correlation for both CRE and T7
+df1 = starrfish3_sec1.get_cre_expression().groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use]
+df2 = starrfish3_sec2.get_cre_expression().groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use]
+cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(activity_df1=df1[cres_to_use], activity_df2=df2[cres_to_use])
+# get the cell types with correlation > 0.6
+# cell_types_to_use = celltype_corr.index[celltype_corr['pearson'] > 0.6].intersection(cell_types_to_use)
+plot_corr(starrfish3_sec1.get_cre_expression().groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use] / 
+          starrfish3_sec1.get_t7_expression().groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use], 
+          starrfish3_sec2.get_cre_expression().groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use] /
+          starrfish3_sec2.get_t7_expression().groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use], 
+          cell_types_to_use, cres_to_use, cre_anno)
+plot_corr((starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use] / 
+          (starrfish3_sec1.get_t7_expression() > 0).groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use], 
+          (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use] /
+          (starrfish3_sec2.get_t7_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use], 
+          cell_types_to_use, cres_to_use, cre_anno)
 
 
 
