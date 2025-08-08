@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec
+from matplotlib.colors import TwoSlopeNorm
 import seaborn as sns
 import scanpy as sc
 from scipy.stats import pearsonr, spearmanr, ttest_ind
@@ -310,7 +311,7 @@ plot_corr((starrfish3_sec1.get_t7_expression() > 0).groupby(starrfish3_sec1.get_
 # %%
 cell_types_to_use = cell_type_counts.index[(cell_type_counts['Sec1'] > 1000) & (cell_type_counts['Sec2'] > 1000) & 
                                            (cell_type_counts['Exp2'] > 1000) & (cell_type_counts['Exp3'] > 1000)].map(subclass_to_subclass_name)
-# pick the cres that have target in any of the 5 cell types
+# pick the CREs with at least 2^7 lib sizes
 cres_to_use = starrfish3_sec1.lib_size.index[starrfish3_sec1.lib_size['counts'] >= 7]
 # use the cell types with ≥ 0.6 correlation for both CRE and T7
 df1 = starrfish3_sec1.get_cre_expression().groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use]
@@ -328,6 +329,73 @@ plot_corr((starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get
           (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use] /
           (starrfish3_sec2.get_t7_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean().loc[cell_types_to_use], 
           cell_types_to_use, cres_to_use, cre_anno)
+
+
+
+# %% for each CRE/cell type, filter by T7 proportion
+t7_infected_cells_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_tag('obs:subclass_name')).sum()
+t7_infected_cells_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).sum()
+t7_infected_cells_threshold = 5
+def plot_corr_by_t7_infected_cells(activity_df1, activity_df2, t7_infected_cells_sec1, t7_infected_cells_sec2):
+    celltype_corr = pd.DataFrame(index=activity_df1.index.intersection(activity_df2.index), columns=['pearson', 'p_value', 'n_cres', 'n_cells'])
+    for cell_type in activity_df1.index.intersection(activity_df2.index):
+        cres_to_use = t7_infected_cells_sec1.loc[cell_type].index[t7_infected_cells_sec1.loc[cell_type] >= t7_infected_cells_threshold].intersection(
+            t7_infected_cells_sec2.loc[cell_type].index[t7_infected_cells_sec2.loc[cell_type] >= t7_infected_cells_threshold]
+        )
+        celltype_corr.loc[cell_type, 'n_cres'] = cres_to_use.size
+        # if number of cres_to_use smaller than 2
+        if cres_to_use.size < 2:
+            continue
+        corr, p = pearsonr(activity_df1.loc[cell_type, cres_to_use], activity_df2.loc[cell_type, cres_to_use])
+        celltype_corr.loc[cell_type, 'pearson'] = corr
+        celltype_corr.loc[cell_type, 'p_value'] = p
+        celltype_corr.loc[cell_type, 'n_cells'] = np.minimum(
+            starrfish3_sec1.get_celltypes().value_counts().loc[subclass_name_to_subclass[cell_type]],
+            starrfish3_sec2.get_celltypes().value_counts().loc[subclass_name_to_subclass[cell_type]])
+    cre_corr = pd.DataFrame(index=activity_df1.columns.intersection(activity_df2.columns), columns=['pearson', 'p_value', 'n_celltypes', 'lib_size'])
+    for cre in activity_df1.columns.intersection(activity_df2.columns):
+        celltypes_to_use = t7_infected_cells_sec1[cre].index[t7_infected_cells_sec1[cre] >= t7_infected_cells_threshold].intersection(
+            t7_infected_cells_sec2[cre].index[t7_infected_cells_sec2[cre] >= t7_infected_cells_threshold]
+        )
+        cre_corr.loc[cre, 'n_celltypes'] = celltypes_to_use.size
+        if celltypes_to_use.size < 2:
+            continue
+        corr, p = pearsonr(activity_df1.loc[celltypes_to_use, cre], activity_df2.loc[celltypes_to_use, cre])
+        cre_corr.loc[cre, 'pearson'] = corr
+        cre_corr.loc[cre, 'p_value'] = p
+        cre_corr.loc[cre, 'lib_size'] = starrfish3_sec1.lib_size['counts'].loc[cre]
+    # plot n_cells with regard to n_cres, colored by pearson
+    fig, ax = plt.subplots(figsize=(6, 6))
+    # set mid point to 0.4
+    norm = TwoSlopeNorm(vmin=celltype_corr['pearson'].min(), vcenter=0.4, vmax=celltype_corr['pearson'].max())
+    sns.scatterplot(x=celltype_corr['n_cells'], y=celltype_corr['n_cres'], hue=celltype_corr['pearson'], ax=ax, palette='coolwarm', hue_norm=norm)
+    ax.set_xscale('log')
+    ax.set_xlabel('Number of Cells')
+    ax.set_ylabel(f'Number of CREs with T7 infected cells ≥ {t7_infected_cells_threshold}')
+    # plot lib size with regard to n_celltypes, colored by pearson
+    fig, ax = plt.subplots(figsize=(6, 6))
+    # set mid point to 0.4
+    norm = TwoSlopeNorm(vmin=cre_corr['pearson'].min(), vcenter=0.4, vmax=cre_corr['pearson'].max())
+    sns.scatterplot(x=cre_corr['n_celltypes'], y=cre_corr['lib_size'], hue=cre_corr['pearson'], ax=ax, palette='coolwarm', hue_norm=norm)
+    ax.set_xlabel('Number of Cell Types')
+    ax.set_ylabel('log(Library Size)')
+    return celltype_corr, cre_corr
+
+celltype_corr, cre_corr = plot_corr_by_t7_infected_cells((starrfish3_sec1.get_cre_expression()).groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean(),
+                                                         (starrfish3_sec2.get_cre_expression()).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean(),
+                                                         t7_infected_cells_sec1, t7_infected_cells_sec2)
+fig, ax = plt.subplots(figsize=(6, 6))
+sns.scatterplot(x=celltype_corr.loc[celltype_corr.index[celltype_corr['n_cres'] >= 50], 'n_cells'],
+                y=celltype_corr.loc[celltype_corr.index[celltype_corr['n_cres'] >= 50], 'pearson'], ax=ax)
+ax.set_xscale('log')
+ax.set_xlabel('Cell type size')
+ax.set_ylabel('Pearson correlation')
+fig, ax = plt.subplots(figsize=(6, 6))
+sns.scatterplot(x=cre_corr.loc[cre_corr.index[cre_corr['n_celltypes'] >= 50], 'n_celltypes'],
+                y=cre_corr.loc[cre_corr.index[cre_corr['n_celltypes'] >= 50], 'pearson'], ax=ax)
+ax.set_xlabel('Number of Cell Types')
+ax.set_ylabel('Pearson correlation')
+
 
 
 
