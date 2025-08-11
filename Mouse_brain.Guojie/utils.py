@@ -2084,7 +2084,7 @@ class STARRFISH:
         return res
 
     def average_bootstrap_test_q(self, res, threshold: Literal['0', 'total', 'total_dist', 'neg_control', 'neg_control_dist'] = '0', 
-                                 norm='T7', tail='right'):
+                                 norm='T7', tail='right', to_filter=None):
         # fold change to T7 array
         res_array = res['celltype_activity_array'].copy()
         # log then average
@@ -2147,6 +2147,12 @@ class STARRFISH:
             res_nansum = (~np.isnan(res_array[:, res['celltype_activity'].index == cell_type, :])).sum(axis=0)
             res_p1.loc[cell_type][res_nansum[0] < res_array.shape[0] * 0.01] = np.nan
             res_p2.loc[cell_type][res_nansum[0] < res_array.shape[0] * 0.01] = np.nan
+            # if we have to_filter, then fill it with np.nan
+            if to_filter is not None:
+                for cell_type in to_filter.index:
+                    if cell_type in res_p1.index:
+                        res_p1.loc[cell_type, to_filter.loc[cell_type].tolist()] = np.nan
+                        res_p2.loc[cell_type, to_filter.loc[cell_type].tolist()] = np.nan
         # do q-value correction
         res2_q1 = pd.DataFrame(multitest.multipletests(res_p1.values.flatten(), method='fdr_bh')[1].reshape(res_p1.shape), index=res_p1.index, columns=res_p1.columns)
         res2_q2 = pd.DataFrame(multitest.multipletests(res_p2.values.flatten(), method='fdr_bh')[1].reshape(res_p2.shape), index=res_p2.index, columns=res_p2.columns)

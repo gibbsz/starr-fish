@@ -83,59 +83,60 @@ def preprocess_experiment(enhancer_file, vector_file=None, nanopore_file=None, r
     adata.uns['CRE_info']['labeling_type'][pd.isna(adata.uns['CRE_info']['chr'])] = 'negative control'
     return adata
 # %%
-july_experiment = preprocess_experiment(enhancer_file='data/SFv4_T7_July_enhancer_cbg.csv', vector_file='data/SFv4_T7_July_T7_cbg.csv', nanopore_file='data/SFv4_T7_20CRE_nanopore_counts',
-                                        rna_seq_file='data/Bulk_sequencing/RNA_sequencing/CRE20_T7_July_featureCounts_output.txt',
-                                        dna_seq_file='data/Bulk_sequencing/DNA_sequencing/CRE20_July_featureCounts_output.txt', 
-                                        bed_file='data/20CRE.bed')
-sept_experiment = preprocess_experiment(enhancer_file='data/SFv4_T7_Sept_enhancer_cbg.csv', vector_file='data/SFv4_T7_Sept_T7_cbg.csv', nanopore_file='data/SFv4_T7_20CRE_nanopore_counts',
-                                        rna_seq_file='data/Bulk_sequencing/RNA_sequencing/CRE20_T7_Sept_featureCounts_output.txt',
-                                        dna_seq_file='data/Bulk_sequencing/DNA_sequencing/CRE20_Sept_featureCounts_output.txt', 
-                                        bed_file='data/20CRE.bed')
-CRE_300_experiment1 = preprocess_experiment(enhancer_file='data/SFv6_cell_by_CRE_01_04_2023.csv', vector_file=None, nanopore_file='data/SFv6_300CRE_nanopore_counts',
-                                            bed_file='data/STARR-FISH_300_library.bed')
-CRE_300_experiment2 = preprocess_experiment(enhancer_file='data/SFv6_cell_by_CRE_03_19_2023.csv', vector_file=None, nanopore_file='data/SFv6_300CRE_nanopore_counts',
-                                            bed_file='data/STARR-FISH_300_library.bed')
-# %%
-starrfish_july = STARRFISH(july_experiment, atac_cpm=None, atac_counts=None, lib_size=None)
-starrfish_sept = STARRFISH(sept_experiment, atac_cpm=None, atac_counts=None, lib_size=None)
-starrfish_300_1 = STARRFISH(CRE_300_experiment1, atac_cpm=None, atac_counts=None, lib_size=None)
-starrfish_300_2 = STARRFISH(CRE_300_experiment2, atac_cpm=None, atac_counts=None, lib_size=None)
-# set library size
-lib_size = pd.DataFrame({'counts': starrfish_july.adata.var['nanopore'].values}, index=starrfish_july.adata.var_names)
-starrfish_july.lib_size = lib_size.copy()
-starrfish_sept.lib_size = lib_size.copy()
-starrfish_300_1.lib_size = lib_size.copy()
-starrfish_300_2.lib_size = lib_size.copy()
-# %%
-average_bootstrap_test_config = {
-    'cell_types_to_use': None,
-    'normalize_by_cell_rna': False,
-    'normalize_by_cell_volume': False,
-    'normalize_by_cell_t7': False,  # normalize by T7, filter cells with T7 < 4
-    'normalize_by_celltype_rna': False,
-    'normalize_by_celltype_volume': False,
-    'normalize_by_celltype_t7': True,  # normalize by T7
-    'filter_by_cell_t7': None,
-    'normalize_by_negative_control': False,  # normalize by negative control
-    'normalize_by_libsize': False,
-    'log_transform': False,
-    'bootstrap_number': 10000,
-    'bootstrap_to_fixed_pct': 0.5,
-    'bootstrap_to_fixed_sample_size': None,
-    'load_stored': True,
-    'n_jobs': 64,
-}
-threshold = 'neg_control_dist'
-res1 = starrfish_july.average_bootstrap_test(**average_bootstrap_test_config)
-res_q1, res_df1 = starrfish_july.average_bootstrap_test_q(res1, threshold=threshold, norm='libsize', tail='right')
+if __name__ == '__main__':
+    # %%
+    july_experiment = preprocess_experiment(enhancer_file='data/SFv4_T7_July_enhancer_cbg.csv', vector_file='data/SFv4_T7_July_T7_cbg.csv', nanopore_file='data/SFv4_T7_20CRE_nanopore_counts',
+                                            rna_seq_file='data/Bulk_sequencing/RNA_sequencing/CRE20_T7_July_featureCounts_output.txt',
+                                            dna_seq_file='data/Bulk_sequencing/DNA_sequencing/CRE20_July_featureCounts_output.txt', 
+                                            bed_file='data/20CRE.bed')
+    sept_experiment = preprocess_experiment(enhancer_file='data/SFv4_T7_Sept_enhancer_cbg.csv', vector_file='data/SFv4_T7_Sept_T7_cbg.csv', nanopore_file='data/SFv4_T7_20CRE_nanopore_counts',
+                                            rna_seq_file='data/Bulk_sequencing/RNA_sequencing/CRE20_T7_Sept_featureCounts_output.txt',
+                                            dna_seq_file='data/Bulk_sequencing/DNA_sequencing/CRE20_Sept_featureCounts_output.txt', 
+                                            bed_file='data/20CRE.bed')
+    CRE_300_experiment1 = preprocess_experiment(enhancer_file='data/SFv6_cell_by_CRE_01_04_2023.csv', vector_file=None, nanopore_file='data/SFv6_300CRE_nanopore_counts',
+                                                bed_file='data/STARR-FISH_300_library.bed')
+    CRE_300_experiment2 = preprocess_experiment(enhancer_file='data/SFv6_cell_by_CRE_03_19_2023.csv', vector_file=None, nanopore_file='data/SFv6_300CRE_nanopore_counts',
+                                                bed_file='data/STARR-FISH_300_library.bed')
+    # %%
+    starrfish_july = STARRFISH(july_experiment, atac_cpm=None, atac_counts=None, lib_size=None)
+    starrfish_sept = STARRFISH(sept_experiment, atac_cpm=None, atac_counts=None, lib_size=None)
+    starrfish_300_1 = STARRFISH(CRE_300_experiment1, atac_cpm=None, atac_counts=None, lib_size=None)
+    starrfish_300_2 = STARRFISH(CRE_300_experiment2, atac_cpm=None, atac_counts=None, lib_size=None)
+    # set library size
+    lib_size = pd.DataFrame({'counts': starrfish_july.adata.var['nanopore'].values}, index=starrfish_july.adata.var_names)
+    starrfish_july.lib_size = lib_size.copy()
+    starrfish_sept.lib_size = lib_size.copy()
+    starrfish_300_1.lib_size = lib_size.copy()
+    starrfish_300_2.lib_size = lib_size.copy()
+    # %%
+    average_bootstrap_test_config = {
+        'cell_types_to_use': None,
+        'normalize_by_cell_rna': False,
+        'normalize_by_cell_volume': False,
+        'normalize_by_cell_t7': False,  # normalize by T7, filter cells with T7 < 4
+        'normalize_by_celltype_rna': False,
+        'normalize_by_celltype_volume': False,
+        'normalize_by_celltype_t7': True,  # normalize by T7
+        'filter_by_cell_t7': None,
+        'normalize_by_negative_control': False,  # normalize by negative control
+        'normalize_by_libsize': False,
+        'log_transform': False,
+        'bootstrap_number': 10000,
+        'bootstrap_to_fixed_pct': 0.5,
+        'bootstrap_to_fixed_sample_size': None,
+        'load_stored': True,
+        'n_jobs': 64,
+    }
+    threshold = 'neg_control_dist'
+    res1 = starrfish_july.average_bootstrap_test(**average_bootstrap_test_config)
+    res_q1, res_df1 = starrfish_july.average_bootstrap_test_q(res1, threshold=threshold, norm='libsize', tail='right')
 
-res2 = starrfish_sept.average_bootstrap_test(**average_bootstrap_test_config)
-res_q2, res_df2 = starrfish_sept.average_bootstrap_test_q(res2, threshold=threshold, norm='libsize', tail='right')
-# %%
-# plot q value
-compare = pd.DataFrame({
-    'July': res_q1.loc['CellLine'],
-    'Sept': res_q2.loc['CellLine']
-})
-compare
-# %%
+    res2 = starrfish_sept.average_bootstrap_test(**average_bootstrap_test_config)
+    res_q2, res_df2 = starrfish_sept.average_bootstrap_test_q(res2, threshold=threshold, norm='libsize', tail='right')
+    # %%
+    # plot q value
+    compare = pd.DataFrame({
+        'July': res_q1.loc['CellLine'],
+        'Sept': res_q2.loc['CellLine']
+    })
+    compare

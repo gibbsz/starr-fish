@@ -1593,7 +1593,7 @@ def draw_custom_dendrogram(cre_order_token, ordered_cres, ax, reorder_penalty=0.
 
 def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive_control_info, 
                      cre_categories=np.array(['On-target', 'Mix-target', 'Off-target', 'No target', 'CREs', 'Negative Controls']),
-                     significant_cutoff=0.05, figsize=(20, 12), flip_axis=False):
+                     significant_cutoff=0.05, figsize=(20, 12), z_norm=True, flip_axis=False):
     if cres_to_use is None:
         cres_to_use = q_value.columns
     if cell_types_to_use is None:
@@ -1665,9 +1665,10 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
         cre_type = np.repeat('CREs', len(cres_to_use))
     # Data transformations
     q_value = q_value.clip(lower=1/5000).astype(float)  # Clip to avoid log10(0)
-    activity = activity.clip(lower=1e-2).astype(float)  # Clip to avoid log10(0)
-    activity = np.log10(activity).T  # Transpose for CRE clustering
-    activity = activity.sub(activity.mean(axis=1), axis=0).div(activity.std(axis=1), axis=0)  # Z-score per CRE
+    if z_norm:
+        activity = activity.clip(lower=1e-2).astype(float)  # Clip to avoid log10(0)
+        activity = np.log10(activity).T  # Transpose for CRE clustering
+        activity = activity.sub(activity.mean(axis=1), axis=0).div(activity.std(axis=1), axis=0)  # Z-score per CRE
     q_value = -np.log10(q_value).T
     # if scale_by_cre, we scale the test result by the max of each cre
     hue_name = 'log(activity) (z-score)'
