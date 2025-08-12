@@ -381,9 +381,9 @@ t7_infected_cells_sec1 = (starrfish3_sec1.get_t7_expression() > 0).groupby(starr
 t7_infected_cells_sec2 = (starrfish3_sec2.get_t7_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).sum()
 cre_infected_cells_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_tag('obs:subclass_name')).sum()
 cre_infected_cells_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).sum()
-infected_cells_threshold = 50
+infected_cells_threshold = 0
 def plot_corr_by_t7_infected_cells(activity_df1, activity_df2, infected_cells_sec1, infected_cells_sec2, 
-                                   celltype_counts_sec1, celltype_counts_sec2, log=False):
+                                   celltype_counts_sec1, celltype_counts_sec2, infected_cells_threshold, log=False):
     celltype_corr = pd.DataFrame(index=activity_df1.index.intersection(activity_df2.index), columns=['pearson', 'p_value', 'n_cres', 'n_cells'])
     for cell_type in activity_df1.index.intersection(activity_df2.index):
         cres_to_use = infected_cells_sec1.loc[cell_type].index[infected_cells_sec1.loc[cell_type] >= infected_cells_threshold].intersection(
@@ -436,29 +436,29 @@ def plot_corr_by_t7_infected_cells(activity_df1, activity_df2, infected_cells_se
 
 celltype_corr, cre_corr = plot_corr_by_t7_infected_cells((starrfish3_sec1.get_cre_expression()).groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean(),
                                                          (starrfish3_sec2.get_cre_expression()).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean(),
-                                                         t7_infected_cells_sec1, t7_infected_cells_sec2, 
+                                                         cre_infected_cells_sec1, cre_infected_cells_sec2, 
                                                          starrfish3_sec1.get_tag('obs:subclass_name').value_counts(), 
                                                          starrfish3_sec2.get_tag('obs:subclass_name').value_counts(), 
-                                                         log=False)
-fig, ax = plt.subplots(figsize=(6, 6))
-sns.scatterplot(x=celltype_corr.loc[celltype_corr.index[celltype_corr['n_cres'] >= 50], 'n_cells'],
-                y=celltype_corr.loc[celltype_corr.index[celltype_corr['n_cres'] >= 50], 'pearson'], ax=ax)
-ax.set_xscale('log')
-ax.set_xlabel('Cell type size')
-ax.set_ylabel('Pearson correlation')
-fig, ax = plt.subplots(figsize=(6, 6))
-sns.scatterplot(x=cre_corr.loc[cre_corr.index[cre_corr['n_celltypes'] >= 20], 'n_celltypes'],
-                y=cre_corr.loc[cre_corr.index[cre_corr['n_celltypes'] >= 20], 'pearson'], ax=ax)
-ax.set_xlabel('Number of Cell Types')
-ax.set_ylabel('Pearson correlation')
-# %% violin plot
+                                                         infected_cells_threshold, log=False)
+# fig, ax = plt.subplots(figsize=(6, 6))
+# sns.scatterplot(x=celltype_corr.loc[celltype_corr.index[celltype_corr['n_cres'] >= 50], 'n_cells'],
+#                 y=celltype_corr.loc[celltype_corr.index[celltype_corr['n_cres'] >= 50], 'pearson'], ax=ax)
+# ax.set_xscale('log')
+# ax.set_xlabel('Cell type size')
+# ax.set_ylabel('Pearson correlation')
+# fig, ax = plt.subplots(figsize=(6, 6))
+# sns.scatterplot(x=cre_corr.loc[cre_corr.index[cre_corr['n_celltypes'] >= 20], 'n_celltypes'],
+#                 y=cre_corr.loc[cre_corr.index[cre_corr['n_celltypes'] >= 20], 'pearson'], ax=ax)
+# ax.set_xlabel('Number of Cell Types')
+# ax.set_ylabel('Pearson correlation')
+# violin plot
 cell_type_n_threshold = 20
 cre_n_threshold = 50
 fig, ax = plt.subplots(figsize=(6, 6))
 toplot1 = pd.DataFrame(celltype_corr['pearson'][celltype_corr['n_cres'] >= cre_n_threshold])
 toplot2 = pd.DataFrame(cre_corr['pearson'][cre_corr['n_celltypes'] >= cell_type_n_threshold])
-toplot1['metric'] = 'within cell type correlation'
-toplot2['metric'] = 'across cell type correlation'
+toplot1['metric'] = f'within cell type correlation\n{sum(celltype_corr["n_cres"] >= cre_n_threshold)} cell types'
+toplot2['metric'] = f'across cell type correlation\n{sum(cre_corr["n_celltypes"] >= cell_type_n_threshold)} CREs'
 toplot = pd.concat((toplot1, toplot2))
 sns.violinplot(x=toplot['metric'], y=toplot['pearson'], hue=toplot['metric'], ax=ax)
 
@@ -471,25 +471,25 @@ sns.violinplot(x=toplot['metric'], y=toplot['pearson'], hue=toplot['metric'], ax
 t7_infected_cells_expr3 = (starrfish3.get_t7_expression() > 0).groupby(starrfish3.get_tag('obs:subclass_name')).sum()
 t7_infected_cells_expr2 = t7_infected_cells_expr3.copy()
 cre_infected_cells_expr3 = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_tag('obs:subclass_name')).sum()
-cre_infected_cells_expr2 = cre_infected_cells_expr3.copy()
+cre_infected_cells_expr2 = (starrfish2.get_cre_expression() > 0).groupby(starrfish2.get_tag('obs:subclass_name')).sum()
 infected_cells_threshold = 10
-celltype_corr, cre_corr = plot_corr_by_t7_infected_cells((starrfish3.get_cre_expression()).groupby(starrfish3.get_tag('obs:subclass_name')).mean(),
-                                                         (starrfish2.get_cre_expression()).groupby(starrfish2.get_tag('obs:subclass_name')).mean(),
+celltype_corr, cre_corr = plot_corr_by_t7_infected_cells((starrfish2.get_cre_expression()).groupby(starrfish2.get_tag('obs:subclass_name')).mean(),
+                                                         (starrfish3.get_cre_expression()).groupby(starrfish3.get_tag('obs:subclass_name')).mean(),
                                                          cre_infected_cells_expr2, cre_infected_cells_expr3,
-                                                         starrfish3.get_tag('obs:subclass_name').value_counts(),
                                                          starrfish2.get_tag('obs:subclass_name').value_counts(),
-                                                         log=False)
+                                                         starrfish3.get_tag('obs:subclass_name').value_counts(),
+                                                         infected_cells_threshold, log=False)
 # violin plot
 cell_type_n_threshold = 20
 cre_n_threshold = 20
 fig, ax = plt.subplots(figsize=(6, 6))
 toplot1 = pd.DataFrame(celltype_corr['pearson'][celltype_corr['n_cres'] >= cre_n_threshold])
 toplot2 = pd.DataFrame(cre_corr['pearson'][cre_corr['n_celltypes'] >= cell_type_n_threshold])
-toplot1['metric'] = 'within cell type correlation'
-toplot2['metric'] = 'across cell type correlation'
+toplot1['metric'] = f'within cell type correlation\n{sum(celltype_corr["n_cres"] >= cre_n_threshold)} cell types'
+toplot2['metric'] = f'across cell type correlation\n{sum(cre_corr["n_celltypes"] >= cell_type_n_threshold)} CREs'
 toplot = pd.concat((toplot1, toplot2))
 sns.violinplot(x=toplot['metric'], y=toplot['pearson'], hue=toplot['metric'], ax=ax)
-
+ax.set_ylabel('Pearson correlation')
 
 
 
@@ -522,18 +522,18 @@ average_bootstrap_test_config = {
     'normalize_by_libsize': False,
     'log_transform': False,
     'bootstrap_number': 10000,
-    'bootstrap_to_fixed_pct': 1,
+    'bootstrap_to_fixed_pct': 0.5,
     'bootstrap_to_fixed_sample_size': None,
     'load_stored': True,
-    'n_jobs': 128,
+    'n_jobs': 28,
 }
 threshold = 'neg_control'
 res1 = starrfish3_sec1.average_bootstrap_test(**average_bootstrap_test_config)
-res_q1, res_df1 = starrfish3_sec1.average_bootstrap_test_q(res1, threshold=threshold, norm='T7', tail='right', to_filter=to_filter_sec1)
+res_q1, res_df1 = starrfish3_sec1.average_bootstrap_test_q(res1, threshold=threshold, norm='T7', tail='both', to_filter=to_filter_sec1)
 res2 = starrfish3_sec2.average_bootstrap_test(**average_bootstrap_test_config)
-res_q2, res_df2 = starrfish3_sec2.average_bootstrap_test_q(res2, threshold=threshold, norm='T7', tail='right', to_filter=to_filter_sec2)
+res_q2, res_df2 = starrfish3_sec2.average_bootstrap_test_q(res2, threshold=threshold, norm='T7', tail='both', to_filter=to_filter_sec2)
 res = starrfish3.average_bootstrap_test(**average_bootstrap_test_config)
-res_q, res_df = starrfish3.average_bootstrap_test_q(res, threshold=threshold, norm='T7', tail='right', to_filter=to_filter)
+res_q, res_df = starrfish3.average_bootstrap_test_q(res, threshold=threshold, norm='T7', tail='both', to_filter=to_filter)
 
 
 
@@ -543,21 +543,21 @@ cre_corr, celltype_corr = starrfish3.corr_starrfish(activity_df1=res_df1, activi
 # %% plot the cre_corr versus effect_n
 fig, ax = plt.subplots(ncols=2, figsize=(12, 6))
 sns.scatterplot(data=cre_corr, x='effect_n', y='pearson', ax=ax[0])
-ax[0].set_title('CRE Correlation vs Effect Cell Types')
+ax[0].set_title('Across Cell Type Correlation vs Effect Cell Types')
 ax[0].set_xlabel('Cell Types')
 ax[0].set_ylabel('CRE Correlation')
 sns.scatterplot(data=celltype_corr, x='effect_n', y='pearson', ax=ax[1])
-ax[1].set_title('Cell Type Correlation vs Effect CREs')
+ax[1].set_title('Within Cell Type Correlation vs Effect CREs')
 ax[1].set_xlabel('CREs')
 ax[1].set_ylabel('Cell Type Correlation')
-# %% plot violin plot
+# plot violin plot
 cell_type_n_threshold = 50
 cre_n_threshold = 50
 fig, ax = plt.subplots(figsize=(6, 6))
 toplot1 = pd.DataFrame(celltype_corr['pearson'][celltype_corr['effect_n'] >= cre_n_threshold])
 toplot2 = pd.DataFrame(cre_corr['pearson'][cre_corr['effect_n'] >= cell_type_n_threshold])
-toplot1['metric'] = 'within cell type correlation'
-toplot2['metric'] = 'across cell type correlation'
+toplot1['metric'] = f'within cell type correlation\n{sum(celltype_corr['effect_n']>= cre_n_threshold)} cell types'
+toplot2['metric'] = f'across cell type correlation\n{sum(cre_corr['effect_n']>= cell_type_n_threshold)} CREs'
 toplot = pd.concat((toplot1, toplot2))
 sns.violinplot(x=toplot['metric'], y=toplot['pearson'], hue=toplot['metric'], ax=ax)
 
@@ -570,13 +570,23 @@ cre_corr, celltype_corr = starrfish3.corr_atac_cpm(None, None, acvitity_df=res_d
 # %% plot the cre_corr versus effect_n
 fig, ax = plt.subplots(ncols=2, figsize=(12, 6))
 sns.scatterplot(data=cre_corr, x='effect_n', y='pearson', ax=ax[0])
-ax[0].set_title('CRE Correlation vs Effect Cell Types')
+ax[0].set_title('Across Cell Type Correlation vs Effect Cell Types')
 ax[0].set_xlabel('Cell Types')
 ax[0].set_ylabel('CRE Correlation')
 sns.scatterplot(data=celltype_corr, x='effect_n', y='pearson', ax=ax[1])
-ax[1].set_title('Cell Type Correlation vs Effect CREs')
+ax[1].set_title('Within Cell Type Correlation vs Effect CREs')
 ax[1].set_xlabel('CREs')
 ax[1].set_ylabel('Cell Type Correlation')
+# plot violin plot
+cell_type_n_threshold = 50
+cre_n_threshold = 50
+fig, ax = plt.subplots(figsize=(6, 6))
+toplot1 = pd.DataFrame(celltype_corr['pearson'][celltype_corr['effect_n'] >= cre_n_threshold])
+toplot2 = pd.DataFrame(cre_corr['pearson'][cre_corr['effect_n'] >= cell_type_n_threshold])
+toplot1['metric'] = f'within cell type correlation\n{sum(celltype_corr['effect_n']>= cre_n_threshold)} cell types'
+toplot2['metric'] = f'across cell type correlation\n{sum(cre_corr['effect_n']>= cell_type_n_threshold)} CREs'
+toplot = pd.concat((toplot1, toplot2))
+sns.violinplot(x=toplot['metric'], y=toplot['pearson'], hue=toplot['metric'], ax=ax)
 
 
 
@@ -597,6 +607,7 @@ fold_change_test_config = {"cell_types_to_use": None,
                            "log_transform": False,
                            "filter_zero_counts": False,
                            "bootstrap_number": 10000,
+                           "n_jobs": 28,
                            'load_stored': True,}
 res1 = starrfish3_sec1.fold_change_test(**fold_change_test_config)
 res2 = starrfish3_sec2.fold_change_test(**fold_change_test_config)
@@ -772,7 +783,7 @@ res_compare = plot_q_value_reproducibility(res_q1, res_q2, res_q)
 
 
 
-# %% fisher exact test
+# %% fisher exact test significant reproducibility
 infected_cells_threshold = 5
 to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
 to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
@@ -839,12 +850,25 @@ res_compare = plot_q_value_reproducibility(q_sec1, q_sec2, q)
 
 # %% correlation to atac_cpm
 cre_corr, celltype_corr = starrfish3.corr_atac_cpm(None, None, odd, log_atac=True, log_activity=True)
-fig, ax = plt.subplots(ncols=2, figsize=(6, 6), gridspec_kw={'wspace': 0.4})
-sns.violinplot(celltype_corr['pearson'], ax=ax[0])
-ax[0].set_title('Cell Type Correlation with ATAC')
-sns.violinplot(cre_corr['pearson'], ax=ax[1])
-ax[1].set_title('CRE Correlation with ATAC')
-plt.show()
+fig, ax = plt.subplots(ncols=2, figsize=(12, 6))
+sns.scatterplot(data=cre_corr, x='effect_n', y='pearson', ax=ax[0])
+ax[0].set_title('Across Cell Type Correlation vs Effect Cell Types')
+ax[0].set_xlabel('Cell Types')
+ax[0].set_ylabel('CRE Correlation')
+sns.scatterplot(data=celltype_corr, x='effect_n', y='pearson', ax=ax[1])
+ax[1].set_title('Within Cell Type Correlation vs Effect CREs')
+ax[1].set_xlabel('CREs')
+ax[1].set_ylabel('Cell Type Correlation')
+# plot violin plot
+cell_type_n_threshold = 50
+cre_n_threshold = 50
+fig, ax = plt.subplots(figsize=(6, 6))
+toplot1 = pd.DataFrame(celltype_corr['pearson'][celltype_corr['effect_n'] >= cre_n_threshold])
+toplot2 = pd.DataFrame(cre_corr['pearson'][cre_corr['effect_n'] >= cell_type_n_threshold])
+toplot1['metric'] = f'within cell type correlation\n{sum(celltype_corr['effect_n']>= cre_n_threshold)} cell types'
+toplot2['metric'] = f'across cell type correlation\n{sum(cre_corr['effect_n']>= cell_type_n_threshold)} CREs'
+toplot = pd.concat((toplot1, toplot2))
+sns.violinplot(x=toplot['metric'], y=toplot['pearson'], hue=toplot['metric'], ax=ax)
 
 
 
