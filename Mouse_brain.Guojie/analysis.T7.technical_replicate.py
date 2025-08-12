@@ -538,6 +538,20 @@ res_q, res_df = starrfish3.average_bootstrap_test_q(res, threshold=threshold, no
 
 
 
+# %% test the correlation of bootstrapping test results
+cre_corr, celltype_corr = starrfish3.corr_starrfish(activity_df1=res_df1, activity_df2=res_df2, log_activity=False)
+# %% plot the cre_corr versus effect_n
+fig, ax = plt.subplots(ncols=2, figsize=(12, 6))
+sns.scatterplot(data=cre_corr, x='effect_n', y='pearson', ax=ax[0])
+ax[0].set_title('CRE Correlation vs Effect Cell Types')
+ax[0].set_xlabel('Cell Types')
+ax[0].set_ylabel('CRE Correlation')
+sns.scatterplot(data=celltype_corr, x='effect_n', y='pearson', ax=ax[1])
+ax[1].set_title('Cell Type Correlation vs Effect CREs')
+ax[1].set_xlabel('CREs')
+ax[1].set_ylabel('Cell Type Correlation')
+
+
 
 # %% run the fold change test for T7
 fold_change_test_config = {"cell_types_to_use": None,

@@ -1,16 +1,21 @@
 # %% compare fold change test and glm
+import os
+import sys
+try:
+    PWD = os.path.dirname(os.path.abspath(__file__))
+except:
+    PWD = '/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/HCT116.Guojie/'
+sys.path.append(f'{PWD}/../Mouse_brain.Guojie/')
+sys.path.append(f'{PWD}/')
+os.chdir(PWD)
 from fdc import preprocess_experiment as preprocess_experiment_fdc
 from glm import preprocess_experiment as preprocess_experiment_glm
 from glm import glm_fit, glm_fit_total
 import statsmodels.api as sm
-import os
-import sys
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
-PWD = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(f'{PWD}/../Mouse_brain.Guojie/')
 from utils import STARRFISH
 # %%
 july_glm = preprocess_experiment_glm(enhancer_file='data/SFv4_T7_July_enhancer_cbg.csv', vector_file='data/SFv4_T7_July_T7_cbg.csv', nanopore_file='data/SFv4_T7_20CRE_nanopore_counts',
@@ -37,10 +42,10 @@ average_bootstrap_test_config = {
     'normalize_by_cell_t7': False,  # normalize by T7, filter cells with T7 < 4
     'normalize_by_celltype_rna': False,
     'normalize_by_celltype_volume': False,
-    'normalize_by_celltype_t7': True,  # normalize by T7
+    'normalize_by_celltype_t7': False,  # normalize by T7
     'filter_by_cell_t7': None,
     'normalize_by_negative_control': False,  # normalize by negative control
-    'normalize_by_libsize': False,
+    'normalize_by_libsize': True,
     'log_transform': False,
     'bootstrap_number': 10000,
     'bootstrap_to_fixed_pct': 1.0,
@@ -65,14 +70,33 @@ from adjustText import adjust_text
 texts = []
 for i in range(len(toplot)):
     texts.append(ax.text(toplot['FDC'][i], toplot['GLM'][i], toplot.index[i], fontsize=9))
-adjust_text(texts)
+adjust_text(texts, force_points=0.2, force_text=0.2, expand_points=(1, 1), expand_text=(1, 1),
+            arrowprops=dict(arrowstyle="-", color='black', lw=0.5))
 # regression line
 slope, intercept = np.polyfit(toplot['FDC'], toplot['GLM'], 1)
 ax.plot(toplot['FDC'], slope * toplot['FDC'] + intercept, color='red')
 # print slope and intercept
 ax.text(0.1, 0.9, f'slope: {slope:.2f}\nintercept: {intercept:.2f}', transform=ax.transAxes, fontsize=10)
-# %%
+# %% how about if we normalize against nanopore lib_size?
 fig, ax = plt.subplots(figsize=(8, 6))
-sns.scatterplot(y=july_glm['enhancer']['CRE001'], x=july_glm['vector']['CRE001'], ax=ax)
-
+# compare res_df1 vs july_glm
+toplot = pd.DataFrame({
+    'FDC': np.exp(res_df1.loc['CellLine']),
+    'GLM': july_glm['glm_fit_total_result_nanopore']['STARR-FISH Activity']
+})
+# drop CRE011
+toplot = toplot.drop('CRE011')
+sns.scatterplot(data=toplot, x='FDC', y='GLM', ax=ax)
+# label the CRE001
+from adjustText import adjust_text
+texts = []
+for i in range(len(toplot)):
+    texts.append(ax.text(toplot['FDC'][i], toplot['GLM'][i], toplot.index[i], fontsize=9))
+adjust_text(texts, force_points=0.2, force_text=0.2, expand_points=(1, 1), expand_text=(1, 1),
+            arrowprops=dict(arrowstyle="-", color='black', lw=0.5))
+# regression line
+slope, intercept = np.polyfit(toplot['FDC'], toplot['GLM'], 1)
+ax.plot(toplot['FDC'], slope * toplot['FDC'] + intercept, color='red')
+# print slope and intercept
+ax.text(0.5, 0.9, f'slope: {slope:.2f}\nintercept: {intercept:.2f}', transform=ax.transAxes, fontsize=10)
 # %%

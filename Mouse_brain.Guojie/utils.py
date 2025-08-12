@@ -561,7 +561,7 @@ def col_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_thre
     # do col wise correlation
     col_result = pd.DataFrame(index=df1.columns, 
                               columns=['pearson', 'spearman', 'fisher', 
-                                       'pearson_p', 'spearman_p', 'fisher_p',
+                                       'pearson_p', 'spearman_p', 'fisher_p', 'effect_n', 
                                        'pearson_q', 'spearman_q', 'fisher_q'])
     for i, cre in enumerate(df1.columns):
         # calculate the correlation
@@ -588,14 +588,9 @@ def col_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_thre
             col_result.loc[cre, 'pearson_p'] = pearson[1]
             col_result.loc[cre, 'spearman_p'] = spearman[1]
             col_result.loc[cre, 'fisher_p'] = fisher[1]
+            col_result.loc[cre, 'effect_n'] = tokeep.sum()
         except:
             print('Error in calculating correlation for CRE: ', cre)
-            col_result.loc[cre, 'pearson'] = 0
-            col_result.loc[cre, 'spearman'] = 0
-            col_result.loc[cre, 'fisher'] = 0
-            col_result.loc[cre, 'pearson_p'] = 1
-            col_result.loc[cre, 'spearman_p'] = 1
-            col_result.loc[cre, 'fisher_p'] = 1
     col_result['pearson_q'] = multitest.multipletests(col_result['pearson_p'], method='fdr_bh')[1]
     col_result['spearman_q'] = multitest.multipletests(col_result['spearman_p'], method='fdr_bh')[1]
     col_result['fisher_q'] = multitest.multipletests(col_result['fisher_p'], method='fdr_bh')[1]
@@ -605,7 +600,9 @@ def col_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_thre
 def row_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_threshold2=None):
     # do row wise correlation
     row_result = pd.DataFrame(index=df1.index,
-                              columns=['pearson', 'spearman', 'pearson_p', 'spearman_p', 'pearson_q', 'spearman_q'])
+                              columns=['pearson', 'spearman', 
+                                       'pearson_p', 'spearman_p', 'fisher_p', 'effect_n',
+                                       'pearson_q', 'spearman_q', 'fisher_q'])
     for i, celltype in enumerate(df1.index):
         # calculate the correlation
         try:
@@ -631,14 +628,9 @@ def row_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_thre
             row_result.loc[celltype, 'pearson_p'] = pearson[1]
             row_result.loc[celltype, 'spearman_p'] = spearman[1]
             row_result.loc[celltype, 'fisher_p'] = fisher[1]
+            row_result.loc[celltype, 'effect_n'] = tokeep.sum()
         except:
             print('Error in calculating correlation for celltype: ', celltype)
-            row_result.loc[celltype, 'pearson'] = 0
-            row_result.loc[celltype, 'spearman'] = 0
-            row_result.loc[celltype, 'fisher'] = 0
-            row_result.loc[celltype, 'pearson_p'] = 1
-            row_result.loc[celltype, 'spearman_p'] = 1
-            row_result.loc[celltype, 'fisher_p'] = 1
     row_result['pearson_q'] = multitest.multipletests(row_result['pearson_p'], method='fdr_bh')[1]
     row_result['spearman_q'] = multitest.multipletests(row_result['spearman_p'], method='fdr_bh')[1]
     row_result['fisher_q'] = multitest.multipletests(row_result['fisher_p'], method='fdr_bh')[1]
