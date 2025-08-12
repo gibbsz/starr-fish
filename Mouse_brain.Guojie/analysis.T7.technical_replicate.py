@@ -522,7 +522,7 @@ average_bootstrap_test_config = {
     'normalize_by_libsize': False,
     'log_transform': False,
     'bootstrap_number': 10000,
-    'bootstrap_to_fixed_pct': 0.5,
+    'bootstrap_to_fixed_pct': 1,
     'bootstrap_to_fixed_sample_size': None,
     'load_stored': True,
     'n_jobs': 128,
@@ -550,6 +550,34 @@ sns.scatterplot(data=celltype_corr, x='effect_n', y='pearson', ax=ax[1])
 ax[1].set_title('Cell Type Correlation vs Effect CREs')
 ax[1].set_xlabel('CREs')
 ax[1].set_ylabel('Cell Type Correlation')
+# %% plot violin plot
+cell_type_n_threshold = 50
+cre_n_threshold = 50
+fig, ax = plt.subplots(figsize=(6, 6))
+toplot1 = pd.DataFrame(celltype_corr['pearson'][celltype_corr['effect_n'] >= cre_n_threshold])
+toplot2 = pd.DataFrame(cre_corr['pearson'][cre_corr['effect_n'] >= cell_type_n_threshold])
+toplot1['metric'] = 'within cell type correlation'
+toplot2['metric'] = 'across cell type correlation'
+toplot = pd.concat((toplot1, toplot2))
+sns.violinplot(x=toplot['metric'], y=toplot['pearson'], hue=toplot['metric'], ax=ax)
+
+
+
+
+
+# %% correlation with ATAC_cpm
+cre_corr, celltype_corr = starrfish3.corr_atac_cpm(None, None, acvitity_df=res_df, log_atac=True)
+# %% plot the cre_corr versus effect_n
+fig, ax = plt.subplots(ncols=2, figsize=(12, 6))
+sns.scatterplot(data=cre_corr, x='effect_n', y='pearson', ax=ax[0])
+ax[0].set_title('CRE Correlation vs Effect Cell Types')
+ax[0].set_xlabel('Cell Types')
+ax[0].set_ylabel('CRE Correlation')
+sns.scatterplot(data=celltype_corr, x='effect_n', y='pearson', ax=ax[1])
+ax[1].set_title('Cell Type Correlation vs Effect CREs')
+ax[1].set_xlabel('CREs')
+ax[1].set_ylabel('Cell Type Correlation')
+
 
 
 
@@ -572,13 +600,14 @@ fold_change_test_config = {"cell_types_to_use": None,
                            'load_stored': True,}
 res1 = starrfish3_sec1.fold_change_test(**fold_change_test_config)
 res2 = starrfish3_sec2.fold_change_test(**fold_change_test_config)
-
+res = starrfish3.fold_change_test(**fold_change_test_config)
 
 
 
 # %% save the results
 starrfish3_sec1.save('results/starrfish3_sec1.pkl')
 starrfish3_sec2.save('results/starrfish3_sec2.pkl')
+starrfish3.save('results/starrfish3.pkl')
 # %%
 # check if res_q1 and res_q2 are the same
 cell_type = 'Endo NN'
