@@ -1550,6 +1550,8 @@ def celltype_corr_dotplot(obj, cres_to_use, cell_types_to_use, test_method, test
     return fig
 
 def draw_custom_dendrogram(cre_order_token, ordered_cres, ax, reorder_penalty=0.05, flip_axis=False):
+    # fill cre_order_token NA with zeros
+    cre_order_token = np.nan_to_num(cre_order_token, nan=0)
     # Step 1: Get unique tokens and map to CREs
     unique_tokens, inverse_indices = np.unique(cre_order_token, axis=0, return_inverse=True)
     token_groups = {i: np.where(inverse_indices == i)[0] for i in range(len(unique_tokens))}
@@ -1577,6 +1579,8 @@ def draw_custom_dendrogram(cre_order_token, ordered_cres, ax, reorder_penalty=0.
                 dist_matrix[i, j] = dist_matrix[j, i] = total_dist
 
     # Step 4: Cluster and draw
+    # fill dist_matrix with a large number if it encountered Inf distance
+    dist_matrix[np.isinf(dist_matrix)] = 1e6
     D = squareform(dist_matrix)
     Z = linkage(D, method='average')
     Z_opt = optimal_leaf_ordering(Z, D)
@@ -1938,3 +1942,531 @@ def cre_proportion_dotplot(proportion, activity, cres_to_use, cell_types_to_use,
     fig.tight_layout()
     plt.close(fig)
     return fig
+
+def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive_control_info, 
+                          cre_categories=np.array(['On-target', 'Mix-target', 'Off-target', 'No target', 'CREs', 'Negative Controls']),
+                          significant_cutoff=0.05, figsize=(20, 12), activity_log=False, z_norm=True, flip_axis=False):
+    if cres_to_use is None:
+        cres_to_use = q_value.columns
+    if cell_types_to_use is None:
+        cell_types_to_use = q_value.index
+    cell_types_to_use = cell_types_to_use[cell_types_to_use.isin(q_value.index)]
+    # order cell types to use by subcluster number
+    cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
+    cluster_annotation_term['subclass'] = cluster_annotation_term['subclass'].str.replace('/', '-')
+    cell_types_to_use_cluster_number = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[cell_types_to_use].values
+    # reorder cell types to use by subcluster number
+    cell_types_to_use = pd.Index(cell_types_to_use[np.argsort(cell_types_to_use_cluster_number)])
+    # reorder test result and atac cpm
+    q_value = q_value.loc[cell_types_to_use, cres_to_use]
+    activity = activity.loc[cell_types_to_use, cres_to_use]
+    # find positive controls
+    if positive_control_info is not None:
+        target_df = pd.DataFrame(index=q_value.index, columns=q_value.columns)
+        for cre in q_value.columns:
+            best_subclass = positive_control_info.loc[cre, 'best_subclass']
+            # if best_subclass is seperated by ";", we split
+            if pd.notna(best_subclass) and ';' in best_subclass:
+                best_subclass = best_subclass.split(';')
+            else:
+                best_subclass = [best_subclass]
+            # significant cres
+            cell_types = q_value[cre].index[q_value[cre] <= significant_cutoff]
+            for best_sub in best_subclass:
+                if pd.isna(best_sub):
+                    # do nothing
+                    print(f'Warning: {cre} has no best subclass')
+                elif best_sub == 'Negative Control':
+                    # if the best subclass is negative control, we skip this cre
+                    target_df.loc[:, cre] = 'Negative Control'
+                    continue
+                elif best_sub == 'CRE':
+                    # if the best subclass is CREs, we skip this cre
+                    target_df.loc[:, cre] = 'CRE'
+                    continue
+                # on target cell types
+                if best_sub in cell_types:
+                    target_df.loc[best_sub, cre] = 'on-target'
+                    cell_types = cell_types[cell_types != best_sub]
+                else:
+                    if best_sub in q_value.index:
+                        target_df.loc[best_sub, cre] = 'miss'
+            # other cell types are off-target
+            cell_types = cell_types[cell_types.isin(q_value.index)]
+            if len(cell_types) > 0:
+                target_df.loc[cell_types, cre] = 'off-target'
+        # divide the cres into 4 categories: only on-target, on-target + off-target, only off-target, no target
+        def assign_cre_type(x):
+            if 'Negative Control' in x.values:
+                return 'Negative Controls'
+            elif 'CRE' in x.values:
+                return 'CREs'
+            elif 'on-target' in x.values:
+                if 'off-target' in x.values:
+                    return 'Mix-target'
+                else:
+                    return 'On-target'
+            elif 'off-target' in x.values:
+                return 'Off-target'
+            else:
+                return 'No target'
+        cre_type = target_df.apply(assign_cre_type, axis=0)
+    else:
+        target_df = pd.DataFrame(index=q_value.index, columns=q_value.columns)
+        target_df[:] = 'CREs'
+        cre_type = np.repeat('CREs', len(cres_to_use))
+    # Data transformations
+    # filter any non-significant values to nan
+    activity = activity.where(q_value <= significant_cutoff, other=np.nan)
+    q_value = q_value.clip(lower=1/5000).astype(float)  # Clip to avoid log10(0)
+    q_value = q_value.where(q_value <= significant_cutoff, other=np.nan)
+    if activity_log:
+        activity = activity.clip(lower=1e-2).astype(float)  # Clip to avoid log10(0)
+        activity = np.log10(activity)  # Transpose for CRE clustering
+    if z_norm:
+        activity = activity.T
+        activity = activity.sub(np.nanmean(activity, axis=1), axis=0).div(np.nanstd(activity, axis=1), axis=0)  # Z-score per CRE
+    else:
+        activity = activity.T
+    q_value = -np.log10(q_value).T
+    # if scale_by_cre, we scale the test result by the max of each cre
+    hue_name = 'log(activity) (z-score)'
+    size_name = '-log10(q value)'
+    # make to plot dataframe, flatten recall and atac_cpm
+    toplot = pd.DataFrame({size_name: q_value.T.values.flatten(),
+                            hue_name: activity.T.values.flatten(),
+                            'cre_type': np.tile(cre_type, len(cell_types_to_use))})
+    hue_min, hue_max = toplot[hue_name].min(), toplot[hue_name].max()
+    size_min, size_max = toplot[size_name].min(), toplot[size_name].max()
+    # plot dot plot, no edge color, use 4 sub plots
+    # Set the height ratios for the subplots
+    height_ratios = np.array([sum(cre_type == category) for category in cre_categories])
+    # remove the categories with 0 counts
+    cre_categories = cre_categories[height_ratios != 0]
+    height_ratios = height_ratios[height_ratios != 0]
+    # Create 4 subplots aligned vertically, assign different heights
+    if flip_axis:
+        fig, axes = plt.subplots(2, len(height_ratios), figsize=figsize, sharex=False, sharey=False,
+                                    gridspec_kw={'height_ratios': [1, 0.2], 'width_ratios': height_ratios[::-1]})
+    else:    
+        fig, axes = plt.subplots(len(height_ratios), 2, figsize=figsize, sharex=False, sharey=False,
+                                gridspec_kw={'height_ratios': height_ratios, 'width_ratios': [0.2, 1]})
+    # Plot each CRE type in a subplot
+    for i, category in enumerate(cre_categories):
+        if len(cre_categories) == 1:
+            ax = axes[1]
+            ax_dend = axes[0]
+        else:
+            if flip_axis:
+                ax = axes[0, -i-1]
+                ax_dend = axes[1, -i-1]
+            else:
+                ax = axes[i, 1]
+                # Plot dendrogram
+                ax_dend = axes[i, 0]
+        category_cres = cres_to_use[cre_type == category]
+        # Cluster CREs within category
+        activity_subset = activity.loc[category_cres]  # Use pre-transposed data
+        q_value_subset = q_value.loc[category_cres]
+        if category != 'No target':
+            # set the orders based on q-value
+            # create a order token for each CRE
+            max_sig_n = (q_value_subset >= -np.log10(significant_cutoff)).sum(axis=1).max()
+            cre_order_token = []
+            for j, cre in enumerate(category_cres):
+                # get significant cell types
+                significant_cell_types = q_value_subset.loc[cre][q_value_subset.loc[cre] >= -np.log10(significant_cutoff)].index
+                # get the index of the cell types in cell_types_to_use
+                significant_cell_types_idx = cell_types_to_use.get_indexer(significant_cell_types) + 1
+                significant_activities = activity_subset.loc[cre][significant_cell_types].values
+                # sort the significant_cell_types_idx by significant_activities
+                significant_cell_types_idx = significant_cell_types_idx[np.argsort(significant_activities)[::-1]]
+                significant_activities = np.sort(significant_activities)[::-1]
+                # fill to max_sig_n
+                significant_cell_types_idx = np.pad(significant_cell_types_idx, (0, max_sig_n - len(significant_cell_types_idx)), constant_values=0)
+                significant_activities = np.pad(significant_activities, (0, max_sig_n - len(significant_activities)), constant_values=0)
+                # append the q-value
+                cre_order_token.append(np.concatenate((significant_cell_types_idx.reshape(-1, 1),
+                                                       significant_activities.reshape(-1, 1)), axis=1).reshape(-1))
+            # sort the cres by the order token
+            cre_order_token = np.array(cre_order_token)
+            # sort cres by the order token
+            if cre_order_token.shape[1] > 0:
+                ordered_cres = category_cres[np.lexsort(cre_order_token.T[::-1,:])]
+                cre_order_token = cre_order_token[np.lexsort(cre_order_token.T[::-1,:])]
+            else:
+                ordered_cres = category_cres
+                cre_order_token = np.zeros((len(category_cres), 0))
+            # Sort data by clustered order
+            activity_subset = activity_subset.loc[ordered_cres].copy()
+            q_value_subset = q_value.loc[ordered_cres].copy()
+            target_df_subset = target_df.loc[:, ordered_cres].copy()
+        else:
+            ordered_cres = category_cres
+            target_df_subset = target_df.loc[:, ordered_cres].copy()
+            cre_order_token = np.zeros((len(category_cres), 0))
+            max_sig_n = 0
+        subset = pd.DataFrame({size_name: q_value_subset.T.values.flatten(),
+                               hue_name: activity_subset.T.values.flatten(),
+                               'cell_types': list(cell_types_to_use.values.repeat(len(ordered_cres))),
+                               'cres': np.tile(ordered_cres, len(cell_types_to_use)),
+                               'positive_control': target_df_subset.values.flatten()})
+        subset['cres'] = pd.Categorical(subset['cres'], categories=ordered_cres, ordered=True)
+        # dot plots
+        if flip_axis:
+            x = 'cres'
+            y = 'cell_types'
+        else:
+            x = 'cell_types'
+            y = 'cres'
+        sns.scatterplot(data=subset, x=x, y=y, size=size_name, hue=hue_name, edgecolor='none',
+                        hue_norm=(hue_min, hue_max), size_norm=(size_min, size_max),
+                        sizes=(3, 250), alpha=0.8, palette='coolwarm', ax=ax)
+        # dendrogram
+        draw_custom_dendrogram(cre_order_token[:, :max_sig_n], ordered_cres, ax_dend, flip_axis=flip_axis)
+        # ax.invert_yaxis()
+        ax_dend.axis('off')
+        # Add markers for positive controls
+        # if positive_control_info is not None and category != 'CREs':
+        #     markers = {
+        #         'on-target': ('red', 's'), 
+        #         'off-target': ('blue', 's'), 
+        #         'miss': ('grey', 's')
+        #     }
+        #     for control, (color, marker) in markers.items():
+        #         data = subset[subset['positive_control'] == control]
+        #         if not data.empty:
+        #             sns.scatterplot(
+        #                 data=data, x=x, y=y, 
+        #                 s=250, alpha=0.8, marker=marker,
+        #                 facecolor='none', edgecolor=color, legend=False, ax=ax
+        #             )
+        # ax.margins(y=0.5/figsize[1]/height_ratios[i] * max(np.array(height_ratios)))
+        if flip_axis:
+            ax.margins(x=0.6 / height_ratios[i])
+            ax.set_ylim(-0.5, len(cell_types_to_use)-0.5)
+        else:
+            ax.margins(y=0.6 / height_ratios[i])
+            ax.set_xlim(-0.5, len(cell_types_to_use)-0.5) 
+        # remove the ticks, x label
+        if i != len(cre_categories) - 1:
+            if flip_axis:
+                # remove y ticks and y label
+                ax.tick_params(axis='y', which='both', left=False, right=False, labelleft=False)
+                ax.set_ylabel('')
+                # rotate the x labels
+                ax.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=True)
+                ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+            else:
+                ax.tick_params(axis='x', which='both', bottom=False, top=False, labelbottom=False)
+                ax.set_xlabel('')
+        else:
+            if flip_axis:
+                # rotate the y labels
+                ax.tick_params(axis='y', which='both', left=True, right=False, labelleft=True)
+                ax.set_yticklabels(ax.get_yticklabels(), rotation=0)
+                ax.set_ylabel('Cell Types')
+                # rotate the x labels
+                ax.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=True)
+                ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+            else:
+                # rotate the x labels
+                ax.tick_params(axis='x', which='both', bottom=True, top=False, labelbottom=True)
+                ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
+                ax.set_xlabel('Cell Types')
+        if category in ['On-target', 'Mix-target', 'Off-target', 'CREs']:
+            # Capture legend handles/labels from the FIRST subplot before removal
+            legend = ax.get_legend()
+            legend_handles = legend.legend_handles
+            legend_labels = [t.get_text() for t in legend.get_texts()]
+        # Remove subplot legend
+        ax.get_legend().remove()
+        if category == 'CREs':
+            if flip_axis:
+                # remove x axis label
+                ax.set_xlabel('')
+            else:
+                # remove y axis label
+                ax.set_ylabel('')
+        else:
+            if flip_axis:
+                ax.set_xlabel(category)
+            else:
+                ax.set_ylabel(category)
+        if flip_axis:
+            ax.tick_params(axis='x', which='both', labelsize=8)
+        else:
+            ax.tick_params(axis='y', which='both', labelsize=8)
+    # put legends to right of the plot
+    fig.legend(legend_handles, legend_labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10, labelspacing=1.5)
+    fig.tight_layout()
+    plt.close(fig)
+    return fig
+
+def plot_q_value_celltype_reproducibility(res_q1, res_q2, res_q, q_cutoff = 0.05):
+    common_celltypes = res_q1.index.intersection(res_q2.index)
+    res_compare = pd.DataFrame(index=common_celltypes, columns=['Sec1', 'Sec2', 'All', 
+                                                                'Common', 'Percentage',
+                                                                'Common_sec1', 'Percentage_sec1',
+                                                                'Common_sec2', 'Percentage_sec2'])
+    for cell_type in common_celltypes:
+        res_compare.loc[cell_type, 'Sec1'] = (res_q1.loc[cell_type] <= q_cutoff).sum()
+        res_compare.loc[cell_type, 'Sec2'] = (res_q2.loc[cell_type] <= q_cutoff).sum()
+        res_compare.loc[cell_type, 'All'] = (res_q.loc[cell_type] <= q_cutoff).sum()
+        res_compare.loc[cell_type, 'Common'] = res_q1.loc[cell_type].index[res_q1.loc[cell_type] <= q_cutoff].intersection(res_q2.loc[cell_type].index[res_q2.loc[cell_type] <= q_cutoff]).shape[0]
+        res_compare.loc[cell_type, 'Percentage'] = res_compare.loc[cell_type, 'Common'] / np.minimum(res_compare.loc[cell_type, 'Sec1'], res_compare.loc[cell_type, 'Sec2'])
+        res_compare.loc[cell_type, 'Common_sec1'] = res_q1.loc[cell_type].index[res_q1.loc[cell_type] <= q_cutoff].intersection(res_q.loc[cell_type].index[res_q.loc[cell_type] <= q_cutoff]).shape[0]
+        res_compare.loc[cell_type, 'Percentage_sec1'] = res_compare.loc[cell_type, 'Common_sec1'] / np.minimum(res_compare.loc[cell_type, 'Sec1'], res_compare.loc[cell_type, 'All'])
+        res_compare.loc[cell_type, 'Common_sec2'] = res_q2.loc[cell_type].index[res_q2.loc[cell_type] <= q_cutoff].intersection(res_q.loc[cell_type].index[res_q.loc[cell_type] <= q_cutoff]).shape[0]
+        res_compare.loc[cell_type, 'Percentage_sec2'] = res_compare.loc[cell_type, 'Common_sec2'] / np.minimum(res_compare.loc[cell_type, 'Sec2'], res_compare.loc[cell_type, 'All'])
+    # plot the percentage vs number of cells
+    res_compare['Cell_counts1'] = starrfish3_sec1.get_celltypes().value_counts().loc[common_celltypes].values
+    res_compare['Cell_counts2'] = starrfish3_sec2.get_celltypes().value_counts().loc[common_celltypes].values
+    res_compare['Cell_counts'] = starrfish3.get_celltypes().value_counts().loc[common_celltypes].values
+    fig, ax = plt.subplots(ncols=3, figsize=(12, 4))
+    # Create separate plots for NaN and non-NaN values
+    mask_valid = ~res_compare['Percentage_sec1'].isna()
+    mask_nan = res_compare['Percentage_sec1'].isna()
+    # Plot valid values with coolwarm palette
+    if mask_valid.any():
+        sns.scatterplot(x=res_compare.loc[mask_valid, 'Cell_counts1'], 
+                            y=res_compare.loc[mask_valid, 'Cell_counts'],
+                            hue=res_compare.loc[mask_valid, 'Percentage_sec1'], 
+                            palette='coolwarm', ax=ax[0], alpha=0.5)
+    # Plot NaN values in grey
+    if mask_nan.any():
+        ax[0].scatter(res_compare.loc[mask_nan, 'Cell_counts1'], 
+                res_compare.loc[mask_nan, 'Cell_counts'], edgecolors='none', s=20,  # Adjust size as needed
+                color='grey', alpha=0.5, label='NA')
+    ax[0].set_xscale('log')
+    ax[0].set_yscale('log')
+    ax[0].set_xlabel('Cell counts in Sec1')
+    ax[0].set_ylabel('Cell counts in All')
+
+    mask_valid = ~res_compare['Percentage_sec2'].isna()
+    mask_nan = res_compare['Percentage_sec2'].isna()
+    # Plot valid values with coolwarm palette
+    if mask_valid.any():
+        sns.scatterplot(x=res_compare.loc[mask_valid, 'Cell_counts2'], 
+                            y=res_compare.loc[mask_valid, 'Cell_counts'],
+                            hue=res_compare.loc[mask_valid, 'Percentage_sec2'], 
+                            palette='coolwarm', ax=ax[1], alpha=0.5)
+    # Plot NaN values in grey
+    if mask_nan.any():
+        ax[1].scatter(res_compare.loc[mask_nan, 'Cell_counts2'], 
+                res_compare.loc[mask_nan, 'Cell_counts'], edgecolors='none', s=20,  # Adjust size as needed
+                color='grey', alpha=0.5, label='NA')
+    ax[1].set_xscale('log')
+    ax[1].set_yscale('log')
+    ax[1].set_xlabel('Cell counts in Sec2')
+    ax[1].set_ylabel('Cell counts in All')
+
+    mask_valid = ~res_compare['Percentage'].isna()
+    mask_nan = res_compare['Percentage'].isna()
+    # Plot valid values with coolwarm palette
+    if mask_valid.any():
+        sns.scatterplot(x=res_compare.loc[mask_valid, 'Cell_counts1'], 
+                        y=res_compare.loc[mask_valid, 'Cell_counts2'],
+                        hue=res_compare.loc[mask_valid, 'Percentage'], 
+                        palette='coolwarm', ax=ax[2], alpha=0.5)
+    # Plot NaN values in grey
+    if mask_nan.any():
+        ax[2].scatter(res_compare.loc[mask_nan, 'Cell_counts1'], 
+                    res_compare.loc[mask_nan, 'Cell_counts2'], edgecolors='none', s=20,  # Adjust size as needed
+                    color='grey', alpha=0.5, label='NA')
+    ax[2].set_xscale('log')
+    ax[2].set_yscale('log')
+    ax[2].set_xlabel('Cell counts in Sec1')
+    ax[2].set_ylabel('Cell counts in Sec2')
+    # plot violin plot
+    fig, ax = plt.subplots(ncols=3, figsize=(12, 4), gridspec_kw={'wspace': 0.4})
+    sns.violinplot(y=res_compare['Percentage_sec1'], ax=ax[0])
+    sns.violinplot(y=res_compare['Percentage_sec2'], ax=ax[1])
+    sns.violinplot(y=res_compare['Percentage'], ax=ax[2])
+    return res_compare
+
+def plot_q_value_cre_reproducibility(res_q1, res_q2, res_q, q_cutoff=0.05, plot=True):
+    common_cres = res_q1.columns.intersection(res_q2.columns)
+    res_compare = pd.DataFrame(index=common_cres, columns=['Sec1', 'Sec2', 'All', 
+                                                           'Common', 'Percentage',
+                                                           'Common_sec1', 'Percentage_sec1',
+                                                           'Common_sec2', 'Percentage_sec2'])
+    for cre in common_cres:
+        res_compare.loc[cre, 'Sec1'] = (res_q1[cre] <= q_cutoff).sum()
+        res_compare.loc[cre, 'Sec2'] = (res_q2[cre] <= q_cutoff).sum()
+        res_compare.loc[cre, 'All'] = (res_q[cre] <= q_cutoff).sum()
+        res_compare.loc[cre, 'Common'] = res_q1[cre].index[res_q1[cre] <= q_cutoff].intersection(res_q2[cre].index[res_q2[cre] <= q_cutoff]).shape[0]
+        res_compare.loc[cre, 'Percentage'] = res_compare.loc[cre, 'Common'] / np.minimum(res_compare.loc[cre, 'Sec1'], res_compare.loc[cre, 'Sec2'])
+        res_compare.loc[cre, 'Common_sec1'] = res_q1[cre].index[res_q1[cre] <= q_cutoff].intersection(res_q[cre].index[res_q[cre] <= q_cutoff]).shape[0]
+        res_compare.loc[cre, 'Percentage_sec1'] = res_compare.loc[cre, 'Common_sec1'] / np.minimum(res_compare.loc[cre, 'Sec1'], res_compare.loc[cre, 'All'])
+        res_compare.loc[cre, 'Common_sec2'] = res_q2[cre].index[res_q2[cre] <= q_cutoff].intersection(res_q[cre].index[res_q[cre] <= q_cutoff]).shape[0]
+        res_compare.loc[cre, 'Percentage_sec2'] = res_compare.loc[cre, 'Common_sec2'] / np.minimum(res_compare.loc[cre, 'Sec2'], res_compare.loc[cre, 'All'])
+    # plot the percentage vs number of cells
+    res_compare['lib_size'] = starrfish3.lib_size.loc[common_cres, 'counts'].values
+    if not plot:
+        return res_compare
+    fig, ax = plt.subplots(ncols=4, figsize=(16, 4))
+    # Create separate plots for NaN and non-NaN values
+    mask_valid = ~res_compare['Percentage_sec1'].isna()
+    mask_nan = res_compare['Percentage_sec1'].isna()
+    # Plot valid values with coolwarm palette
+    if mask_valid.any():
+        sns.scatterplot(x=res_compare.loc[mask_valid, 'Sec1'], 
+                            y=res_compare.loc[mask_valid, 'All'],
+                            hue=res_compare.loc[mask_valid, 'Percentage_sec1'], 
+                            palette='coolwarm', ax=ax[0], alpha=0.5)
+    # Plot NaN values in grey
+    if mask_nan.any():
+        ax[0].scatter(res_compare.loc[mask_nan, 'Sec1'], 
+                res_compare.loc[mask_nan, 'All'], edgecolors='none', s=20,  # Adjust size as needed
+                color='grey', alpha=0.5, label='NA')
+    ax[0].set_xlabel('Significant cell types in Sec1')
+    ax[0].set_ylabel('Significant cell types in All')
+
+    mask_valid = ~res_compare['Percentage_sec2'].isna()
+    mask_nan = res_compare['Percentage_sec2'].isna()
+    # Plot valid values with coolwarm palette
+    if mask_valid.any():
+        sns.scatterplot(x=res_compare.loc[mask_valid, 'Sec2'], 
+                            y=res_compare.loc[mask_valid, 'All'],
+                            hue=res_compare.loc[mask_valid, 'Percentage_sec2'], 
+                            palette='coolwarm', ax=ax[1], alpha=0.5)
+    # Plot NaN values in grey
+    if mask_nan.any():
+        ax[1].scatter(res_compare.loc[mask_nan, 'Sec2'], 
+                res_compare.loc[mask_nan, 'All'], edgecolors='none', s=20,  # Adjust size as needed
+                color='grey', alpha=0.5, label='NA')
+    ax[1].set_xlabel('Significant cell types in Sec2')
+    ax[1].set_ylabel('Significant cell types in All')
+
+    mask_valid = ~res_compare['Percentage'].isna()
+    mask_nan = res_compare['Percentage'].isna()
+    # Plot valid values with coolwarm palette
+    if mask_valid.any():
+        sns.scatterplot(x=res_compare.loc[mask_valid, 'Sec1'], 
+                        y=res_compare.loc[mask_valid, 'Sec2'],
+                        hue=res_compare.loc[mask_valid, 'Percentage'], 
+                        palette='coolwarm', ax=ax[2], alpha=0.5)
+        sns.scatterplot(x=res_compare.loc[mask_valid, 'lib_size'], 
+                        y=res_compare.loc[mask_valid, 'All'],
+                        hue=res_compare.loc[mask_valid, 'Percentage'], 
+                        palette='coolwarm', ax=ax[3], alpha=0.5)
+    # Plot NaN values in grey
+    if mask_nan.any():
+        ax[2].scatter(res_compare.loc[mask_nan, 'Sec1'], 
+                    res_compare.loc[mask_nan, 'Sec2'], edgecolors='none', s=20,  # Adjust size as needed
+                    color='grey', alpha=0.5, label='NA')
+        ax[3].scatter(res_compare.loc[mask_nan, 'lib_size'], 
+                      res_compare.loc[mask_nan, 'All'], edgecolors='none', s=20,  # Adjust size as needed
+                      color='grey', alpha=0.5, label='NA')
+    ax[2].set_xlabel('Significant cell types in Sec1')
+    ax[2].set_ylabel('Significant cell types in Sec2')
+    ax[3].set_xscale('log')
+    ax[3].set_xlabel('log library size')
+    ax[3].set_ylabel('Significant cell types in All')
+
+    # plot violin plot
+    fig, ax = plt.subplots(ncols=3, figsize=(12, 4), gridspec_kw={'wspace': 0.4})
+    sns.violinplot(y=res_compare['Percentage_sec1'], ax=ax[0])
+    sns.violinplot(y=res_compare['Percentage_sec2'], ax=ax[1])
+    sns.violinplot(y=res_compare['Percentage'], ax=ax[2])
+    return res_compare
+
+def get_pr_df(qvalue_df, starrfish_obj, cell_types_to_use,
+              metric = ['atac_cpm', 'h3k4me1_cpm', 'h3k9me3_cpm', 'h3k27ac_cpm', 'h3k27me3_cpm'],
+              z_cutoffs=np.arange(0, 5, 0.1), q_threshold=0.05):
+    res_df = pd.DataFrame()
+    # filter cell_types_to_use based on mod
+    for mod in metric:
+        mod_cpm = getattr(starrfish_obj, mod).copy()
+        cell_types_to_use = cell_types_to_use[cell_types_to_use.isin(mod_cpm.index)]
+    # for each CRE, select top rank cell type
+    for z in z_cutoffs:
+        for mod in metric:
+            if mod.endswith('_cpm'):
+                mod_cpm = getattr(starrfish_obj, mod).copy()
+                qvalue_df = qvalue_df[qvalue_df.columns.intersection(mod_cpm.columns)]
+                mod_cpm = mod_cpm.loc[qvalue_df.index.intersection(mod_cpm.index), qvalue_df.columns]
+                # log transform
+                mod_cpm = np.log1p(mod_cpm.astype(float))
+                mod_cpm_z = mod_cpm.sub(mod_cpm.mean(axis=0), axis=1).div(mod_cpm.std(axis=0), axis=1)  # Z-score per CRE
+            else:
+                mod_cpm_z = getattr(starrfish_obj, mod).copy()
+                qvalue_df = qvalue_df[qvalue_df.columns.intersection(mod_cpm_z.columns)]
+                mod_cpm_z = mod_cpm_z.loc[qvalue_df.index.intersection(mod_cpm_z.index), qvalue_df.columns]
+            for cell_type in cell_types_to_use:
+                target_cres = qvalue_df.loc[cell_type].index[qvalue_df.loc[cell_type] <= q_threshold]
+                z_score = mod_cpm_z.loc[cell_type]
+                if mod in ['h3k9me3_cpm', 'h3k27me3_cpm']:
+                    z_score = -z_score
+                pred_cres = z_score.index[z_score >= z]
+                # on-target and off-target rates
+                correct = target_cres.isin(pred_cres).sum()
+                all_pred = len(pred_cres)
+                res_df = pd.concat((res_df,
+                pd.DataFrame({
+                    'cell_type': cell_type,
+                    'mod': mod.replace('_cpm', ''),
+                    'z_cutoff': z,
+                    'precision': correct / all_pred if all_pred > 0 else 0,
+                    'recall': f'{correct}/{all_pred}' if all_pred > 0 else '0/0',
+                    'all_pred': all_pred,
+                    'correct': correct,
+                    'target': len(target_cres),
+                }, index=[0])), ignore_index=True)
+    # drop NaN values
+    res_df = res_df.dropna(subset=['precision', 'recall'])
+    # order by allen institute's nominature
+    cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
+    cluster_annotation_term['subclass'] = cluster_annotation_term['subclass'].str.replace('/', '-')
+    res_df['cell_type_rank'] = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[res_df['cell_type']].values
+    # reorder by cell type rank
+    res_df = res_df.sort_values(by=['cell_type_rank']).reset_index(drop=True)
+    return res_df
+
+def plot_bar(df_bar, legend_loc=None, figsize=(3, 1.5), flip_axis=False, fontsize=3):
+    fig, ax = plt.subplots(figsize=figsize)
+    df_bar['cell_type'] = df_bar.apply(lambda x: f"{x['cell_type']} ({x['target']})", axis=1)
+    # Define the categorical orderings (as used by seaborn)
+    cell_type_order = df_bar['cell_type'].unique().tolist()  # or specify manually
+    mod_order = df_bar['mod'].unique().tolist()  # or pass hue_order=... to sns.barplot
+    df_bar_sorted = (df_bar.copy().astype({'cell_type': pd.CategoricalDtype(categories=cell_type_order, ordered=True),
+                                           'mod': pd.CategoricalDtype(categories=mod_order, ordered=True)})
+                     .sort_values(['mod', 'cell_type'])
+                     .reset_index(drop=True))
+    # Plot
+    palette = {'atac': '#A6CEE3', 'h3k4me1': '#B2DF8A', 'h3k9me3': '#FB8072',
+               'h3k27ac': '#FDB462', 'h3k27me3': '#CAB2D6',
+               'chromatin_o': 'blue', 'chromatin_a': 'red', 'snapatac2_de_fc': 'yellow'}
+    if flip_axis:
+        sns.barplot(data=df_bar_sorted, y='cell_type', x='precision', hue='mod',
+                    palette=palette, order=cell_type_order, hue_order=mod_order, ax=ax)
+    else:
+        sns.barplot(data=df_bar_sorted, x='cell_type', y='precision', hue='mod',
+                    palette=palette, order=cell_type_order, hue_order=mod_order, ax=ax)
+    # Annotate using df_bar_sorted
+    for patch, (_, row) in zip(ax.patches, df_bar_sorted.iterrows()):
+        recall = row['recall']
+        if flip_axis:
+            precision = patch.get_width()
+            y = patch.get_y() + patch.get_height() / 2
+            ax.text(precision, y, str(recall), va='center', ha='center', fontsize=fontsize)
+        else:
+            precision = patch.get_height()
+            x = patch.get_x() + patch.get_width() / 2
+            ax.text(x, precision, str(recall), va='center', ha='center', fontsize=fontsize)
+    # set limits and labels based on orientation
+    if flip_axis:
+        ax.set_xlim(0, df_bar_sorted['precision'].max() + 0.02)
+        ax.tick_params(axis='x', labelsize=fontsize)
+        ax.set_xlabel('Precision', fontsize=6)
+        ax.set_ylabel('')
+    else:
+        ax.set_ylim(0, df_bar_sorted['precision'].max() + 0.02)
+        ax.tick_params(axis='y', labelsize=fontsize)
+        ax.set_ylabel('Precision', fontsize=6)
+        ax.set_xlabel('')
+    # move legend a little bit down
+    if legend_loc is not None:
+        ax.legend(bbox_to_anchor=legend_loc, loc='upper right', borderaxespad=0.)
+    return fig, ax

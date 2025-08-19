@@ -5,6 +5,8 @@ import warnings
 import time
 import multiprocessing
 from joblib import Parallel, delayed
+from scipy.optimize import minimize
+from scipy.special import logsumexp
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -720,6 +722,41 @@ def motif_enrichment(ranked_scores: pd.DataFrame):
     enrichment_score = es.mean()
     return enrichment_score
 
+# Worker function for multiprocessing optimization - defined at module level for Jupyter compatibility
+def _optimize_celltype_cre_worker(args):
+    """Worker function for parallel optimization of celltype-cre combinations."""
+    celltype, cre, obs_cre, obs_t7, initial_guess = args
+    
+    # Define the simple optimization function (same as nested function)
+    def poisson_negative_binomial(x, obs_cre, obs_t7):
+        # parameters
+        # x[0]: infection poisson lambda
+        # x[1]: T7 detection 0 log probability
+        # x[2]: CRE detection 0 log probability
+        # x[3], x[4]: CRE activity mean, dispersion
+        # iterate infection i from 0 to 65
+        ll = np.zeros((obs_cre.shape[0], 66))
+        for i in range(66):
+            # poisson process
+            ll[:, i] += stats.poisson.logpmf(i, mu=x[0])
+            if i == 0:
+                # T7 detection 0 probability
+                ll[:, i] += np.log(1 - obs_t7)
+                # CRE detection 0 probability
+                ll[:, i] += np.log(obs_cre == 0)
+            else:
+                # T7 detection probability
+                ll[:, i] += (1 - obs_t7) * i * x[1] + obs_t7 * np.log(1 - np.exp(i * x[1]))
+                # negative binomial
+                ll[:, i] += stats.nbinom.logpmf(obs_cre, n=i * x[4], p=x[4] / (x[4] + x[3] * np.exp(x[2])))
+        ll_summed = logsumexp(ll, axis=1)
+        return -ll_summed.sum()
+    
+    # Run optimization
+    estimates = minimize(poisson_negative_binomial, initial_guess, args=(obs_cre, obs_t7),
+                        bounds=((1e-8, None), (None, -1e-10), (None, -1e-10), (1e-8, None), (1e-8, None)), method='L-BFGS-B')
+    return celltype, cre, estimates.x[0], estimates.x[3], estimates.x[4]
+
 
 class STARRFISH:
     def __init__(self, adata: Union[sc.AnnData, str], 
@@ -1047,8 +1084,9 @@ class STARRFISH:
     
     def plot_gene(self, gene='CRE129', use='CRE', 
                   average_by_celltype=False, 
-                  norm_by_negative_control_cell_type_mean=False, norm_by_negative_control_cell_type_sum=True, 
-                  norm_by_negative_control_single_cell=False, log=True,
+                  norm_by_negative_control_cell_type_mean=False, norm_by_negative_control_cell_type_sum=False, norm_by_negative_control_single_cell=False,
+                  norm_by_t7_cell_type_mean=True, norm_by_t7_cell_type_sum=False, norm_by_t7_single_cell=False,
+                  log=True,
                   cell_types_to_use=None, cell_types_to_visualize=None, 
                   nmin=None, nmax=None, sz_background=3, sz_min=5, sz_max=30, 
                   scale_size_by: Literal['counts', 'celltype_number']='counts',  
@@ -1089,6 +1127,17 @@ class STARRFISH:
         if norm_by_negative_control_single_cell:
             negative_control_counts = self.get_cre_expression()[self.get_negative_control_cres()].sum(axis=1)
             cts = cts / negative_control_counts.values
+        if norm_by_t7_cell_type_mean and self.get_t7_expression() is not None:
+            t7_counts = self.get_t7_expression()[gene].groupby(self.get_celltypes()).mean()
+            norm_factor = t7_counts.loc[self.get_celltypes()]
+            cts = cts / norm_factor.values
+        if norm_by_t7_cell_type_sum and self.get_t7_expression() is not None:
+            t7_counts = self.get_t7_expression()[gene].groupby(self.get_celltypes()).sum()
+            norm_factor = t7_counts.loc[self.get_celltypes()]
+            cts = cts / norm_factor.values
+        if norm_by_t7_single_cell and self.get_t7_expression() is not None:
+            t7_counts = self.get_t7_expression()[gene]
+            cts = cts / t7_counts.values
         if log:
             cts = np.log1p(cts)
         if cell_types_to_use is not None:
@@ -2148,8 +2197,21 @@ class STARRFISH:
                         res_p2.loc[cell_type, to_filter.loc[cell_type].tolist()] = np.nan
                         res_df.loc[cell_type, to_filter.loc[cell_type].tolist()] = np.nan
         # do q-value correction
-        res2_q1 = pd.DataFrame(multitest.multipletests(res_p1.values.flatten(), method='fdr_bh')[1].reshape(res_p1.shape), index=res_p1.index, columns=res_p1.columns)
-        res2_q2 = pd.DataFrame(multitest.multipletests(res_p2.values.flatten(), method='fdr_bh')[1].reshape(res_p2.shape), index=res_p2.index, columns=res_p2.columns)
+        # For res_p1
+        p_values_flat1 = res_p1.values.flatten()
+        valid_mask1 = ~pd.isna(p_values_flat1)
+        q_values_flat1 = np.full_like(p_values_flat1, np.nan, dtype=float)
+        if valid_mask1.any():
+            q_values_flat1[valid_mask1] = multitest.multipletests(p_values_flat1[valid_mask1], method='fdr_bh')[1]
+        res2_q1 = pd.DataFrame(q_values_flat1.reshape(res_p1.shape), index=res_p1.index, columns=res_p1.columns)
+        
+        # For res_p2
+        p_values_flat2 = res_p2.values.flatten()
+        valid_mask2 = ~pd.isna(p_values_flat2)
+        q_values_flat2 = np.full_like(p_values_flat2, np.nan, dtype=float)
+        if valid_mask2.any():
+            q_values_flat2[valid_mask2] = multitest.multipletests(p_values_flat2[valid_mask2], method='fdr_bh')[1]
+        res2_q2 = pd.DataFrame(q_values_flat2.reshape(res_p2.shape), index=res_p2.index, columns=res_p2.columns)
         res2_q = pd.DataFrame(np.minimum(res2_q1.values, res2_q2.values), index=res_p1.index, columns=res_p1.columns)
         if tail == 'right':
             return res2_q1, res_df
@@ -3407,4 +3469,213 @@ file_type = bed""")
         self.negbiom_results.append(res)
         self.negbiom_configs.append(config)
         return res
+    
+    def poisson_neg_binom_mle_all(self, cell_types_to_use=None, cres_to_use=None):
+        # Implement the Poisson negative binomial MLE estimation here
+        # Load data
+        if cell_types_to_use is not None:
+            cre_cells_expression, _, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
+        else:
+            cre_cells_expression = self.get_cre_expression().copy()
+            cell_types_to_use = self.get_celltypes()
+        if cres_to_use is not None:
+            cre_cells_expression = cre_cells_expression[cres_to_use]
+        else:
+            cres_to_use = cre_cells_expression.columns
+        t7_cells_expression = self.get_t7_expression()
+        assert t7_cells_expression is not None, "T7 expression data is not available."
+        t7_cells_expression = t7_cells_expression.loc[cre_cells_expression.index, cre_cells_expression.columns]
+        # categorize cell_types_to_use
+        unique_cell_types, cell_types_to_use_idx = np.unique(cell_types_to_use, return_inverse=True)
+        # define the optimize function
+        def poisson_negative_binomial(x, obs_cre, obs_t7, n_cres, n_celltypes, cell_types_to_use_idx):
+            # parameters
+            # x[0:n_cres*n_celltypes]: infection poisson lambda
+            # x[n_cres*n_celltypes: 2*n_cres*n_celltypes], x[2*n_cres*n_celltypes: 3*n_cres*n_celltypes]: CRE activity mean, dispersion
+            # x[3*n_cres*n_celltypes]: T7 detection 0 log probability
+            # x[3*n_cres*n_celltypes+1]: CRE detection 0 log probability
+            
+            # Convert to numpy arrays if needed
+            obs_cre = obs_cre.values if hasattr(obs_cre, 'values') else obs_cre
+            obs_t7 = obs_t7.values if hasattr(obs_t7, 'values') else obs_t7
+            
+            # Transform x using BLAS-optimized reshape operations
+            poisson_lambda = x[0:n_cres*n_celltypes].reshape((n_cres, n_celltypes))
+            mu = x[n_cres*n_celltypes:2*n_cres*n_celltypes].reshape((n_cres, n_celltypes))
+            disp = x[2*n_cres*n_celltypes:3*n_cres*n_celltypes].reshape((n_cres, n_celltypes))
+            t7_drop = x[3*n_cres*n_celltypes]
+            cre_detect = x[3*n_cres*n_celltypes + 1]
+            
+            # Pre-compute constants
+            i_values = np.arange(66, dtype=np.float64)  # Use float64 for BLAS optimization
+            exp_cre_detect = np.exp(cre_detect)
+            
+            # Use advanced indexing with BLAS-optimized operations
+            # Get parameters for all CREs and cells using matrix operations
+            lambda_selected = poisson_lambda[:, cell_types_to_use_idx]  # [n_cres, n_cells]
+            mu_selected = mu[:, cell_types_to_use_idx]  # [n_cres, n_cells] 
+            disp_selected = disp[:, cell_types_to_use_idx]  # [n_cres, n_cells]
+            
+            # Reshape for broadcasting - use C-contiguous arrays for BLAS
+            lambda_all = np.ascontiguousarray(lambda_selected[:, :, None])  # [n_cres, n_cells, 1]
+            mu_all = np.ascontiguousarray(mu_selected[:, :, None])  # [n_cres, n_cells, 1]
+            disp_all = np.ascontiguousarray(disp_selected[:, :, None])  # [n_cres, n_cells, 1]
+            i_expanded = np.ascontiguousarray(i_values[None, None, :])  # [1, 1, 66]
+            
+            # Fast manual Poisson log-probability calculation
+            # logpmf(k, mu) = k*log(mu) - mu - log(k!)
+            # Pre-compute log factorials for i=0 to 65
+            log_factorials = np.cumsum(np.log(np.maximum(np.arange(1, 67), 1)))
+            log_factorials = np.concatenate([[0], log_factorials[:-1]])  # log(0!) = 0
+            log_fact_expanded = log_factorials[None, None, :]  # [1, 1, 66]
+            
+            # Vectorized Poisson log probabilities - MUCH faster than scipy
+            ll = i_expanded * np.log(np.maximum(lambda_all, 1e-10)) - lambda_all - log_fact_expanded
+            
+            # Pre-compute observation arrays
+            obs_t7_expanded = np.ascontiguousarray(obs_t7[:, :, None])  # [n_cres, n_cells, 1]
+            obs_cre_expanded = np.ascontiguousarray(obs_cre[:, :, None])  # [n_cres, n_cells, 1]
+            
+            # Pre-compute masks for vectorized operations
+            i_is_zero = (i_expanded == 0)
+            i_nonzero = (i_expanded > 0)
+            
+            # Vectorized probability calculations using BLAS operations
+            # Use np.where for conditional operations that leverage BLAS
+            one_minus_obs_t7 = 1 - obs_t7_expanded
+            
+            # T7 terms using vectorized operations
+            t7_prob_zero = np.where(i_is_zero, np.log(one_minus_obs_t7), 0)
+            cre_prob_zero = np.where(i_is_zero, np.log(obs_cre_expanded == 0), 0)
+            
+            # T7 terms for i>0 using BLAS-optimized matrix operations
+            t7_term1 = np.where(i_nonzero, one_minus_obs_t7 * i_expanded * t7_drop, 0)
+            exp_term = np.exp(i_expanded * t7_drop)
+            t7_term2 = np.where(i_nonzero, obs_t7_expanded * np.log(1 - exp_term), 0)
+            
+            # Optimized negative binomial calculation using BLAS operations
+            # Pre-compute parameters using matrix operations
+            mu_exp_cre = mu_all * exp_cre_detect  # BLAS-optimized multiplication
+            n_param = i_expanded * disp_all  # Element-wise but vectorized
+            p_param = disp_all / (disp_all + mu_exp_cre)  # BLAS-optimized division
+            
+            # Fast manual negative binomial log-probability calculation
+            # nbinom.logpmf(k, n, p) = log(Γ(k+n)) - log(Γ(n)) - log(k!) + n*log(p) + k*log(1-p)
+            # For integer n: log(Γ(k+n)) - log(Γ(n)) = log((k+n-1)!) - log((n-1)!) = sum(log(n+i)) for i=0 to k-1
+            
+            # Pre-compute for vectorized operation
+            k_vals = obs_cre_expanded  # [n_cres, n_cells, 1]
+            n_vals = n_param  # [n_cres, n_cells, 66]
+            p_vals = p_param  # [n_cres, n_cells, 66]
+            
+            # Compute log(k!) using pre-computed factorials
+            k_int = np.clip(k_vals.astype(int), 0, 65)  # Clip to valid range
+            log_k_fact = log_factorials[k_int.flatten()].reshape(k_vals.shape)
+            
+            # For negative binomial with integer n, use gamma function identity
+            # Use scipy.special.gammaln for numerical stability
+            from scipy.special import gammaln
+            log_gamma_k_plus_n = gammaln(k_vals + n_vals)
+            log_gamma_n = gammaln(n_vals)
+            
+            # Vectorized negative binomial log probability
+            nbinom_ll_full = (log_gamma_k_plus_n - log_gamma_n - log_k_fact + 
+                             n_vals * np.log(np.maximum(p_vals, 1e-10)) + 
+                             k_vals * np.log(np.maximum(1 - p_vals, 1e-10)))
+            
+            # Apply mask for i>0 cases only
+            nbinom_ll = np.where(i_nonzero, nbinom_ll_full, 0)
+            
+            # Combine all terms using BLAS-optimized array operations
+            ll = ll + t7_prob_zero + cre_prob_zero + t7_term1 + t7_term2 + nbinom_ll
+            
+            # Use scipy.special.logsumexp for numerical stability and BLAS optimization
+            ll_summed = logsumexp(ll, axis=2)  # [n_cres, n_cells]
+            
+            # Final sum using BLAS-optimized operation
+            return -np.sum(ll_summed)
+        # make initial guess
+        cre_celltype_mean = cre_cells_expression.groupby(cell_types_to_use).mean().loc[unique_cell_types, cres_to_use].T
+        cre_celltype_var = cre_cells_expression.groupby(cell_types_to_use).var().loc[unique_cell_types, cres_to_use].T
+        cre_celltype_disp = cre_celltype_mean**2 / (cre_celltype_var - cre_celltype_mean)
+        infection_rate = -np.log((t7_cells_expression == 0).groupby(cell_types_to_use).mean().loc[unique_cell_types, cres_to_use].T)
+        initial_guess = np.concatenate([infection_rate.values.flatten(), cre_celltype_mean.values.flatten(), cre_celltype_disp.values.flatten(), 
+                                        [np.log(0.05)], [np.log(0.05)]])
+        estimates = minimize(poisson_negative_binomial, initial_guess, args=(cre_cells_expression.values.T, t7_cells_expression.values.T, len(cres_to_use), len(unique_cell_types), cell_types_to_use_idx),
+                             bounds=[(1e-8, None)]*len(unique_cell_types)*len(cres_to_use)*3 + [(None, -1e-10), (None, -1e-10)], method='L-BFGS-B')
+        return estimates
         
+    def poisson_neg_binom_mle_separate(self, cell_types_to_use=None, cres_to_use=None):
+        # Implement the Poisson negative binomial MLE estimation here
+        # Load data
+        if cell_types_to_use is not None:
+            cre_cells_expression, _, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
+        else:
+            cre_cells_expression = self.get_cre_expression().copy()
+            cell_types_to_use = self.get_celltypes()
+        if cres_to_use is not None:
+            cre_cells_expression = cre_cells_expression[cres_to_use]
+        else:
+            cres_to_use = cre_cells_expression.columns
+        t7_cells_expression = self.get_t7_expression()
+        assert t7_cells_expression is not None, "T7 expression data is not available."
+        t7_cells_expression = t7_cells_expression.loc[cre_cells_expression.index, cre_cells_expression.columns]
+        # categorize cell_types_to_use
+        unique_cell_types = np.unique(cell_types_to_use)
+        # define the optimize function
+        def poisson_negative_binomial(x, obs_cre, obs_t7):
+            # parameters
+            # x[0]: infection poisson lambda
+            # x[1]: T7 detection 0 log probability
+            # x[2]: CRE detection 0 log probability
+            # x[3], x[4]: CRE activity mean, dispersion
+            # iterate infection i from 0 to 65
+            ll = np.zeros((obs_cre.shape[0], 66))
+            for i in range(66):
+                # poisson process
+                ll[:, i] += stats.poisson.logpmf(i, mu=x[0])
+                if i == 0:
+                    # T7 detection 0 probability
+                    ll[:, i] += np.log(1 - obs_t7)
+                    # CRE detection probability
+                    ll[:, i] += np.log(obs_cre == 0)
+                else:
+                    # T7 detection 0 probability
+                    ll[:, i] += (1 - obs_t7) * i * x[1] + obs_t7 * np.log(1 - np.exp(i * x[1]))
+                    # CRE detection probability
+                    ll[:, i] += stats.nbinom.logpmf(obs_cre, n=i*x[4], p=x[4]/(x[4]+x[3]*np.exp(x[2])))
+            ll_sum = logsumexp(ll, axis=1)
+            return -ll_sum.sum()
+        # make initial guess
+        cre_celltype_mean = cre_cells_expression.groupby(cell_types_to_use).mean().loc[unique_cell_types, cres_to_use]
+        cre_celltype_var = cre_cells_expression.groupby(cell_types_to_use).var().loc[unique_cell_types, cres_to_use]
+        cre_celltype_disp = cre_celltype_mean**2 / (cre_celltype_var - cre_celltype_mean)
+        infection_rate = -np.log((t7_cells_expression == 0).groupby(cell_types_to_use).mean().loc[unique_cell_types, cres_to_use])
+        # Prepare tasks for multiprocessing
+        tasks = []
+        for celltype in unique_cell_types:
+            for cre in cres_to_use:
+                obs_cre = cre_cells_expression[cell_types_to_use == celltype][cre].values
+                obs_t7 = t7_cells_expression[cell_types_to_use == celltype][cre].values
+                initial_guess = [infection_rate.loc[celltype, cre], np.log(0.05), np.log(0.05), cre_celltype_mean.loc[celltype, cre], cre_celltype_disp.loc[celltype, cre]]
+                tasks.append((celltype, cre, obs_cre, obs_t7, initial_guess))
+        
+        # Run optimization tasks in parallel using module-level worker function
+        from multiprocessing import Pool, cpu_count
+        n_processes = min(cpu_count(), len(tasks))  # Use all available CPUs but not more than tasks
+        
+        print(f"Running {len(tasks)} optimization tasks across {n_processes} processes...")
+        with Pool(processes=n_processes) as pool:
+            results = pool.map(_optimize_celltype_cre_worker, tasks)
+        
+        # Store results in dataframes
+        infection_rate_df = pd.DataFrame(index=unique_cell_types, columns=cres_to_use)
+        mu_df = pd.DataFrame(index=unique_cell_types, columns=cres_to_use)
+        disp_df = pd.DataFrame(index=unique_cell_types, columns=cres_to_use)
+        
+        for celltype, cre, infection_rate_val, mu_val, disp_val in results:
+            infection_rate_df.loc[celltype, cre] = infection_rate_val
+            mu_df.loc[celltype, cre] = mu_val
+            disp_df.loc[celltype, cre] = disp_val
+            
+        return infection_rate_df, mu_df, disp_df
