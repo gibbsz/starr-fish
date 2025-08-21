@@ -3622,30 +3622,6 @@ file_type = bed""")
         t7_cells_expression = t7_cells_expression.loc[cre_cells_expression.index, cre_cells_expression.columns]
         # categorize cell_types_to_use
         unique_cell_types = np.unique(cell_types_to_use)
-        # define the optimize function
-        def poisson_negative_binomial(x, obs_cre, obs_t7):
-            # parameters
-            # x[0]: infection poisson lambda
-            # x[1]: T7 detection 0 log probability
-            # x[2]: CRE detection 0 log probability
-            # x[3], x[4]: CRE activity mean, dispersion
-            # iterate infection i from 0 to 65
-            ll = np.zeros((obs_cre.shape[0], 66))
-            for i in range(66):
-                # poisson process
-                ll[:, i] += stats.poisson.logpmf(i, mu=x[0])
-                if i == 0:
-                    # T7 detection 0 probability
-                    ll[:, i] += np.log(1 - obs_t7)
-                    # CRE detection probability
-                    ll[:, i] += np.log(obs_cre == 0)
-                else:
-                    # T7 detection 0 probability
-                    ll[:, i] += (1 - obs_t7) * i * x[1] + obs_t7 * np.log(1 - np.exp(i * x[1]))
-                    # CRE detection probability
-                    ll[:, i] += stats.nbinom.logpmf(obs_cre, n=i*x[4], p=x[4]/(x[4]+x[3]*np.exp(x[2])))
-            ll_sum = logsumexp(ll, axis=1)
-            return -ll_sum.sum()
         # make initial guess
         cre_celltype_mean = cre_cells_expression.groupby(cell_types_to_use).mean().loc[unique_cell_types, cres_to_use]
         cre_celltype_var = cre_cells_expression.groupby(cell_types_to_use).var().loc[unique_cell_types, cres_to_use]
@@ -3660,13 +3636,12 @@ file_type = bed""")
                 initial_guess = [infection_rate.loc[celltype, cre], np.log(0.05), np.log(0.05), cre_celltype_mean.loc[celltype, cre], cre_celltype_disp.loc[celltype, cre]]
                 tasks.append((celltype, cre, obs_cre, obs_t7, initial_guess))
         
-        # Run optimization tasks in parallel using module-level worker function
-        from multiprocessing import Pool, cpu_count
-        n_processes = min(cpu_count(), len(tasks))  # Use all available CPUs but not more than tasks
+        # Run optimization tasks in parallel using joblib Parallel and delayed
+        n_jobs = min(multiprocessing.cpu_count(), len(tasks))  # Use all available CPUs but not more than tasks
         
-        print(f"Running {len(tasks)} optimization tasks across {n_processes} processes...")
-        with Pool(processes=n_processes) as pool:
-            results = pool.map(_optimize_celltype_cre_worker, tasks)
+        print(f"Running {len(tasks)} optimization tasks across {n_jobs} jobs...")
+        results = Parallel(n_jobs=n_jobs)(
+            delayed(_optimize_celltype_cre_worker)(task) for task in tasks)
         
         # Store results in dataframes
         infection_rate_df = pd.DataFrame(index=unique_cell_types, columns=cres_to_use)

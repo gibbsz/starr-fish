@@ -39,6 +39,8 @@ from matplotlib.colors import Normalize, LinearSegmentedColormap, to_rgb
 from matplotlib.colorbar import ColorbarBase
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.cm import ScalarMappable
+from scipy.optimize import minimize
+from scipy.special import logsumexp
 # %% helper function to reload
 def reload(starrfish):
     import importlib
@@ -145,6 +147,8 @@ len(cell_types_to_use), len(cell_types_to_use_nc), len(cell_types_to_use_nc_2), 
 # %% use scipy.optimize to estimate the negative binomial distribution parameters
 from scipy.optimize import minimize
 from scipy.special import logsumexp
+import numpy as np
+import seaborn as sns
 def negative_binomial(x, obs):
     # parameters, x[0] is mean, x[1] is dispersion
     ll = np.sum(stats.nbinom.logpmf(obs, n=x[1]/1000, p=x[1]/(x[0]+x[1])))
@@ -200,6 +204,141 @@ estimates_pois_nb = minimize(poisson_negative_binomial, init_guess_pois_nb, args
                              bounds=((1e-8, None), (None, -1e-10), (None, -1e-10), (1e-8, None), (1e-8, None)), method='L-BFGS-B')
 
 
+# %% check reproducibility
+# read in files
+sec1_disp = pd.read_csv(f'{PWD}/results/expr3/poisson_neg_binom_mle_separate.disp.sec1.csv', index_col=0)
+sec1_mu = pd.read_csv(f'{PWD}/results/expr3/poisson_neg_binom_mle_separate.mu.sec1.csv', index_col=0)
+sec1_infection = pd.read_csv(f'{PWD}/results/expr3/poisson_neg_binom_mle_separate.infection.rate.sec1.csv', index_col=0)
+sec2_disp = pd.read_csv(f'{PWD}/results/expr3/poisson_neg_binom_mle_separate.disp.sec2.csv', index_col=0)
+sec2_mu = pd.read_csv(f'{PWD}/results/expr3/poisson_neg_binom_mle_separate.mu.sec2.csv', index_col=0)
+sec2_infection = pd.read_csv(f'{PWD}/results/expr3/poisson_neg_binom_mle_separate.infection.rate.sec2.csv', index_col=0)
+
+# %% do pearson correlation
+cre_corr, celltype_corr = starrfish3.corr_starrfish(sec1_mu, sec2_mu)
+
+
+
 # %%
-infection_rate_df, mu_df, disp_df = starrfish3.poisson_neg_binom_mle_separate(None, None)
+# we take a step back, only focus on the T7 transcripts
+t7_counts = starrfish3.get_t7_expression()
+# it should be a mixed poisson process, where each enzyme hit will trigger a transcript, so we can model it as such
 # %%
+def t7_distribution(x, obs_t7):
+    # fit a mixed poisson distribution to the data
+    # parameters x[0], lambda, infection rate
+    # x[1], t7 lambda, T7 enzyme efficiency times detection efficiency, log transformed
+    ll = np.zeros((obs_t7.shape[0], 100))
+    for i in range(100):
+        ll[:, i] += stats.poisson.logpmf(i, mu=x[0])
+        ll[:, i] += stats.poisson.logpmf(obs_t7, mu=np.exp(x[1])*i)
+    ll_sum = logsumexp(ll, axis=1)
+    return -ll_sum.sum()
+cre = 'CRE129'
+estimates = minimize(t7_distribution, [1, -0.1], args=(t7_counts[cre].values,), 
+                     bounds=((1e-10, None), (None, -1e-10)), method='L-BFGS-B')
+    # add bounds for estimation
+# %%
+import time
+# use EM algorighm to jointly estimate all parameters 
+def t7_distribution_expectation(x, obs_t7, n_celltypes, cell_type_indexes, dim=1000):
+    # E-step: given estimated x and obs_t7, calculate posterior distribution of k
+    # k ~ Poisson(x[0])
+    obs_t7 = np.asarray(obs_t7)  # Convert pandas Series to numpy array
+    k_lambda = x[cell_type_indexes]  # shape: (n_obs,)
+    
+    # Vectorized computation using broadcasting
+    k_values = np.arange(dim)  # shape: (dim,)
+    obs_t7_expanded = obs_t7[:, np.newaxis]  # shape: (n_obs, 1)
+    k_lambda_expanded = k_lambda[:, np.newaxis]  # shape: (n_obs, 1)
+    # Fast Poisson log PMF implementation
+    # Precompute log factorials for k_values
+    log_factorial_k = np.concatenate([[0], np.cumsum(np.log(np.arange(1, dim)))])
+    # k ~ Poisson(k_lambda): log P(k|k_lambda)
+    ll_k = (k_values * np.log(k_lambda_expanded) - k_lambda_expanded - log_factorial_k)  # shape: (n_obs, dim)
+    # obs_t7 ~ Poisson(exp(x[n_celltypes]) * k): log P(obs_t7|k)
+    lambda_t7 = np.exp(x[n_celltypes])
+    mu_t7 = lambda_t7 * k_values  # shape: (dim,)
+    # Compute log factorials for obs_t7 values
+    max_obs = int(obs_t7.max()) if len(obs_t7) > 0 else 0
+    log_factorial_obs = np.concatenate([[0], np.cumsum(np.log(np.arange(1, max_obs + 1)))])
+    obs_log_factorial = log_factorial_obs[obs_t7.astype(int)][:, np.newaxis]  # shape: (n_obs, 1)
+    # T7 log PMF computation
+    ll_t7 = (obs_t7_expanded * np.log(np.maximum(mu_t7, 1e-10)) - 
+             mu_t7 - obs_log_factorial)  # shape: (n_obs, dim)
+    # Combined likelihood
+    likelihood_mat = ll_k + ll_t7
+    # get posterior distribution
+    likelihood_sum = logsumexp(likelihood_mat, axis=1)
+    posterior_k = likelihood_mat - likelihood_sum[:, np.newaxis]
+    return posterior_k
+
+def t7_distribution_x1_maximization(x1, obs_t7, posterior_k):
+    # M-step: given posterior of k, maximize x1
+    obs_t7 = np.asarray(obs_t7)  # Convert pandas Series to numpy array
+    dim = posterior_k.shape[1]
+    k_values = np.arange(dim)  # shape: (dim,)
+    obs_t7_expanded = obs_t7[:, np.newaxis]  # shape: (n_obs, 1)
+    # Vectorized Poisson log PMF for obs_t7 ~ Poisson(exp(x1) * k)
+    lambda_t7 = np.exp(x1)
+    mu_t7 = lambda_t7 * k_values  # shape: (dim,)
+    # Compute log factorials for obs_t7 values
+    max_obs = int(obs_t7.max()) if len(obs_t7) > 0 else 0
+    log_factorial_obs = np.concatenate([[0], np.cumsum(np.log(np.arange(1, max_obs + 1)))])
+    obs_log_factorial = log_factorial_obs[obs_t7.astype(int)][:, np.newaxis]  # shape: (n_obs, 1)
+    # T7 log PMF computation
+    ll_t7 = (obs_t7_expanded * np.log(np.maximum(mu_t7, 1e-10)) - 
+             mu_t7 - obs_log_factorial)  # shape: (n_obs, dim)
+    ll = posterior_k + ll_t7
+    ll_sum = logsumexp(ll, axis=1)
+    return -ll_sum.sum()
+
+def t7_distribution_x0_maximization(x0, cell_type_indexes, posterior_k):
+    # M-step: given posterior of k, maximize x0
+    dim = posterior_k.shape[1]
+    k_values = np.arange(dim)  # shape: (dim,)
+    # Get lambda values for each observation based on cell type
+    k_lambda = x0[cell_type_indexes]  # shape: (n_obs,)
+    k_lambda_expanded = k_lambda[:, np.newaxis]  # shape: (n_obs, 1)
+    # Fast Poisson log PMF implementation
+    # Precompute log factorials for k_values
+    log_factorial_k = np.concatenate([[0], np.cumsum(np.log(np.arange(1, dim)))])
+    # k ~ Poisson(k_lambda): log P(k|k_lambda)
+    ll_k = (k_values * np.log(k_lambda_expanded) - k_lambda_expanded - log_factorial_k)  # shape: (n_obs, dim)
+    ll = posterior_k + ll_k
+    ll_sum = logsumexp(ll, axis=1)
+    return -ll_sum.sum()
+
+def t7_distribution_em(cell_types, obs_t7, dim=1000):
+    unique_celltypes, cell_type_indexes = np.unique(cell_types, return_inverse=True)
+    n_celltypes = unique_celltypes.size
+    # initialize x array
+    x0 = -np.log((obs_t7 == 0).groupby(cell_types).mean().loc[unique_celltypes])
+    x1 = -1e-5
+    for i in range(10):
+        x = np.concatenate([x0, [x1]])
+        # E-step
+        start = time.time()
+        posterior_k = t7_distribution_expectation(x, obs_t7, n_celltypes, cell_type_indexes, dim=dim)
+        mid1 = time.time()
+        print("Step", i, "E-step time:", mid1 - start)
+        # M-step
+        x0_opt = minimize(t7_distribution_x0_maximization, x0, args=(cell_type_indexes, posterior_k),
+                          bounds=[(1e-10, None)]*n_celltypes, method='L-BFGS-B')
+        mid2 = time.time()
+        print("Step", i, "M-step x0 time:", mid2 - mid1)
+        x1_opt = minimize(t7_distribution_x1_maximization, x1, args=(obs_t7, posterior_k),
+                          bounds=[(None, -1e-10)], method='L-BFGS-B')
+        print("Step", i, "M-step x1 time:", time.time() - mid2)
+        x0 = x0_opt.x
+        x1 = x1_opt.x
+        print("Step", i, "x0:", x0, "x1:", x1)
+    return x0, x1
+# %% for cre in t7_counts.columns:
+cre = 'CRE129'
+estimates = t7_distribution_em(starrfish3.get_celltypes().values, t7_counts[cre])
+
+
+
+
+
+# %% too slow, use torch and gpu to accelerate
