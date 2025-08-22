@@ -111,8 +111,9 @@ starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.pkl')
 starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.pkl')
 # %%
 class T7CRE_DistributionEM:
-    def __init__(self, device='cuda' if torch.cuda.is_available() else 'cpu'):
+    def __init__(self, device='cuda' if torch.cuda.is_available() else 'cpu', use_x0=True):
         self.device = device
+        self.use_x0 = use_x0
     
     def expectation_step(self, x0, x1, x2, obs_t7, obs_cre, cell_type_indexes, dim=1000):
         """E-step: Calculate posterior distribution of k given current parameters"""
@@ -134,9 +135,12 @@ class T7CRE_DistributionEM:
         k_lambda_expanded = k_lambda.unsqueeze(1)  # (n_obs, 1)
         k_values_expanded = k_values.unsqueeze(0)  # (1, dim)
         
-        # k ~ Poisson(k_lambda): log P(k|k_lambda)
-        ll_k = torch.distributions.Poisson(k_lambda_expanded).log_prob(k_values_expanded)  # (n_obs, dim)
-        
+        if self.use_x0:
+            # k ~ Poisson(k_lambda): log P(k|k_lambda)
+            ll_k = torch.distributions.Poisson(k_lambda_expanded).log_prob(k_values_expanded)  # (n_obs, dim)
+        else:
+            ll_k = 0
+            
         # Vectorized obs_t7 ~ NegBinom(exp(x1[0]) * k, torch.sigmoid(x1[1]))
         total_counts_t7 = torch.exp(torch.clamp(x1[0], min=-10, max=10)) # Apply constraint
         logits_t7 = torch.clamp(x1[1], min=-10, max=10)
@@ -353,14 +357,18 @@ class T7CRE_DistributionEM:
                 print(f"Warning: NaN in posterior at step {i}")
                 break
             
-            # M-step for x0
-            x0, x0_diff = self.maximization_step_x0(x0, cell_type_indexes, posterior_k)
-            mid2 = time.time()
-            print(f"Step {i}, M-step x0 time: {mid2 - mid1:.4f}s")
-            # Check for NaN in posterior
-            if torch.isnan(x0).any():
-                print(f"Warning: NaN in posterior at step {i}")
-                break
+            if self.use_x0:
+                # M-step for x0
+                x0, x0_diff = self.maximization_step_x0(x0, cell_type_indexes, posterior_k)
+                mid2 = time.time()
+                print(f"Step {i}, M-step x0 time: {mid2 - mid1:.4f}s")
+                # Check for NaN in posterior
+                if torch.isnan(x0).any():
+                    print(f"Warning: NaN in posterior at step {i}")
+                    break
+            else:
+                mid2 = time.time()
+                x0_diff = x0.clone()
             
             # M-step for x1
             x1, x1_diff = self.maximization_step_x1(x1, obs_t7, posterior_k)
@@ -409,10 +417,10 @@ x2_r_df_sec2 = pd.DataFrame(index=common_celltypes, columns=t7_counts_sec2.colum
 x2_p_df_sec1 = pd.DataFrame(index=common_celltypes, columns=t7_counts_sec1.columns)
 x2_p_df_sec2 = pd.DataFrame(index=common_celltypes, columns=t7_counts_sec2.columns)
 # %%
-em_model = T7CRE_DistributionEM(device='cuda')
+em_model = T7CRE_DistributionEM(device='cuda', use_x0=False)
 for cre in t7_counts_sec1.columns:
-    x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1[cre], cre_counts_sec1[cre], dim=500)
-    x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2[cre], cre_counts_sec2[cre], dim=500)
+    x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1[cre], cre_counts_sec1[cre], dim=50)
+    x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2[cre], cre_counts_sec2[cre], dim=50)
     x0_df_sec1[cre] = x0_sec1
     x0_df_sec2[cre] = x0_sec2
     x1_df_sec1.loc[cre] = x1_sec1
@@ -422,11 +430,11 @@ for cre in t7_counts_sec1.columns:
     x2_r_df_sec2[cre] = x2_sec2[:, 0]
     x2_p_df_sec2[cre] = x2_sec2[:, 1]
 # %%
-x0_df_sec1.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate.x0.sec1.csv')
-x0_df_sec2.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate.x0.sec2.csv')
-x1_df_sec1.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate.x1.sec1.csv')
-x1_df_sec2.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate.x1.sec2.csv')
-x2_r_df_sec1.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate.x2.r.sec1.csv')
-x2_r_df_sec2.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate.x2.r.sec2.csv')
-x2_p_df_sec1.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate.x2.p.sec1.csv')
-x2_p_df_sec2.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate.x2.p.sec2.csv')
+x0_df_sec1.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x0.sec1.csv')
+x0_df_sec2.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x0.sec2.csv')
+x1_df_sec1.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x1.sec1.csv')
+x1_df_sec2.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x1.sec2.csv')
+x2_r_df_sec1.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.r.sec1.csv')
+x2_r_df_sec2.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.r.sec2.csv')
+x2_p_df_sec1.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.p.sec1.csv')
+x2_p_df_sec2.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.p.sec2.csv')

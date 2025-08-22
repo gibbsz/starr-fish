@@ -1597,7 +1597,7 @@ def draw_custom_dendrogram(cre_order_token, ordered_cres, ax, reorder_penalty=0.
 
 def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive_control_info, 
                      cre_categories=np.array(['On-target', 'Mix-target', 'Off-target', 'No target', 'CREs', 'Negative Controls']),
-                     significant_cutoff=0.05, figsize=(20, 12), z_norm=True, flip_axis=False):
+                     reorder_cres=True, significant_cutoff=0.05, figsize=(20, 12), z_norm=True, flip_axis=False):
     if cres_to_use is None:
         cres_to_use = q_value.columns
     if cell_types_to_use is None:
@@ -1695,8 +1695,9 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
                                  gridspec_kw={'height_ratios': [1, 0.2], 'width_ratios': height_ratios[::-1]})
     else:    
         fig, axes = plt.subplots(len(height_ratios), 2, figsize=figsize, sharex=False, sharey=False,
-                                gridspec_kw={'height_ratios': height_ratios, 'width_ratios': [0.2, 1]})
+                                 gridspec_kw={'height_ratios': height_ratios, 'width_ratios': [0.2, 1]})
     # Plot each CRE type in a subplot
+    final_order = []
     for i, category in enumerate(cre_categories):
         if len(cre_categories) == 1:
             ax = axes[1]
@@ -1732,7 +1733,7 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
             # sort the cres by the order token
             cre_order_token = np.array(cre_order_token)
             # sort cres by the order token
-            if cre_order_token.shape[1] > 0:
+            if cre_order_token.shape[1] > 0 and reorder_cres:
                 ordered_cres = category_cres[np.lexsort(cre_order_token.T[::-1,:])]
                 cre_order_token = cre_order_token[np.lexsort(cre_order_token.T[::-1,:])]
             else:
@@ -1752,6 +1753,7 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
                                'cell_types': list(cell_types_to_use.values.repeat(len(ordered_cres))),
                                'cres': np.tile(ordered_cres, len(cell_types_to_use)),
                                'positive_control': target_df_subset.values.flatten()})
+        final_order.extend(ordered_cres)
         subset['cres'] = pd.Categorical(subset['cres'], categories=ordered_cres, ordered=True)
         # dot plots
         if flip_axis:
@@ -1842,7 +1844,7 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
     fig.legend(legend_handles, legend_labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10, labelspacing=1.5)
     fig.tight_layout()
     plt.close(fig)
-    return fig
+    return fig, final_order
 
 def cre_proportion_dotplot(proportion, activity, cres_to_use, cell_types_to_use, 
                            significant_cutoff=0.05, figsize=(20, 12), flip_axis=False):
@@ -1945,7 +1947,7 @@ def cre_proportion_dotplot(proportion, activity, cres_to_use, cell_types_to_use,
 
 def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive_control_info, 
                           cre_categories=np.array(['On-target', 'Mix-target', 'Off-target', 'No target', 'CREs', 'Negative Controls']),
-                          significant_cutoff=0.05, figsize=(20, 12), activity_log=False, z_norm=True, flip_axis=False):
+                          reorder_cres=True, significant_cutoff=0.05, figsize=(20, 12), activity_log=False, z_norm=True, flip_axis=False):
     if cres_to_use is None:
         cres_to_use = q_value.columns
     if cell_types_to_use is None:
@@ -2052,6 +2054,7 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
         fig, axes = plt.subplots(len(height_ratios), 2, figsize=figsize, sharex=False, sharey=False,
                                 gridspec_kw={'height_ratios': height_ratios, 'width_ratios': [0.2, 1]})
     # Plot each CRE type in a subplot
+    final_order = []
     for i, category in enumerate(cre_categories):
         if len(cre_categories) == 1:
             ax = axes[1]
@@ -2079,6 +2082,7 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
                 # get the index of the cell types in cell_types_to_use
                 significant_cell_types_idx = cell_types_to_use.get_indexer(significant_cell_types) + 1
                 significant_activities = activity_subset.loc[cre][significant_cell_types].values
+                significant_activities_mean = significant_activities.mean()
                 # sort the significant_cell_types_idx by significant_activities
                 significant_cell_types_idx = significant_cell_types_idx[np.argsort(significant_activities)[::-1]]
                 significant_activities = np.sort(significant_activities)[::-1]
@@ -2086,12 +2090,14 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
                 significant_cell_types_idx = np.pad(significant_cell_types_idx, (0, max_sig_n - len(significant_cell_types_idx)), constant_values=0)
                 significant_activities = np.pad(significant_activities, (0, max_sig_n - len(significant_activities)), constant_values=0)
                 # append the q-value
-                cre_order_token.append(np.concatenate((significant_cell_types_idx.reshape(-1, 1),
-                                                       significant_activities.reshape(-1, 1)), axis=1).reshape(-1))
+                cre_order_token.append(
+                    np.concatenate((significant_activities_mean.reshape(-1), 
+                                    np.concatenate((significant_cell_types_idx.reshape(-1, 1), 
+                                                    significant_activities.reshape(-1, 1)), axis=1).reshape(-1))))
             # sort the cres by the order token
             cre_order_token = np.array(cre_order_token)
             # sort cres by the order token
-            if cre_order_token.shape[1] > 0:
+            if cre_order_token.shape[1] > 0 and reorder_cres:
                 ordered_cres = category_cres[np.lexsort(cre_order_token.T[::-1,:])]
                 cre_order_token = cre_order_token[np.lexsort(cre_order_token.T[::-1,:])]
             else:
@@ -2106,11 +2112,16 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
             target_df_subset = target_df.loc[:, ordered_cres].copy()
             cre_order_token = np.zeros((len(category_cres), 0))
             max_sig_n = 0
+        # if all nan in q_value_df, we need something in activity_df
+        if q_value_subset.isna().all(axis=0).any():
+            activity_subset.iloc[:, q_value_subset.isna().all(axis=0)] = 0
+            q_value_subset.iloc[:, q_value_subset.isna().all(axis=0)] = 0
         subset = pd.DataFrame({size_name: q_value_subset.T.values.flatten(),
                                hue_name: activity_subset.T.values.flatten(),
                                'cell_types': list(cell_types_to_use.values.repeat(len(ordered_cres))),
                                'cres': np.tile(ordered_cres, len(cell_types_to_use)),
                                'positive_control': target_df_subset.values.flatten()})
+        final_order.extend(ordered_cres)
         subset['cres'] = pd.Categorical(subset['cres'], categories=ordered_cres, ordered=True)
         # dot plots
         if flip_axis:
@@ -2119,7 +2130,7 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
         else:
             x = 'cell_types'
             y = 'cres'
-        sns.scatterplot(data=subset, x=x, y=y, size=size_name, hue=hue_name, edgecolor='none',
+        sns.scatterplot(data=subset, x=x, y=y, size=size_name, hue=hue_name, edgecolor='white',
                         hue_norm=(hue_min, hue_max), size_norm=(size_min, size_max),
                         sizes=(3, 250), alpha=0.8, palette='coolwarm', ax=ax)
         # dendrogram
@@ -2201,7 +2212,7 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
     fig.legend(legend_handles, legend_labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10, labelspacing=1.5)
     fig.tight_layout()
     plt.close(fig)
-    return fig
+    return fig, final_order
 
 def plot_q_value_celltype_reproducibility(res_q1, res_q2, res_q, q_cutoff = 0.05):
     common_celltypes = res_q1.index.intersection(res_q2.index)

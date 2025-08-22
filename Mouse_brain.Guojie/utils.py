@@ -2132,6 +2132,10 @@ class STARRFISH:
         res_array = np.log(res_array)
         # assign inf to NaN
         res_array[np.isinf(res_array)] = np.nan
+        # if we have to_filter, then fill it with np.nan
+        if to_filter is not None:
+            for cell_type in to_filter.index:
+                res_array[:, res['celltype_activity'].index == cell_type, to_filter.loc[cell_type]] = np.nan
         neg_control_array = res_array[:, :, res['celltype_activity'].columns.isin(self.get_negative_control_cres())]
         neg_control_array = np.nanmean(neg_control_array, axis=2)
         # turn to DataFrame
@@ -2189,13 +2193,6 @@ class STARRFISH:
             res_p1.loc[cell_type][res_nansum[0] < res_array.shape[0] * 0.01] = np.nan
             res_p2.loc[cell_type][res_nansum[0] < res_array.shape[0] * 0.01] = np.nan
             res_df.loc[cell_type][res_nansum[0] < res_array.shape[0] * 0.01] = np.nan
-            # if we have to_filter, then fill it with np.nan
-            if to_filter is not None:
-                for cell_type in to_filter.index:
-                    if cell_type in res_p1.index:
-                        res_p1.loc[cell_type, to_filter.loc[cell_type].tolist()] = np.nan
-                        res_p2.loc[cell_type, to_filter.loc[cell_type].tolist()] = np.nan
-                        res_df.loc[cell_type, to_filter.loc[cell_type].tolist()] = np.nan
         # do q-value correction
         # For res_p1
         p_values_flat1 = res_p1.values.flatten()

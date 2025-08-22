@@ -139,8 +139,10 @@ cell_types_to_use_nc_2 = negative_control_sum_counts2[negative_control_sum_count
 cell_types_to_use_nc = cell_types_to_use_nc_1.intersection(cell_types_to_use_nc_2)
 target_cres = starrfish3_sec1.get_creinfo().index[starrfish3_sec1.get_creinfo()['best_subclass'].isin(cell_types_to_use_nc_2)]
 len(cell_types_to_use), len(cell_types_to_use_nc), len(cell_types_to_use_nc_2), len(target_cres)
-
-
+# read in the mismatching barcode CREs
+mismatching_cres = pd.read_csv('Data/AAV_ONT_Barcode_Counts_vs_Mismatch_Percentage.csv', index_col=0)
+cre_whitelist = cre_whitelist[~cre_whitelist.isin(mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20])]
+cre_blacklist = np.unique(cre_blacklist + mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20].tolist()).tolist()
 
 
 # %% T7 correlation with AAV libaray size
@@ -167,7 +169,7 @@ slope_log, intercept_log, r_value_log, p_value_log, std_err_log = linregress(np.
 x_log = np.linspace(np.log(starrfish3.lib_size['counts']).min(), np.log(starrfish3.lib_size['counts']).max(), 100)
 y_log = slope_log * x_log + intercept_log
 ax[1].plot(x_log, y_log, color='red', label=f'Correlation: {r_value_log:.2f}, p-value: {p_value_log:.2e}')
-ax[1].legend()  
+ax[1].legend()
 # mark negative control cres
 sns.scatterplot(x=starrfish3.lib_size['counts'].loc[negative_control_cres], y=t7_counts.loc[negative_control_cres], ax=ax[0], alpha=0.5, color='orange')
 sns.scatterplot(x=np.log(starrfish3.lib_size['counts'].loc[negative_control_cres]), y=np.log(t7_counts.loc[negative_control_cres]), ax=ax[1], alpha=0.5, color='orange')
@@ -397,13 +399,15 @@ t7_infected_cells_sec2 = (starrfish3_sec2.get_t7_expression() > 0).groupby(starr
 cre_infected_cells_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_tag('obs:subclass_name')).sum()
 cre_infected_cells_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).sum()
 infected_cells_threshold = 5
-def plot_corr_by_t7_infected_cells(activity_df1, activity_df2, infected_cells_sec1, infected_cells_sec2, 
+def plot_corr_by_infected_cells(activity_df1, activity_df2, infected_cells_sec1, infected_cells_sec2, 
                                    celltype_counts_sec1, celltype_counts_sec2, infected_cells_threshold, log=False):
     celltype_corr = pd.DataFrame(index=activity_df1.index.intersection(activity_df2.index), columns=['pearson', 'p_value', 'n_cres', 'n_cells'])
     for cell_type in activity_df1.index.intersection(activity_df2.index):
         cres_to_use = infected_cells_sec1.loc[cell_type].index[infected_cells_sec1.loc[cell_type] >= infected_cells_threshold].intersection(
             infected_cells_sec2.loc[cell_type].index[infected_cells_sec2.loc[cell_type] >= infected_cells_threshold]
         ).intersection(cre_whitelist)
+        cres_to_use = cres_to_use[~pd.isna(activity_df1.loc[cell_type, cres_to_use])]
+        cres_to_use = cres_to_use[~pd.isna(activity_df2.loc[cell_type, cres_to_use])]
         celltype_corr.loc[cell_type, 'n_cres'] = cres_to_use.size
         # if number of cres_to_use smaller than 2
         if cres_to_use.size < 2:
@@ -422,6 +426,8 @@ def plot_corr_by_t7_infected_cells(activity_df1, activity_df2, infected_cells_se
         celltypes_to_use = infected_cells_sec1[cre].index[infected_cells_sec1[cre] >= infected_cells_threshold].intersection(
             infected_cells_sec2[cre].index[infected_cells_sec2[cre] >= infected_cells_threshold]
         ).intersection(activity_df1.index).intersection(activity_df2.index)
+        celltypes_to_use = celltypes_to_use[~pd.isna(activity_df1.loc[celltypes_to_use, cre])]
+        celltypes_to_use = celltypes_to_use[~pd.isna(activity_df2.loc[celltypes_to_use, cre])]
         cre_corr.loc[cre, 'n_celltypes'] = celltypes_to_use.size
         if celltypes_to_use.size < 2:
             continue
@@ -448,14 +454,14 @@ def plot_corr_by_t7_infected_cells(activity_df1, activity_df2, infected_cells_se
     ax.set_ylabel(f'Number of Cell Types with infected cells ≥ {infected_cells_threshold}')
     ax.set_xlabel('log(Library Size)')
     return celltype_corr, cre_corr, fig1, fig2
-
+# %%
 celltype_corr, cre_corr, fig1, fig2 = \
-    plot_corr_by_t7_infected_cells((starrfish3_sec1.get_cre_expression()).groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean(),
-                                   (starrfish3_sec2.get_cre_expression()).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean(),
-                                   cre_infected_cells_sec1, cre_infected_cells_sec2, 
-                                   starrfish3_sec1.get_tag('obs:subclass_name').value_counts(), 
-                                   starrfish3_sec2.get_tag('obs:subclass_name').value_counts(),
-                                   infected_cells_threshold, log=False)
+    plot_corr_by_infected_cells((starrfish3_sec1.get_cre_expression()).groupby(starrfish3_sec1.get_tag('obs:subclass_name')).mean(),
+                                (starrfish3_sec2.get_cre_expression()).groupby(starrfish3_sec2.get_tag('obs:subclass_name')).mean(),
+                                cre_infected_cells_sec1, cre_infected_cells_sec2, 
+                                starrfish3_sec1.get_tag('obs:subclass_name').value_counts(), 
+                                starrfish3_sec2.get_tag('obs:subclass_name').value_counts(),
+                                infected_cells_threshold, log=False)
 # fig, ax = plt.subplots(figsize=(6, 6))
 # sns.scatterplot(x=celltype_corr.loc[celltype_corr.index[celltype_corr['n_cres'] >= 50], 'n_cells'],
 #                 y=celltype_corr.loc[celltype_corr.index[celltype_corr['n_cres'] >= 50], 'pearson'], ax=ax)
@@ -491,12 +497,12 @@ cre_infected_cells_expr3 = (starrfish3.get_cre_expression() > 0).groupby(starrfi
 cre_infected_cells_expr2 = (starrfish2.get_cre_expression() > 0).groupby(starrfish2.get_tag('obs:subclass_name')).sum()
 infected_cells_threshold = 5
 celltype_corr, cre_corr, fig1, fig2 = \
-    plot_corr_by_t7_infected_cells((starrfish2.get_cre_expression()).groupby(starrfish2.get_tag('obs:subclass_name')).mean(),
-                                   (starrfish3.get_cre_expression()).groupby(starrfish3.get_tag('obs:subclass_name')).mean(),
-                                   cre_infected_cells_expr2, cre_infected_cells_expr3,
-                                   starrfish2.get_tag('obs:subclass_name').value_counts(),
-                                   starrfish3.get_tag('obs:subclass_name').value_counts(),
-                                   infected_cells_threshold, log=False)
+    plot_corr_by_infected_cells((starrfish2.get_cre_expression()).groupby(starrfish2.get_tag('obs:subclass_name')).mean(),
+                                (starrfish3.get_cre_expression()).groupby(starrfish3.get_tag('obs:subclass_name')).mean(),
+                                cre_infected_cells_expr2, cre_infected_cells_expr3,
+                                starrfish2.get_tag('obs:subclass_name').value_counts(),
+                                starrfish3.get_tag('obs:subclass_name').value_counts(),
+                                infected_cells_threshold, log=False)
 # violin plot
 cell_type_n_threshold = 20
 cre_n_threshold = 20
@@ -571,16 +577,27 @@ ax[1].set_title('Within Cell Type Correlation vs Effect CREs')
 ax[1].set_xlabel('CREs')
 ax[1].set_ylabel('Cell Type Correlation')
 # plot violin plot
-cell_type_n_threshold = 20
-cre_n_threshold = 50
+cell_type_n_threshold = 10
+cre_n_threshold = 10
 fig, ax = plt.subplots(figsize=(6, 6))
 toplot1 = pd.DataFrame(celltype_corr['pearson'][celltype_corr['effect_n'] >= cre_n_threshold])
 toplot2 = pd.DataFrame(cre_corr['pearson'][cre_corr['effect_n'] >= cell_type_n_threshold])
-toplot1['metric'] = f'within cell type correlation\n{sum(celltype_corr['effect_n']>= cre_n_threshold)} cell types'
-toplot2['metric'] = f'across cell type correlation\n{sum(cre_corr['effect_n']>= cell_type_n_threshold)} CREs'
+toplot1['metric'] = f'Cell Type wise correlation\n{sum(celltype_corr['effect_n']>= cre_n_threshold)} cell types'
+toplot2['metric'] = f'CRE wise correlation\n{sum(cre_corr['effect_n']>= cell_type_n_threshold)} CREs'
 toplot = pd.concat((toplot1, toplot2))
 sns.violinplot(x=toplot['metric'], y=toplot['pearson'], hue=toplot['metric'], ax=ax)
-
+# %%
+t7_infected_cells_sec1 = (starrfish3_sec1.get_t7_expression() > 0).groupby(starrfish3_sec1.get_tag('obs:subclass')).sum()
+t7_infected_cells_sec2 = (starrfish3_sec2.get_t7_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass')).sum()
+cre_infected_cells_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_tag('obs:subclass')).sum()
+cre_infected_cells_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_tag('obs:subclass')).sum()
+infected_cells_threshold = 0
+celltype_corr, cre_corr, fig1, fig2 = \
+    plot_corr_by_infected_cells(res_df1, res_df2,
+                                cre_infected_cells_sec1, cre_infected_cells_sec2, 
+                                starrfish3_sec1.get_tag('obs:subclass').value_counts(), 
+                                starrfish3_sec2.get_tag('obs:subclass').value_counts(),
+                                infected_cells_threshold, log=False)
 
 
 
@@ -953,18 +970,15 @@ average_bootstrap_test_config = {
 threshold = 'neg_control'
 res = starrfish3.average_bootstrap_test(**average_bootstrap_test_config)
 res_q, res_df = starrfish3.average_bootstrap_test_q(res, threshold=threshold, norm='T7', tail='both', to_filter=to_filter)
-q_toplot = res_q.copy()
-q_toplot[to_filter] = np.nan
-res_toplot = res_df.copy()
-res_toplot[to_filter] = np.nan
-cres_to_use = q_toplot.columns[np.nanmin(q_toplot.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
+cres_to_use = res_q.columns[np.nanmin(res_q.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
+cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
 cre_info = starrfish3.get_creinfo().copy()
 cre_info['best_subclass'] = 'CRE'
 cre_info.loc[negative_control_cres, 'best_subclass'] = 'Negative Control'
 # %%
-fig = celltype_pval_dotplot(q_toplot, res_toplot, cres_to_use, cell_types_to_use,
-                            positive_control_info=cre_info, significant_cutoff=0.05, z_norm=True,
-                            figsize=(15, 30))
+fig, final_order = celltype_pval_dotplot(res_q, res_df, cres_to_use, cell_types_to_use,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
+                                         figsize=(15, 30))
 fig
 # %% check the global effect
 global_cre_t7 = (starrfish3.get_cre_expression().sum(axis=0) / starrfish3.get_t7_expression().sum(axis=0)).loc[cres_to_use]
@@ -976,6 +990,29 @@ ax.set_ylabel('Log2(Fold Change)')
 ax.set_xlabel('CREs')
 ax.set_xticks([])
 ax.set_title('Global CRE/T7 Ratio')
+# %% plot the other two sections
+res1 = starrfish3_sec1.average_bootstrap_test(**average_bootstrap_test_config)
+res_q1, res_df1 = starrfish3_sec1.average_bootstrap_test_q(res1, threshold=threshold, norm='T7', tail='both', to_filter=to_filter_sec1)
+res2 = starrfish3_sec2.average_bootstrap_test(**average_bootstrap_test_config)
+res_q2, res_df2 = starrfish3_sec2.average_bootstrap_test_q(res2, threshold=threshold, norm='T7', tail='both', to_filter=to_filter_sec2)
+cre_info = starrfish3.get_creinfo().copy()
+cre_info['best_subclass'] = 'CRE'
+cre_info.loc[negative_control_cres, 'best_subclass'] = 'Negative Control'
+# %%
+fig, final_order = celltype_pval_dotplot(res_q1, res_df1, pd.Index(final_order), cell_types_to_use,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, 
+                                         z_norm=False, reorder_cres=False, figsize=(15, 30))
+fig
+# %%
+fig, final_order = celltype_pval_dotplot(res_q2, res_df2, pd.Index(final_order), cell_types_to_use,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, 
+                                         z_norm=False, reorder_cres=False, figsize=(15, 30))
+fig
+# %%
+fig, ax = plt.subplots()
+sns.scatterplot(y=res_df.apply(np.nanmean, axis=0), x=starrfish3.get_t7_expression()[starrfish3.get_celltypes().isin(cell_types_to_use)].sum())
+ax.set_ylabel('Mean CRE/T7 fold change')
+ax.set_xscale('log')
 
 
 
