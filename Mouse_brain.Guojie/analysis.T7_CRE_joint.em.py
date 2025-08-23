@@ -438,3 +438,45 @@ x2_r_df_sec1.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.r.sec1.csv'
 x2_r_df_sec2.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.r.sec2.csv')
 x2_p_df_sec1.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.p.sec1.csv')
 x2_p_df_sec2.to_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.p.sec2.csv')
+# %%
+# analysis
+x0_df_sec1 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x0.sec1.csv', index_col=0)
+x0_df_sec2 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x0.sec2.csv', index_col=0)
+x1_df_sec1 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x1.sec1.csv', index_col=0)
+x1_df_sec2 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x1.sec2.csv', index_col=0)
+x2_r_df_sec1 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.r.sec1.csv', index_col=0)
+x2_r_df_sec2 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.r.sec2.csv', index_col=0)
+x2_p_df_sec1 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.p.sec1.csv', index_col=0)
+x2_p_df_sec2 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.p.sec2.csv', index_col=0)
+# %%
+# make sure no extreme values are used
+cres_to_use = x1_df_sec1.index[x1_df_sec1['total_counts'].between(-np.exp(5), np.exp(5)) & x1_df_sec2['total_counts'].between(-np.exp(5), np.exp(5)) & x1_df_sec1['logits'].between(-np.exp(5), np.exp(5)) & x1_df_sec2['logits'].between(-np.exp(5), np.exp(5))]
+# calculate average of the negative binomial distribution
+sec1_r = np.exp(x2_r_df_sec1[cres_to_use])
+sec1_p = 1 / (1+np.exp(-x2_p_df_sec1[cres_to_use]))
+sec2_r = np.exp(x2_r_df_sec2[cres_to_use])
+sec2_p = 1 / (1+np.exp(-x2_p_df_sec2[cres_to_use]))
+mu_sec1 = sec1_r * (1-sec1_p) / sec1_p
+mu_sec2 = sec2_r * (1-sec2_p) / sec2_p
+# %% 
+cell_type_counts = starrfish3.get_celltypes().value_counts()
+cell_types_counts1 = starrfish3_sec1.get_celltypes().value_counts()
+cell_types_counts2 = starrfish3_sec2.get_celltypes().value_counts()
+cell_types_to_use_1 = cell_types_counts1[cell_types_counts1 > 1000].index
+cell_types_to_use_2 = cell_types_counts2[cell_types_counts2 > 1000].index
+cell_types_to_use = cell_types_to_use_1.intersection(cell_types_to_use_2)
+
+# %%
+cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(mu_sec1, mu_sec2, cell_types_to_use=cell_types_to_use)
+cre_corr['libsize'] = starrfish3_sec1.lib_size['counts'].loc[cre_corr.index].values
+celltype_corr['celltype_counts_sec1'] = starrfish3_sec1.get_celltypes().value_counts().loc[celltype_corr.index].values
+celltype_corr['celltype_counts_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index].values
+celltype_corr['celltype_counts'] = celltype_corr[['celltype_counts_sec1', 'celltype_counts_sec2']].min(axis=1)
+# %%
+fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+sns.scatterplot(data=cre_corr, x='libsize', y='spearman', ax=ax[0])
+sns.scatterplot(data=celltype_corr, x='celltype_counts', y='spearman', ax=ax[1])
+ax[1].set_xscale('log')
+# %%
+sns.scatterplot(x=mu_sec1['CRE062'].loc[cell_types_to_use], y=mu_sec2['CRE386'].loc[cell_types_to_use])
+# %%

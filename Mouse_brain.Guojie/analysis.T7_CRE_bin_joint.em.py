@@ -422,7 +422,7 @@ x1_df_sec2 = pd.DataFrame(index=t7_counts_sec2.columns, columns=['total_counts',
 x2_df_sec1 = pd.DataFrame(index=common_celltypes, columns=t7_counts_sec1.columns)
 x2_df_sec2 = pd.DataFrame(index=common_celltypes, columns=t7_counts_sec2.columns)
 # %%
-em_model = T7CRE_bin_DistributionEM(device='cuda', use_x0=False, clamp=False)
+em_model = T7CRE_bin_DistributionEM(device='cuda', use_x0=True, clamp=False)
 for cre in t7_counts_sec1.columns:
     x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1[cre], cre_counts_sec1[cre], dim=2, max_iter=100)
     x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2[cre], cre_counts_sec2[cre], dim=2, max_iter=100)

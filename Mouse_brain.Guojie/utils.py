@@ -74,7 +74,7 @@ def fit_glm(formula, y, x, volm, fov, rna, positive_x_or_y=True, only_keep_posit
         return {'coef': np.nan, 'pvalue': np.nan}
 
 
-def glm(adata, variate='RNA', cell_types_to_use=None, CREs=None, norm_by_volm=False, 
+def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=False, 
         volm_covariate=False, fov_covariate=False, rna_covariate=False,
         filter_infected_cells=True, positive_x_or_y=True, only_keep_positive_x=True, only_keep_positive_y=True, 
         multiprocess_threads=256, verbose=False):
@@ -108,7 +108,6 @@ def glm(adata, variate='RNA', cell_types_to_use=None, CREs=None, norm_by_volm=Fa
         raise ValueError("variate must be 'RNA' or 'T7'.")
     if norm_by_volm:
         variate = variate / adata.obs['volm'].values[:, np.newaxis]
-    
     # Prepare formula
     formula = 'y ~ x'
     if volm_covariate:
@@ -2125,7 +2124,7 @@ class STARRFISH:
         return res
 
     def average_bootstrap_test_q(self, res, threshold: Literal['0', 'total', 'total_dist', 'neg_control', 'neg_control_dist'] = '0', 
-                                 norm='T7', tail='right', to_filter=None):
+                                 calibrate='CRE/T7', norm='T7', tail='right', to_filter=None):
         # fold change to T7 array
         res_array = res['celltype_activity_array'].copy()
         # log then average
@@ -2136,6 +2135,17 @@ class STARRFISH:
         if to_filter is not None:
             for cell_type in to_filter.index:
                 res_array[:, res['celltype_activity'].index == cell_type, to_filter.loc[cell_type]] = np.nan
+        if calibrate is not None:
+            # calibrate the fdc by total T7 or libsize
+            if calibrate == 'T7':
+                t7_all = np.log(self.get_t7_expression().sum().values).reshape(1, 1, -1)
+                res_array = res_array + t7_all
+            elif calibrate == 'CRE/T7':
+                cre_t7_all = np.log(self.get_cre_expression().sum().values).reshape(1, 1, -1) - np.log(self.get_t7_expression().sum().values).reshape(1, 1, -1)
+                res_array = res_array - cre_t7_all
+            elif calibrate == 'libsize':
+                lib_all = np.log(self.lib_size['counts'].values).reshape(1, 1, -1)
+                res_array = res_array + lib_all
         neg_control_array = res_array[:, :, res['celltype_activity'].columns.isin(self.get_negative_control_cres())]
         neg_control_array = np.nanmean(neg_control_array, axis=2)
         # turn to DataFrame
@@ -2174,6 +2184,10 @@ class STARRFISH:
                 elif norm == 'libsize':
                     fdc_u = np.log(total_neg_control_cre / total_neg_control_libsize)
                 fdc_l = fdc_u
+            elif threshold == 'neg_control_mean':
+                # use the distribution of negative control CREs to set the threshold
+                fdc = np.nanmean(neg_control_array[:, res['celltype_activity'].index == cell_type])
+                fdc_l = fdc_u = fdc
             elif threshold == 'neg_control_dist':
                 # use the distribution of negative control CREs to set the threshold
                 fdc = np.nanmean(neg_control_array[:, res['celltype_activity'].index == cell_type])
@@ -2479,14 +2493,16 @@ class STARRFISH:
         self.glm_test_configs.append(config)
         return result
 
-    def pseudo_bulk_glm_test(self, variate='RNA', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, rna_covariate=False,
-                             filter_infected_cells=True, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False, 
+    def pseudo_bulk_glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, rna_covariate=False,
+                             filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, 
                              pseudo_bulk_size=50, pseudo_bulk_percentage=None, pseudo_bulk_number=1000, replace=True, 
                              multiprocess_threads=256) -> dict:
         # check if the results already exist
         config = {'cell_types_to_use': cell_types_to_use, 
+                  'variate': variate,
                   'norm_by_volm': norm_by_volm, 
                   'volm_covariate': volm_covariate,
+                  'rna_covariate': rna_covariate,
                   'filter_infected_cells': filter_infected_cells,
                   'positive_x_or_y': positive_x_or_y,
                   'only_keep_positive_x': only_keep_positive_x,

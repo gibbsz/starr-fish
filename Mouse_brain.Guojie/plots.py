@@ -1770,7 +1770,7 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
         # ax.invert_yaxis()
         ax_dend.axis('off')
         # Add markers for positive controls
-        if positive_control_info is not None and category != 'CREs':
+        if positive_control_info is not None and category != 'CREs' and category != 'Negative Controls':
             markers = {
                 'on-target': ('red', 's'), 
                 'off-target': ('blue', 's'), 
@@ -2214,7 +2214,7 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
     plt.close(fig)
     return fig, final_order
 
-def plot_q_value_celltype_reproducibility(res_q1, res_q2, res_q, q_cutoff = 0.05):
+def plot_q_value_celltype_reproducibility(res_q1, res_q2, res_q, cell_counts1, cell_counts2, cell_counts, q_cutoff = 0.05):
     common_celltypes = res_q1.index.intersection(res_q2.index)
     res_compare = pd.DataFrame(index=common_celltypes, columns=['Sec1', 'Sec2', 'All', 
                                                                 'Common', 'Percentage',
@@ -2231,9 +2231,9 @@ def plot_q_value_celltype_reproducibility(res_q1, res_q2, res_q, q_cutoff = 0.05
         res_compare.loc[cell_type, 'Common_sec2'] = res_q2.loc[cell_type].index[res_q2.loc[cell_type] <= q_cutoff].intersection(res_q.loc[cell_type].index[res_q.loc[cell_type] <= q_cutoff]).shape[0]
         res_compare.loc[cell_type, 'Percentage_sec2'] = res_compare.loc[cell_type, 'Common_sec2'] / np.minimum(res_compare.loc[cell_type, 'Sec2'], res_compare.loc[cell_type, 'All'])
     # plot the percentage vs number of cells
-    res_compare['Cell_counts1'] = starrfish3_sec1.get_celltypes().value_counts().loc[common_celltypes].values
-    res_compare['Cell_counts2'] = starrfish3_sec2.get_celltypes().value_counts().loc[common_celltypes].values
-    res_compare['Cell_counts'] = starrfish3.get_celltypes().value_counts().loc[common_celltypes].values
+    res_compare['Cell_counts1'] = cell_counts1.loc[common_celltypes].values
+    res_compare['Cell_counts2'] = cell_counts2.loc[common_celltypes].values
+    res_compare['Cell_counts'] = cell_counts.loc[common_celltypes].values
     fig, ax = plt.subplots(ncols=3, figsize=(12, 4))
     # Create separate plots for NaN and non-NaN values
     mask_valid = ~res_compare['Percentage_sec1'].isna()

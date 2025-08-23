@@ -1277,4 +1277,230 @@ g.ax_heatmap.set_ylabel('Cell Types')
 
 plt.suptitle('CRE Activity Heatmap with Hierarchical Clustering', y=1.02)
 plt.show()
+
+
+
+
+
+
+
+
+# %%
+# plot cumulative correlation versus CREs, we need to see that but not necessarily in the manuscript
+from plots import cre_corr_dotplot
+infected_cells_threshold = 5
+to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
+cre_blacklist = ['CRE061', 'CRE143', 'CRE001']
+# read in the mismatching barcode CREs
+mismatching_cres = pd.read_csv('Data/AAV_ONT_Barcode_Counts_vs_Mismatch_Percentage.csv', index_col=0)
+cre_blacklist = np.unique(cre_blacklist + mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20].tolist()).tolist()
+to_filter[cre_blacklist] = True
+# %%
+fold_change_test_config = {"cell_types_to_use": None,
+                           "normalize_by_cell_rna": False,
+                           "normalize_by_cell_volume": False,
+                           "normalize_by_cell_t7": False, # normalize by T7
+                           'filter_by_cell_t7': None,
+                           "normalize_by_celltype_rna": False,
+                           "normalize_by_celltype_volume": False,
+                           "normalize_by_celltype_t7": True, # normalize by T7
+                           "normalize_by_negative_control": False, # normalize by negative control
+                           'normalize_by_total_cre': False,
+                           "normalize_by_infected_cell": False,
+                           "normalize_by_libsize": False,
+                           "log_transform": False,
+                           "filter_zero_counts": False,
+                           "bootstrap_number": 10000,
+                           "n_jobs": 196,
+                           'load_stored': True,}
+res = starrfish3.fold_change_test(**fold_change_test_config)
+p = res['pvalue_activity'].copy()
+q = p.copy()
+q[to_filter] = np.nan
+q = q.values.flatten().copy().astype(float)
+q[~np.isnan(q)] = multitest.multipletests(q[~np.isnan(q)], method='fdr_bh')[1]
+q = pd.DataFrame(q.reshape(p.shape), index=p.index, columns=p.columns)
+q_toplot = q.copy()
+res_toplot = res['celltype_activity'].copy()
+cell_types_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=200]
+# cell_types_to_use = starrfish3.get_celltypes().value_counts().index
+q_toplot[to_filter] = np.nan
+res_toplot[to_filter] = np.nan
+# cres_to_use = q_toplot.columns[np.nanmin(q_toplot.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
+cres_to_use = q_toplot.columns
+cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
+# %%
+corr_cutoffs = np.linspace(-1, 1, 200)
+prob = {'atac_cpm': [], 'h3k4me1_cpm': [], 'h3k9me3_cpm': [], 'h3k27ac_cpm': [], 'h3k27me3_cpm': []}
+significant_cres_mod = {}
+violin_res = pd.DataFrame()
+for mod in ['atac_cpm', 'h3k4me1_cpm', 'h3k27ac_cpm', 'h3k9me3_cpm', 'h3k27me3_cpm']:
+    cre_corr, celltype_corr = starrfish3.corr_atac_cpm(
+        cell_types_to_use=cell_types_to_use, cres_to_use=cres_to_use, 
+        acvitity_df=res_toplot, 
+        filter_by_atac_z_threshold=None, filter_by_atac_raw_threshold=None,
+        filter_by_negative_control_z_threshold=None,
+        log_activity=False, log_atac=False, attr_to_use=mod)
+    print(f"Variance explained by {mod}: {(cre_corr['pearson'] ** 2).mean()}")
+    cre_corr['mod'] = mod.replace('_cpm', '')
+    cre_corr['CRE'] = cre_corr.index
+    significant_cres = cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['pearson'] > 0)].index
+    significant_cres_mod[mod] = set(significant_cres)
+    violin_res = pd.concat([violin_res, cre_corr], axis=0, ignore_index=True)
+    for corr_cutoff in corr_cutoffs:
+        prop = (cre_corr['pearson'] >= corr_cutoff).sum() / len(cre_corr)
+        prob[mod].append(prop)
+# add lib size
+violin_res['lib_size'] = starrfish3.lib_size.loc[violin_res['CRE'], 'counts'].values
+fig = cre_corr_dotplot(starrfish3, pd.Series(list(set.union(significant_cres_mod['atac_cpm'], significant_cres_mod['h3k4me1_cpm'], significant_cres_mod['h3k27ac_cpm']))), 
+                       cell_types_to_use, mods=['atac_cpm', 'h3k4me1_cpm', 'h3k27ac_cpm'],
+                       test_method='fold_change', test_configs=fold_change_test_config, qval_df=q_toplot, log=False,
+                       scale_by_cre=True, z_score_by_cre=False, sz_max=100, figsize=(24, 12))
+fig.savefig(f'results/expr3/fdc_atac_cpm_corr_dotplot.pdf')
+fig
+# %% venn
+from matplotlib_venn import venn3
+mod_dict = {'atac_cpm': f'ATAC ({len(significant_cres_mod['atac_cpm'])} / {len(cres_to_use)})', 
+            'h3k4me1_cpm': f'H3K4me1 ({len(significant_cres_mod['h3k4me1_cpm'])} / {len(cres_to_use)})',
+            'h3k27ac_cpm': f'H3K27ac ({len(significant_cres_mod['h3k27ac_cpm'])} / {len(cres_to_use)})',}
+fig, ax = plt.subplots(figsize=(6, 4))
+venn = venn3([significant_cres_mod[i] for i in mod_dict.keys()], set_labels=mod_dict.values(), ax=ax)
+fig.savefig(f'results/expr3/expr3_fdc_atac_cpm_corr_significant_venn.pdf')
+# %%
+# cumulative probability plot
+fig, ax = plt.subplots(figsize=(6, 4))
+ax.plot(corr_cutoffs, prob['atac_cpm'], label='ATAC', color='#A6CEE3')
+ax.plot(corr_cutoffs, prob['h3k4me1_cpm'], label='H3K4me1', color='#B2DF8A')
+ax.plot(corr_cutoffs, prob['h3k9me3_cpm'], label='H3K9me3', color='#FB8072')
+ax.plot(corr_cutoffs, prob['h3k27ac_cpm'], label='H3K27ac', color='#FDB462')
+ax.plot(corr_cutoffs, prob['h3k27me3_cpm'], label='H3K27me3', color='#CAB2D6')
+ax.set_xlabel('Pearson correlation with epigenomic markers')
+ax.set_ylabel('Proportion correlation ≥ cutoff')
+ax.set_xlim(0, 1)
+ax.set_ylim(0, 0.6)
+ax.legend()
+fig.tight_layout()
+fig.savefig(f'results/expr3/expr2_cre_cumulative_prob.pdf')
+# violin plot
+fig, ax = plt.subplots(figsize=(6, 4))
+lib_size_palette = {'0–100': '#A6CEE3', '100–1000': '#B2DF8A', '>1000': '#FB8072'}
+bins = [0, 100, 1000, float('inf')]
+labels = ['0–100', '100–1000', '>1000']
+violin_res['lib_size_group'] = pd.cut(violin_res['lib_size'], bins=bins, labels=labels)
+sns.violinplot(data=violin_res, x='mod', y='pearson', ax=ax, inner='quartile', scale='width', hue='mod',
+               palette={'atac': '#A6CEE3', 'h3k4me1': '#B2DF8A', 'h3k9me3': '#FB8072',
+                        'h3k27ac': '#FDB462', 'h3k27me3': '#CAB2D6'})
+# jittered points
+sns.stripplot(data=violin_res, x='mod', y='pearson', color='k', size=2, jitter=True, ax=ax, alpha=0.5)
+ax.set_ylabel('Activity correlation with epigenomic markers')
+# %% plot a heatmap with the correlation values
+# Create correlation heatmap
+corr_df = pd.DataFrame(index=violin_res['CRE'].unique(), 
+                       columns=['atac', 'h3k4me1', 'h3k27ac'])
+p_val_df = corr_df.copy()
+for mod in corr_df.columns:
+    corr_df[mod] = violin_res[violin_res['mod'] == mod]['pearson'].values
+    p_val_df[mod] = violin_res[violin_res['mod'] == mod]['pearson_p'].values
+# Define significance criteria
+p_threshold = 0.05
+corr_threshold = 0.0
+# Create significance masks
+sig_mask = (p_val_df < p_threshold) & (corr_df > corr_threshold)
+# Count significant correlations per CRE
+sig_counts = sig_mask.sum(axis=1)
+# Heatmap of correlations for each CRE
+# Group CREs by significance count
+groups = {}
+for i in range(4):
+    group_cres = sig_counts[sig_counts == i].index.tolist()
+    groups[i] = group_cres
+# Function to perform hierarchical clustering within a group
+def cluster_within_group(cres_list, corr_matrix, pval_matrix):
+    """Perform hierarchical clustering on a subset of CREs"""
+    if len(cres_list) <= 1:
+        return cres_list
+    # Extract correlation data for this group
+    group_corr = corr_matrix.loc[cres_list]
+    group_pval = pval_matrix.loc[cres_list]
+    # order the cres based on correlation of first column
+    cres_list = group_corr.iloc[:, 0].abs().sort_values(ascending=False).index.tolist()
+    group_corr = group_corr.loc[cres_list]
+    group_pval = group_pval.loc[group_corr.index]
+    # binarize the p-values for clustering
+    group_pval = group_pval < p_threshold
+    # Calculate distance matrix (1 - correlation for clustering)
+    # We'll use the correlation patterns across the three metrics as features
+    # fill nans with zeros for group_corr
+    group_corr.fillna(0, inplace=True)
+    group_pval.fillna(1, inplace=True)
+    distance_matrix = pdist(group_corr.astype(float).values, metric='euclidean')
+    distance_p_matrix = pdist(group_pval.astype(float).values, metric='euclidean')
+    # Perform hierarchical clustering
+    linkage_matrix = linkage(distance_matrix + 100*distance_p_matrix, method='ward')
+    # Get the order of CREs after clustering, reverse the order to get original order
+    clustered_order = leaves_list(linkage_matrix)
+    # Return CREs in clustered order
+    return [cres_list[i] for i in clustered_order]
+# Cluster CREs within each group
+clustered_groups = {}
+group_names = ['None Significant', '1 Significant', '2 Significant', 'All 3 Significant']
+for sig_count in [3, 2, 1]:  # Start with most significant
+    group_cres = groups[sig_count]
+    if len(group_cres) > 0:
+        # Sort by mean absolute correlation first, then cluster
+        group_corr = corr_df.loc[group_cres]
+        group_pval = p_val_df.loc[group_cres]
+        mean_abs_corr = np.abs(group_corr).mean(axis=1)
+        sorted_cres = mean_abs_corr.sort_values(ascending=False).index.tolist()
+        # Perform clustering within this sorted group
+        clustered_cres = cluster_within_group(sorted_cres, corr_df, group_pval)
+        clustered_groups[sig_count] = clustered_cres
+        print(f"Group '{group_names[sig_count]}': {len(clustered_cres)} CREs clustered")
+# Create final ordered list of CREs
+ordered_cres = []
+group_boundaries = [0]
+group_labels = []
+for sig_count in [3, 2, 1]:  # Most to least significant
+    if sig_count in clustered_groups:
+        if sig_count == 3:
+            ordered_cres.extend(clustered_groups[sig_count][::-1])
+        else:
+            ordered_cres.extend(clustered_groups[sig_count])
+        group_boundaries.append(len(ordered_cres))
+        group_labels.append(group_names[sig_count])
+# Reorder correlation matrix according to clustered groups
+ordered_corr_matrix = corr_df.loc[ordered_cres].T
+# Create the comprehensive heatmap
+fig, ax = plt.subplots(figsize=(8, 3))
+# Create heatmap
+im = ax.imshow(ordered_corr_matrix.astype(float).values, cmap='RdBu_r', aspect='auto', vmin=-0.6, vmax=0.6)
+# Set labels
+ax.set_yticks(range(len(ordered_corr_matrix.index)))
+ax.set_yticklabels(['Activity vs ATAC', 'Activity vs H3K4me1', 'Activity vs H3K27ac'])
+# Set x-axis ticks as the ordered CREs
+ax.set_xticks(range(len(ordered_cres)))
+ax.set_xticklabels(ordered_cres, rotation=45, fontsize=8, ha='right')
+# Add group boundaries
+for boundary in group_boundaries[1:-1]:  # Skip first (0) and last (end)
+    ax.axvline(x=boundary-0.5, color='black', linewidth=2)
+# Add colorbar
+cbar = plt.colorbar(im, ax=ax, shrink=0.6)
+cbar.set_label('Correlation Coefficient', fontsize=12)
+# Set title and labels
+ax.set_title('STARR-FISH Activity vs Chromatin Profiles', 
+             fontsize=16, weight='bold', pad=20)
+ax.set_xlabel('CREs', fontsize=12)
+ax.set_ylabel('Correlation Metrics', fontsize=12)
+fig.savefig('results/expr3/cre_correlation_heatmap.pdf', bbox_inches='tight')
+# %%
+from plots import cre_corr_heatmap
+selected_cres = [pd.Series(list(significant_cres_mod['atac_cpm'])), 
+                 pd.Series(list(significant_cres_mod['h3k4me1_cpm'])), 
+                 pd.Series(list(significant_cres_mod['h3k27ac_cpm']))]
+fig = cre_corr_heatmap(starrfish3, selected_cres, 
+                       cell_types_to_use=cell_types_to_use,
+                       mods = ['atac_cpm', 'h3k4me1_cpm', 'h3k27ac_cpm'], 
+                       test_method='fold_change', test_configs=fold_change_test_config,
+                       qval_df = q_toplot, log = False, scale_by_cre=True, z_score_by_cre=False, figsize=(24, 0.3))
+fig.savefig(f'results/fold_change/expr2_cre_corr_heatmap.pdf')
 # %%
