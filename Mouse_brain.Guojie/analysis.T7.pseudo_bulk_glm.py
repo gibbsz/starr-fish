@@ -155,7 +155,7 @@ pseudo_bulk_glm_test_config = {
     'positive_x_or_y': False,  # normalize by T7
     'only_keep_positive_x': False,
     'only_keep_positive_y': False,  # normalize by negative control
-    'pseudo_bulk_size': None,
+    'pseudo_bulk_size': 100,
     'pseudo_bulk_percentage': 1,
     'pseudo_bulk_number': 10000,
     'replace': True,

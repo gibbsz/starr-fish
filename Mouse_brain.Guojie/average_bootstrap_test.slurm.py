@@ -121,13 +121,12 @@ average_bootstrap_test_config = {
     'bootstrap_to_fixed_pct': 1,
     'bootstrap_to_fixed_sample_size': None,
     'load_stored': True,
-    'n_jobs': 64,
+    'n_jobs': 62,
 }
 threshold = 'neg_control'
 res1 = starrfish3_sec1.average_bootstrap_test(**average_bootstrap_test_config)
-res2 = starrfish3_sec2.average_bootstrap_test(**average_bootstrap_test_config)
-res = starrfish3.average_bootstrap_test(**average_bootstrap_test_config)
-# %%
 starrfish3_sec1.save('results/starrfish3_sec1.pkl')
+res2 = starrfish3_sec2.average_bootstrap_test(**average_bootstrap_test_config)
 starrfish3_sec2.save('results/starrfish3_sec2.pkl')
+res = starrfish3.average_bootstrap_test(**average_bootstrap_test_config)
 starrfish3.save('results/starrfish3.pkl')

@@ -7,6 +7,7 @@ import multiprocessing
 from joblib import Parallel, delayed
 from scipy.optimize import minimize
 from scipy.special import logsumexp
+import swifter
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -2495,7 +2496,7 @@ class STARRFISH:
 
     def pseudo_bulk_glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, rna_covariate=False,
                              filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, 
-                             pseudo_bulk_size=50, pseudo_bulk_percentage=None, pseudo_bulk_number=1000, replace=True, 
+                             pseudo_bulk_size=[50], pseudo_bulk_percentage=None, pseudo_bulk_number=[1000], replace=True, 
                              multiprocess_threads=256) -> dict:
         # check if the results already exist
         config = {'cell_types_to_use': cell_types_to_use, 
@@ -2524,12 +2525,18 @@ class STARRFISH:
         volumes = self.get_tag('obs:volm')
         if filter_infected_cells:
             # get the infected cells
-            infected_cells = ((cre_expression >= 1).sum(axis=1) > 0)
+            infected_cells = ((cre_expression >= 0).sum(axis=1) > 0)
             celltypes = celltypes[infected_cells]
             cre_expression = cre_expression[infected_cells]
+            t7_expression = t7_expression[infected_cells]
             volumes = volumes[infected_cells]
         if cell_types_to_use is None:
             cell_types_to_use = celltypes.unique()
+        else:
+            celltypes = celltypes[celltypes.isin(cell_types_to_use)]
+            cre_expression = cre_expression[celltypes.index]
+            t7_expression = t7_expression[celltypes.index]
+            volumes = volumes[celltypes.index]
         # get the cell type cell counts
         cell_counts = celltypes.value_counts().loc[cell_types_to_use]
         # filter out cell types with insufficient cell counts if not replace
@@ -2541,40 +2548,64 @@ class STARRFISH:
         # redefine the cell types to use
         cell_types_to_use = cell_counts.index.tolist()
         # generate pseudo bulk for each cell type
+        def sample_aggregate(df3, df_list, n_samples=50, percentage=None, random_state=42, replace=replace):
+            """
+            Ultra memory-efficient parallel sampling and aggregation using swifter
+            """
+            def sample_and_sum_group(group):
+                # Sample indexes for this group
+                if percentage is not None:
+                    # Sample by percentage
+                    sampled_idx = group.sample(frac=percentage, replace=replace, random_state=random_state).index
+                else:
+                    # Sample by exact number
+                    if replace:
+                        sampled_idx = group.sample(n=n_samples, replace=replace, random_state=random_state).index
+                    else:
+                        sampled_idx = group.sample(n=min(n_samples, len(group)), replace=replace, random_state=random_state).index
+                # Return sums for all target DataFrames
+                return [df.loc[sampled_idx].sum() for df in df_list]
+            # Apply in parallel using swifter
+            grouped_results = df3.groupby('celltype').swifter.apply(sample_and_sum_group)
+            # Reorganize results into separate DataFrames
+            results = []
+            for i in range(len(df_list)):
+                df_result = pd.DataFrame(
+                    [result[i] for result in grouped_results.values], 
+                    index=grouped_results.index
+                )
+                results.append(df_result)
+            return results
         pseudo_bulk = pd.DataFrame()
         pseudo_bulk_obs = pd.DataFrame()
         # if we have t7 expression, we will also create a pseudo bulk for t7
         pseudo_bulk_t7 = pd.DataFrame()
-        for cell_type in cell_types_to_use:
-            # get the cre expression for the cell type cells
-            cre_expression_cell_type = cre_expression[celltypes == cell_type]
-            t7_expression_cell_type = t7_expression[celltypes == cell_type] if t7_expression is not None else None
-            volume_cell_type = volumes[celltypes == cell_type]
-            if pseudo_bulk_size is None:
-                assert pseudo_bulk_percentage is not None, 'pseudo_bulk_size or pseudo_bulk_percentage must be set'
-                sample_size = int(cell_counts.loc[cell_type] * pseudo_bulk_percentage)
-            else:
-                sample_size = pseudo_bulk_size
-            # get the pseudo bulk for the cell type
-            bootstrap_indices = np.concat([np.random.default_rng(seed=i).choice(cre_expression_cell_type.shape[0], size=(1, sample_size), replace=replace) 
-                                           for i in range(pseudo_bulk_number)], axis=0)
-            samples = cre_expression_cell_type.values[bootstrap_indices].sum(axis=1)
-            samples = pd.DataFrame(samples, index=[cell_type + ':sample_' + str(i) for i in range(pseudo_bulk_number)], columns=cre_expression_cell_type.columns)
-            # add the pseudo bulk to the pseudo bulk dataframe
-            pseudo_bulk = pd.concat([pseudo_bulk, samples])
-            if t7_expression_cell_type is not None:
-                # get the t7 expression for the cell type
-                t7_samples = t7_expression_cell_type.values[bootstrap_indices].sum(axis=1)
-                t7_samples = pd.DataFrame(t7_samples, index=[cell_type + ':sample_' + str(i) for i in range(pseudo_bulk_number)], columns=t7_expression_cell_type.columns)
-                # add the pseudo bulk to the pseudo bulk t7 dataframe
-                pseudo_bulk_t7 = pd.concat([pseudo_bulk_t7, t7_samples])
-            # add volume to the observation
-            sample_volumes = volume_cell_type.values[bootstrap_indices].sum(axis=1)
-            sample_obs = pd.DataFrame(sample_volumes, index=[cell_type + ':sample_' + str(i) for i in range(pseudo_bulk_number)], columns=['volm'])
-            sample_obs['subclass'] = cell_type
-            sample_obs['fov'] = cell_type
-            # add the pseudo bulk obs to the pseudo bulk obs dataframe
-            pseudo_bulk_obs = pd.concat([pseudo_bulk_obs, sample_obs])
+        if pseudo_bulk_size is None:
+            assert pseudo_bulk_percentage is not None, 'pseudo_bulk_size or pseudo_bulk_percentage must be set'
+            pseudo_bulk_size = [None] * len(pseudo_bulk_percentage)
+        if pseudo_bulk_percentage is None:
+            assert pseudo_bulk_size is not None, 'pseudo_bulk_size or pseudo_bulk_percentage must be set'
+            pseudo_bulk_percentage = [None] * len(pseudo_bulk_size)
+        for i, (size, percentage, number) in enumerate(zip(pseudo_bulk_size, pseudo_bulk_percentage, pseudo_bulk_number)):
+            for s in range(number):
+                cre_expression_pseudo_bulk, t7_expression_pseudo_bulk, volumes_pseudo_bulk = sample_aggregate(
+                    celltypes, [cre_expression, t7_expression, volumes], 
+                    n_samples=size, percentage=percentage, random_state=s
+                )
+                # change the index to reflect the celltype, i and s
+                cell_types = cre_expression_pseudo_bulk.index.copy()
+                cre_expression_pseudo_bulk.index = cell_types.values + f'_pseudo_bulk_{i}_{s}'
+                t7_expression_pseudo_bulk.index = cell_types.values + f'_pseudo_bulk_{i}_{s}'
+                volumes_pseudo_bulk.index = cell_types.values + f'_pseudo_bulk_{i}_{s}'
+                pseudo_bulk = pd.concat([pseudo_bulk, cre_expression_pseudo_bulk])
+                pseudo_bulk_t7 = pd.concat([pseudo_bulk_t7, t7_expression_pseudo_bulk])
+                sample_obs = pd.DataFrame(volumes_pseudo_bulk, columns=['volume'])
+                sample_obs['subclass'] = cell_types.values
+                sample_obs['fov'] = cell_types.values
+                sample_obs['size'] = size
+                sample_obs['percentage'] = percentage
+                sample_obs['seed'] = s
+                pseudo_bulk_obs = pd.concat([pseudo_bulk_obs, sample_obs])
         # create a new AnnData object for the pseudo bulk
         pseudo_bulk_adata = sc.AnnData(pseudo_bulk, obs=pseudo_bulk_obs)
         pseudo_bulk_adata.obsm['X_raw'] = pseudo_bulk
