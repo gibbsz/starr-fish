@@ -48,19 +48,22 @@ from get_preprocess_utils import get_motif, query_motif
 cmdstanpy_logger = logging.getLogger("cmdstanpy")
 cmdstanpy_logger.disabled = True
 
-def fit_glm(formula, y, x, volm, fov, rna, size, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False):
+def fit_glm(formula, y, x, volm, fov, rna, size, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False, log_x_y=False):
     try:
         # remove zeros in y
         if positive_x_or_y:
             to_keep = (y > 0) | (x > 0)
         else:
             to_keep = np.ones(len(x), dtype=bool)
-        if only_keep_positive_x:
+        if only_keep_positive_x or log_x_y:
             to_keep &= x > 0
-        if only_keep_positive_y:
+        if only_keep_positive_y or log_x_y:
             to_keep &= y > 0
         y = y[to_keep]
         x = x[to_keep]
+        if log_x_y:
+            x = np.log(x)
+            y = np.log(y)
         volm = volm[to_keep]
         fov = fov[to_keep]
         rna = rna[to_keep] if rna is not None else None
@@ -80,7 +83,7 @@ def fit_glm(formula, y, x, volm, fov, rna, size, positive_x_or_y=True, only_keep
 
 def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=False, 
         volm_covariate=False, fov_covariate=False, rna_covariate=False, size_covariate=False,
-        filter_infected_cells=True, positive_x_or_y=True, only_keep_positive_x=True, only_keep_positive_y=True, 
+        filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, log_x_y=False,
         multiprocess_threads=256, verbose=False):
     # result is a matrix of cell_types x CREs
     if CREs is None:
@@ -165,7 +168,7 @@ def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=Fal
             cell_fov,
             cell_rna_sum,
             cell_size,
-            positive_x_or_y, only_keep_positive_x, only_keep_positive_y
+            positive_x_or_y, only_keep_positive_x, only_keep_positive_y, log_x_y,
         ) for j in range(len(CREs))]
         
         # Batch assignment
@@ -2750,18 +2753,20 @@ class STARRFISH:
         self.mixture_model_test_configs.append(config)
         return res
 
-    def glm_test(self, variate='RNA', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, fov_covariate=False, rna_covariate=False,
-                 filter_infected_cells=True, positive_x_or_y = True, only_keep_positive_x=False, only_keep_positive_y = False, multiprocess_threads=256) -> dict:
+    def glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, fov_covariate=False, rna_covariate=False, size_covariate=False,
+                 filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, log_x_y=False, multiprocess_threads=256) -> dict:
         config = {
             'variate': variate,
             'norm_by_volm': norm_by_volm,
             'volm_covariate': volm_covariate,
             'fov_covariate': fov_covariate,
             'rna_covariate': rna_covariate,
+            'size_covariate': size_covariate,
             'filter_infected_cells': filter_infected_cells,
             'positive_x_or_y': positive_x_or_y,
             'only_keep_positive_x': only_keep_positive_x,
             'only_keep_positive_y': only_keep_positive_y,
+            'log_x_y': log_x_y,
         }
         # if the results already exist, return the results
         if hasattr(self, 'glm_test_results') and hasattr(self, 'glm_test_configs'):
@@ -2771,11 +2776,12 @@ class STARRFISH:
                     print('Results already exist, return stored results')
                     return glm_result.copy()
         result = glm(self.adata, variate=variate, cell_types_to_use=cell_types_to_use, norm_by_volm=norm_by_volm, 
-                     volm_covariate=volm_covariate, fov_covariate=fov_covariate, rna_covariate=rna_covariate,
+                     volm_covariate=volm_covariate, fov_covariate=fov_covariate, rna_covariate=rna_covariate, size_covariate=size_covariate,
                      filter_infected_cells=filter_infected_cells, 
                      positive_x_or_y=positive_x_or_y,
                      only_keep_positive_x=only_keep_positive_x,
                      only_keep_positive_y=only_keep_positive_y,
+                     log_x_y=log_x_y,
                      multiprocess_threads=multiprocess_threads)
         # add results to attribute
         if not hasattr(self, 'glm_test_results') or not hasattr(self, 'glm_test_configs'):
@@ -2785,8 +2791,8 @@ class STARRFISH:
         self.glm_test_configs.append(config)
         return result
 
-    def pseudo_bulk_glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, rna_covariate=False,
-                             filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, 
+    def pseudo_bulk_glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, rna_covariate=False, size_covariate=False,
+                             filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, log_x_y=False,
                              pseudo_bulk_size=[50], pseudo_bulk_percentage=None, pseudo_bulk_number=[1000], replace=True, 
                              multiprocess_threads=256) -> dict:
         # check if the results already exist
@@ -2795,122 +2801,134 @@ class STARRFISH:
                   'norm_by_volm': norm_by_volm, 
                   'volm_covariate': volm_covariate,
                   'rna_covariate': rna_covariate,
+                  'size_covariate': size_covariate,
                   'filter_infected_cells': filter_infected_cells,
                   'positive_x_or_y': positive_x_or_y,
                   'only_keep_positive_x': only_keep_positive_x,
                   'only_keep_positive_y': only_keep_positive_y,
+                  'log_x_y': log_x_y,
                   'pseudo_bulk_size': pseudo_bulk_size,
                   'pseudo_bulk_percentage': pseudo_bulk_percentage,
                   'pseudo_bulk_number': pseudo_bulk_number,
                   'replace': replace}
+        pseudo_bulk_keys = ['cell_types_to_use', 'filter_infected_cells', 'replace', 
+                            'pseudo_bulk_size', 'pseudo_bulk_percentage', 'pseudo_bulk_number']
+        partial_load = False
         if hasattr(self, 'pseudo_bulk_glm_test_results') and hasattr(self, 'pseudo_bulk_glm_test_configs'):
             for stored_config, pseudo_bulk_glm_test_result in zip(self.pseudo_bulk_glm_test_configs, self.pseudo_bulk_glm_test_results):
+                # check if partially matched all pseudo_bulk_keys
+                if all(stored_config.get(key) == config.get(key) for key in pseudo_bulk_keys):
+                    print('Partially load pseudo bulk adata')
+                    pseudo_bulk_adata = pseudo_bulk_glm_test_result['pseudo_bulk_adata'].copy()
+                    partial_load = True
                 if stored_config == config:
                     # if the results already exist, return the results
                     print('Results already exist, return stored results')
                     return pseudo_bulk_glm_test_result.copy()
-        # for each cell type to use, create a pseudo bulk
-        celltypes = self.get_celltypes()
-        cre_expression = self.get_cre_expression()
-        t7_expression = self.get_t7_expression()
-        volumes = self.get_tag('obs:volm')
-        if filter_infected_cells:
-            # get the infected cells
-            infected_cells = ((cre_expression >= 0).sum(axis=1) > 0)
-            celltypes = celltypes[infected_cells]
-            cre_expression = cre_expression[infected_cells]
-            t7_expression = t7_expression[infected_cells]
-            volumes = volumes[infected_cells]
-        if cell_types_to_use is None:
-            cell_types_to_use = celltypes.unique()
-        else:
-            celltypes = celltypes[celltypes.isin(cell_types_to_use)]
-            cre_expression = cre_expression[celltypes.index]
-            t7_expression = t7_expression[celltypes.index]
-            volumes = volumes[celltypes.index]
-        # get the cell type cell counts
-        cell_counts = celltypes.value_counts().loc[cell_types_to_use]
-        celltypes = pd.DataFrame(celltypes)
-        # filter out cell types with insufficient cell counts if not replace
-        if not replace:
-            if pseudo_bulk_size is not None:
-                cell_counts = cell_counts[cell_counts >= pseudo_bulk_size]
+        if not partial_load:
+            # for each cell type to use, create a pseudo bulk
+            celltypes = self.get_celltypes()
+            cre_expression = self.get_cre_expression()
+            t7_expression = self.get_t7_expression()
+            volumes = self.get_tag('obs:volm')
+            if filter_infected_cells:
+                # get the infected cells
+                infected_cells = ((cre_expression >= 0).sum(axis=1) > 0)
+                celltypes = celltypes[infected_cells]
+                cre_expression = cre_expression[infected_cells]
+                t7_expression = t7_expression[infected_cells]
+                volumes = volumes[infected_cells]
+            if cell_types_to_use is None:
+                cell_types_to_use = celltypes.unique()
             else:
-                cell_counts = cell_counts[cell_counts >= 50 / pseudo_bulk_percentage]
-        # redefine the cell types to use
-        cell_types_to_use = cell_counts.index.tolist()
-        # generate pseudo bulk for each cell type
-        def sample_aggregate(df3, df_list, n_samples=50, percentage=None, random_state=42, replace=replace):
-            """
-            Ultra memory-efficient parallel sampling and aggregation using swifter
-            """
-            def sample_and_sum_group(group):
-                # Sample indexes for this group
-                if percentage is not None:
-                    # Sample by percentage
-                    sampled_idx = group.sample(frac=percentage, replace=replace, random_state=random_state).index
+                celltypes = celltypes[celltypes.isin(cell_types_to_use)]
+                cre_expression = cre_expression[celltypes.index]
+                t7_expression = t7_expression[celltypes.index]
+                volumes = volumes[celltypes.index]
+            # get the cell type cell counts
+            cell_counts = celltypes.value_counts().loc[cell_types_to_use]
+            celltypes = pd.DataFrame(celltypes)
+            # filter out cell types with insufficient cell counts if not replace
+            if not replace:
+                if pseudo_bulk_size is not None:
+                    cell_counts = cell_counts[cell_counts >= pseudo_bulk_size]
                 else:
-                    # Sample by exact number
-                    if replace:
-                        sampled_idx = group.sample(n=n_samples, replace=replace, random_state=random_state).index
+                    cell_counts = cell_counts[cell_counts >= 50 / pseudo_bulk_percentage]
+            # redefine the cell types to use
+            cell_types_to_use = cell_counts.index.tolist()
+            # generate pseudo bulk for each cell type
+            def sample_aggregate(df3, df_list, n_samples=50, percentage=None, random_state=42, replace=replace):
+                """
+                Ultra memory-efficient parallel sampling and aggregation using swifter
+                """
+                def sample_and_sum_group(group):
+                    # Sample indexes for this group
+                    if percentage is not None:
+                        # Sample by percentage
+                        sampled_idx = group.sample(frac=percentage, replace=replace, random_state=random_state).index
                     else:
-                        sampled_idx = group.sample(n=min(n_samples, len(group)), replace=replace, random_state=random_state).index
-                # Return sums for all target DataFrames
-                return [df.loc[sampled_idx].sum() for df in df_list]
-            # Apply in parallel using swifter
-            grouped_results = df3.groupby('subclass').apply(sample_and_sum_group)
-            # Reorganize results into separate DataFrames
-            results = []
-            for i in range(len(df_list)):
-                df_result = pd.DataFrame(
-                    [result[i] for result in grouped_results.values], 
-                    index=grouped_results.index
-                )
-                results.append(df_result)
-            return results
-        pseudo_bulk = pd.DataFrame()
-        pseudo_bulk_obs = pd.DataFrame()
-        # if we have t7 expression, we will also create a pseudo bulk for t7
-        pseudo_bulk_t7 = pd.DataFrame()
-        if pseudo_bulk_size is None:
-            assert pseudo_bulk_percentage is not None, 'pseudo_bulk_size or pseudo_bulk_percentage must be set'
-            pseudo_bulk_size = [None] * len(pseudo_bulk_percentage)
-        if pseudo_bulk_percentage is None:
-            assert pseudo_bulk_size is not None, 'pseudo_bulk_size or pseudo_bulk_percentage must be set'
-            pseudo_bulk_percentage = [None] * len(pseudo_bulk_size)
-        for i, (size, percentage, number) in enumerate(zip(pseudo_bulk_size, pseudo_bulk_percentage, pseudo_bulk_number)):
-            for s in range(number):
-                cre_expression_pseudo_bulk, t7_expression_pseudo_bulk, volumes_pseudo_bulk = sample_aggregate(
-                    celltypes, [cre_expression, t7_expression, volumes], 
-                    n_samples=size, percentage=percentage, random_state=s
-                )
-                # change the index to reflect the celltype, i and s
-                cell_types = cre_expression_pseudo_bulk.index.copy()
-                cre_expression_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
-                t7_expression_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
-                volumes_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
-                pseudo_bulk = pd.concat([pseudo_bulk, cre_expression_pseudo_bulk])
-                pseudo_bulk_t7 = pd.concat([pseudo_bulk_t7, t7_expression_pseudo_bulk])
-                sample_obs = pd.DataFrame(volumes_pseudo_bulk, columns=['volm'])
-                sample_obs['subclass'] = cell_types.astype(str)
-                sample_obs['fov'] = cell_types.astype(str)
-                sample_obs['size'] = size
-                sample_obs['percentage'] = percentage
-                sample_obs['seed'] = s
-                pseudo_bulk_obs = pd.concat([pseudo_bulk_obs, sample_obs])
-        # create a new AnnData object for the pseudo bulk
-        pseudo_bulk_adata = sc.AnnData(pseudo_bulk, obs=pseudo_bulk_obs)
-        pseudo_bulk_adata.obsm['X_raw'] = pseudo_bulk
-        pseudo_bulk_adata.obsm['CRE'] = pseudo_bulk
-        if t7_expression is not None:
-            pseudo_bulk_adata.obsm['T7CRE'] = pseudo_bulk_t7
+                        # Sample by exact number
+                        if replace:
+                            sampled_idx = group.sample(n=n_samples, replace=replace, random_state=random_state).index
+                        else:
+                            sampled_idx = group.sample(n=min(n_samples, len(group)), replace=replace, random_state=random_state).index
+                    # Return sums for all target DataFrames
+                    return [df.loc[sampled_idx].sum() for df in df_list]
+                # Apply in parallel using swifter
+                grouped_results = df3.groupby('subclass').apply(sample_and_sum_group)
+                # Reorganize results into separate DataFrames
+                results = []
+                for i in range(len(df_list)):
+                    df_result = pd.DataFrame(
+                        [result[i] for result in grouped_results.values], 
+                        index=grouped_results.index
+                    )
+                    results.append(df_result)
+                return results
+            pseudo_bulk = pd.DataFrame()
+            pseudo_bulk_obs = pd.DataFrame()
+            # if we have t7 expression, we will also create a pseudo bulk for t7
+            pseudo_bulk_t7 = pd.DataFrame()
+            if pseudo_bulk_size is None:
+                assert pseudo_bulk_percentage is not None, 'pseudo_bulk_size or pseudo_bulk_percentage must be set'
+                pseudo_bulk_size = [None] * len(pseudo_bulk_percentage)
+            if pseudo_bulk_percentage is None:
+                assert pseudo_bulk_size is not None, 'pseudo_bulk_size or pseudo_bulk_percentage must be set'
+                pseudo_bulk_percentage = [None] * len(pseudo_bulk_size)
+            for i, (size, percentage, number) in enumerate(zip(pseudo_bulk_size, pseudo_bulk_percentage, pseudo_bulk_number)):
+                for s in range(number):
+                    cre_expression_pseudo_bulk, t7_expression_pseudo_bulk, volumes_pseudo_bulk = sample_aggregate(
+                        celltypes, [cre_expression, t7_expression, volumes], 
+                        n_samples=size, percentage=percentage, random_state=s
+                    )
+                    # change the index to reflect the celltype, i and s
+                    cell_types = cre_expression_pseudo_bulk.index.copy()
+                    cre_expression_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
+                    t7_expression_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
+                    volumes_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
+                    pseudo_bulk = pd.concat([pseudo_bulk, cre_expression_pseudo_bulk])
+                    pseudo_bulk_t7 = pd.concat([pseudo_bulk_t7, t7_expression_pseudo_bulk])
+                    sample_obs = pd.DataFrame(volumes_pseudo_bulk, columns=['volm'])
+                    sample_obs['subclass'] = cell_types.astype(str)
+                    sample_obs['fov'] = cell_types.astype(str)
+                    sample_obs['size'] = size
+                    sample_obs['percentage'] = percentage
+                    sample_obs['seed'] = s
+                    pseudo_bulk_obs = pd.concat([pseudo_bulk_obs, sample_obs])
+            # create a new AnnData object for the pseudo bulk
+            pseudo_bulk_adata = sc.AnnData(pseudo_bulk, obs=pseudo_bulk_obs)
+            pseudo_bulk_adata.obsm['X_raw'] = pseudo_bulk
+            pseudo_bulk_adata.obsm['CRE'] = pseudo_bulk
+            if t7_expression is not None:
+                pseudo_bulk_adata.obsm['T7CRE'] = pseudo_bulk_t7
         # perform glm test on the pseudo bulk
-        result = glm(pseudo_bulk_adata, variate=variate, cell_types_to_use=cell_types_to_use, CREs=pseudo_bulk.columns,
-                     norm_by_volm=norm_by_volm, volm_covariate=volm_covariate, rna_covariate=rna_covariate,
+        result = glm(pseudo_bulk_adata, variate=variate, cell_types_to_use=cell_types_to_use, CREs=pseudo_bulk_adata.var.index,
+                     norm_by_volm=norm_by_volm, volm_covariate=volm_covariate, rna_covariate=rna_covariate, size_covariate=size_covariate,
                      fov_covariate=False, filter_infected_cells=False, 
                      positive_x_or_y=positive_x_or_y,
                      only_keep_positive_x=only_keep_positive_x,
                      only_keep_positive_y=only_keep_positive_y,
+                     log_x_y=log_x_y,
                      multiprocess_threads=multiprocess_threads)
         pseudo_bulk_glm_test_result = {'pseudo_bulk_adata': pseudo_bulk_adata,
                                        'result': result}

@@ -111,6 +111,7 @@ pseudo_bulk_glm_test_config = {
     'positive_x_or_y': False,  # normalize by T7
     'only_keep_positive_x': False,
     'only_keep_positive_y': False,  # normalize by negative control
+    'log_x_y': True,
     'pseudo_bulk_size': [100, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 2000, 2400, 2800, 3200, 3600, 4000],
     'pseudo_bulk_percentage': None,
     'pseudo_bulk_number': [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100],
@@ -161,6 +162,15 @@ del starrfish3
 res = STARRFISH.load('results/starrfish3_pseudo_bulk.pkl')
 res1 = STARRFISH.load('results/starrfish3_sec1_pseudo_bulk.pkl')
 res2 = STARRFISH.load('results/starrfish3_sec2_pseudo_bulk.pkl')
+# %% if start over
+glm_test_config = {
+    'cell_types_to_use': None,
+    'variate': 'T7',
+    'multiprocess_threads': 96,
+}
+glm_res1 = res1.glm_test(**glm_test_config)
+glm_res2 = res2.glm_test(**glm_test_config)
+glm_res = res.glm_test(**glm_test_config)
 # %% check the results
 cre_corr, celltype_corr = res.corr_starrfish(res1_summary['coef'], res2_summary['coef'])
 # %% plot cell type corr
