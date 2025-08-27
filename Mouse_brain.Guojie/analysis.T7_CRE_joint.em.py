@@ -112,26 +112,27 @@ starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.pkl')
 # %%
 from utils import T7CRE_DistributionEM
 # %% for cre in t7_counts.columns:
-common_celltypes = starrfish3_sec2.get_celltypes().value_counts().index.intersection(starrfish3_sec1.get_celltypes().value_counts().index)
-t7_counts_sec1 = starrfish3_sec1.get_t7_expression()[starrfish3_sec1.get_celltypes().isin(common_celltypes)]
-t7_counts_sec2 = starrfish3_sec2.get_t7_expression()[starrfish3_sec2.get_celltypes().isin(common_celltypes)]
+cell_counts_sec1 = starrfish3_sec1.get_celltypes().value_counts()
+cell_counts_sec2 = starrfish3_sec2.get_celltypes().value_counts()
+common_celltypes = cell_counts_sec1.index[cell_counts_sec1 >= 1000].intersection(cell_counts_sec2.index[cell_counts_sec2 >= 1000])
 
-cre_counts_sec1 = starrfish3_sec1.get_cre_expression().loc[t7_counts_sec1.index]
-cre_counts_sec2 = starrfish3_sec2.get_cre_expression().loc[t7_counts_sec2.index]
+cre_blacklist = ['CRE061', 'CRE143', 'CRE001']
+mismatching_cres = pd.read_csv('Data/AAV_ONT_Barcode_Counts_vs_Mismatch_Percentage.csv', index_col=0)
+cre_blacklist = np.unique(cre_blacklist + mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20].tolist()).tolist()
+
+common_cres = starrfish3_sec1.lib_size.index[starrfish3_sec1.lib_size['counts'] >= 6]
+common_cres = common_cres[~common_cres.isin(cre_blacklist)]
+
+t7_counts_sec1 = starrfish3_sec1.get_t7_expression()[starrfish3_sec1.get_celltypes().isin(common_celltypes)][common_cres]
+t7_counts_sec2 = starrfish3_sec2.get_t7_expression()[starrfish3_sec2.get_celltypes().isin(common_celltypes)][common_cres]
+
+cre_counts_sec1 = starrfish3_sec1.get_cre_expression().loc[t7_counts_sec1.index, common_cres]
+cre_counts_sec2 = starrfish3_sec2.get_cre_expression().loc[t7_counts_sec2.index, common_cres]
 
 celltypes_sec1 = starrfish3_sec1.get_celltypes().loc[t7_counts_sec1.index]
 celltypes_sec2 = starrfish3_sec2.get_celltypes().loc[t7_counts_sec2.index]
-
-x0_df_sec1 = pd.DataFrame(index=common_celltypes, columns=t7_counts_sec1.columns)
-x0_df_sec2 = pd.DataFrame(index=common_celltypes, columns=t7_counts_sec2.columns)
-x1_df_sec1 = pd.DataFrame(index=t7_counts_sec1.columns, columns=['total_counts', 'logits'])
-x1_df_sec2 = pd.DataFrame(index=t7_counts_sec2.columns, columns=['total_counts', 'logits'])
-x2_r_df_sec1 = pd.DataFrame(index=common_celltypes, columns=t7_counts_sec1.columns)
-x2_r_df_sec2 = pd.DataFrame(index=common_celltypes, columns=t7_counts_sec2.columns)
-x2_p_df_sec1 = pd.DataFrame(index=common_celltypes, columns=t7_counts_sec1.columns)
-x2_p_df_sec2 = pd.DataFrame(index=common_celltypes, columns=t7_counts_sec2.columns)
 # %%
-em_model = T7CRE_DistributionEM(use_x0=True)
+em_model = T7CRE_DistributionEM(device='cuda:4', use_x0=True)
 x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1, cre_counts_sec1, dim=20)
 x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2, cre_counts_sec2, dim=20)
 # %%
@@ -141,6 +142,30 @@ np.save(f'{PWD}/results/expr3/t7cre_em.x1.sec1.npy', x1_sec1)
 np.save(f'{PWD}/results/expr3/t7cre_em.x1.sec2.npy', x1_sec2)
 np.save(f'{PWD}/results/expr3/t7cre_em.x2.sec1.npy', x2_sec1)
 np.save(f'{PWD}/results/expr3/t7cre_em.x2.sec2.npy', x2_sec2)
+# %%
+# check infection rate differences
+x0_df_sec1 = pd.DataFrame(torch.nn.functional.softplus(torch.from_numpy(x0_sec1)), index=common_celltypes, columns=t7_counts_sec1.columns)
+x0_df_sec2 = pd.DataFrame(torch.nn.functional.softplus(torch.from_numpy(x0_sec2)), index=common_celltypes, columns=t7_counts_sec2.columns)
+x2_r_df_sec1 = pd.DataFrame(torch.nn.functional.softplus(torch.from_numpy(x2_sec1[:, :, 0])), index=common_celltypes, columns=t7_counts_sec1.columns)
+x2_r_df_sec2 = pd.DataFrame(torch.nn.functional.softplus(torch.from_numpy(x2_sec2[:, :, 0])), index=common_celltypes, columns=t7_counts_sec2.columns)
+x2_p_df_sec1 = pd.DataFrame(torch.nn.functional.sigmoid(torch.from_numpy(x2_sec1[:, :, 1])), index=common_celltypes, columns=t7_counts_sec1.columns)
+x2_p_df_sec2 = pd.DataFrame(torch.nn.functional.sigmoid(torch.from_numpy(x2_sec2[:, :, 1])), index=common_celltypes, columns=t7_counts_sec2.columns)
+# %%
+x2_mean_df_sec1 = x2_r_df_sec1 * (1-x2_p_df_sec1) / x2_p_df_sec1
+x2_mean_df_sec2 = x2_r_df_sec2 * (1-x2_p_df_sec2) / x2_p_df_sec2
+# %% do cre and cell type corr
+cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(x2_mean_df_sec1, x2_mean_df_sec2)
+# %%
+cre_corr['libsize'] = starrfish3_sec1.lib_size['counts'].loc[cre_corr.index]
+celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().loc[celltype_corr.index].values
+celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index].values
+celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
+# %% plot
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=celltype_corr, x='celltype_n', y='pearson', ax=ax)
+ax.set_xscale('log')
+
+
 # # %%
 # # analysis
 # x0_df_sec1 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x0.sec1.csv', index_col=0)
@@ -183,3 +208,5 @@ np.save(f'{PWD}/results/expr3/t7cre_em.x2.sec2.npy', x2_sec2)
 # # %%
 # sns.scatterplot(x=mu_sec1['CRE062'].loc[cell_types_to_use], y=mu_sec2['CRE386'].loc[cell_types_to_use])
 # # %%
+
+# %%

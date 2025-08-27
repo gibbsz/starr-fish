@@ -378,3 +378,18 @@ x0_df_sec2.to_csv(f'{PWD}/results/expr3/t7_mle_separate.x0.sec2.csv')
 x1_df_sec1.to_csv(f'{PWD}/results/expr3/t7_mle_separate.x1.sec1.csv')
 x1_df_sec2.to_csv(f'{PWD}/results/expr3/t7_mle_separate.x1.sec2.csv')
 # %%
+x0_df_sec1 = pd.read_csv(f'{PWD}/results/expr3/t7_mle_separate.x0.sec1.csv')
+x0_df_sec2 = pd.read_csv(f'{PWD}/results/expr3/t7_mle_separate.x0.sec2.csv')
+x1_df_sec1 = pd.read_csv(f'{PWD}/results/expr3/t7_mle_separate.x1.sec1.csv')
+x1_df_sec2 = pd.read_csv(f'{PWD}/results/expr3/t7_mle_separate.x1.sec2.csv')
+# %%
+cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(x1_df_sec1, x1_df_sec2)
+cre_corr['libsize'] = starrfish3_sec1.lib_size['counts'].loc[cre_corr.index].values
+celltype_corr['celltype_counts_sec1'] = starrfish3_sec1.get_celltypes().value_counts().loc[celltype_corr.index].values
+celltype_corr['celltype_counts_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index].values
+celltype_corr['celltype_counts'] = celltype_corr[['celltype_counts_sec1', 'celltype_counts_sec2']].min(axis=1)
+# %%
+fig, ax = plt.subplots(1, 2, figsize=(10, 5))
+sns.scatterplot(data=cre_corr, x='libsize', y='pearson', ax=ax[0])
+sns.scatterplot(data=celltype_corr, x='celltype_counts', y='pearson', ax=ax[1])
+ax[1].set_xscale('log')

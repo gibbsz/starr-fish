@@ -795,10 +795,11 @@ class T7CRE_DistributionEM:
         x2 = x2.to(self.device).float()
 
         k_values = torch.arange(dim, device=self.device, dtype=torch.float32)  # (dim,)
+        k_values_pos = torch.arange(1, dim, device=self.device, dtype=torch.float32)  # (dim-1,)
         
         # Get lambda values for each observation based on cell type
-        k_lambda = torch.exp(torch.clamp(x0[cell_type_indexes, :], min=-10, max=10))  # Clamp to prevent overflow
-        
+        k_lambda = torch.nn.functional.softplus(x0[cell_type_indexes, :])  # (n_obs, n_cres)
+
         # Expand dimensions for broadcasting
         obs_t7_expanded = obs_t7.unsqueeze(-1)  # (n_obs, n_cres, 1)
         obs_cre_expanded = obs_cre.unsqueeze(-1)  # (n_obs, n_cres, 1)
@@ -808,28 +809,29 @@ class T7CRE_DistributionEM:
         # k ~ Poisson(k_lambda): log P(k|k_lambda)
         ll_k = torch.distributions.Poisson(k_lambda_expanded).log_prob(k_values_expanded)  # (n_obs, n_cres, dim)
         
-        # Apply constraint within closure: x1 <= -1e-10, but also prevent extreme values
-        logits_t7 = torch.clamp(x1[1], min=-10, max=10)
-        
         # Vectorized Poisson log PMF for obs_t7 ~ Poisson(exp(x1) * k)
-        total_counts_t7 = torch.exp(torch.clamp(x1[0], min=-10, max=10))
-        mu_t7 = total_counts_t7 * k_values  # (dim,)
-        mu_t7_expanded = mu_t7.unsqueeze(0).unsqueeze(0)  # (1, 1, dim)
-        
+        total_counts_t7 = torch.nn.functional.softplus(x1[0])
+        mu_t7 = total_counts_t7 * k_values_pos  # (dim-1,)
+        mu_t7_expanded = mu_t7.unsqueeze(0).unsqueeze(0)  # (1, 1, dim-1)
+            
         # T7 log PMF computation
         ll_t7 = torch.distributions.negative_binomial.NegativeBinomial(
-            total_count=mu_t7_expanded, logits=logits_t7
-        ).log_prob(obs_t7_expanded)  # (n_obs, n_cres, dim)
-        
+            total_count=mu_t7_expanded, logits=x1[1]
+        ).log_prob(obs_t7_expanded)  # (n_obs, n_cres, dim-1)
+        # handle n=0 case, if obs == 0, prob is 0, otherwise, -inf
+        ll_t7 = torch.concat((torch.where(obs_t7_expanded == 0, 0, -torch.inf), ll_t7), dim=-1)
+
         # Vectorized obs_cre ~ NegBinom(exp(x2[cell_type_indexes, 0]) * k, torch.sigmoid(x2[cell_type_indexes, 1]))
-        total_counts_cre = torch.exp(torch.clamp(x2[cell_type_indexes, :, 0], min=-10, max=10)).unsqueeze(-1)  # (n_obs, n_cres, 1)
-        logits_cre = torch.clamp(x2[cell_type_indexes, :, 1], min=-10, max=10).unsqueeze(-1)  # (n_obs, n_cres, 1)
-        mu_cre = total_counts_cre * k_values.unsqueeze(0).unsqueeze(0)  # (n_obs, n_cres, dim)
+        total_counts_cre = torch.nn.functional.softplus(x2[cell_type_indexes, :, 0]).unsqueeze(-1)  # (n_obs, n_cres, 1)
+        logits_cre = x2[cell_type_indexes, :, 1].unsqueeze(-1)  # (n_obs, n_cres, 1)
+        mu_cre = total_counts_cre * k_values_pos.unsqueeze(0).unsqueeze(0)  # (n_obs, n_cres, dim-1)
 
         # CRE log PMF computation
         ll_cre = torch.distributions.negative_binomial.NegativeBinomial(
             total_count=mu_cre, logits=logits_cre
-        ).log_prob(obs_cre_expanded)  # (n_obs, n_cres, dim)
+        ).log_prob(obs_cre_expanded)  # (n_obs, n_cres, dim-1)
+        # now handle n = 0 case, if obs == 0, prob is 0, otherwise, -inf
+        ll_cre = torch.concat((torch.where(obs_cre_expanded == 0, 0, -torch.inf), ll_cre), dim=-1)
 
         # Combined likelihood
         likelihood_mat = ll_k + ll_t7 + ll_cre
@@ -852,11 +854,8 @@ class T7CRE_DistributionEM:
             dim = posterior_k.shape[-1]
             k_values = torch.arange(dim, device=self.device, dtype=torch.float32)
             
-            # Apply constraint within closure and clamp to prevent overflow
-            x0_clamped = torch.clamp(x0, min=-10, max=10)
-            
             # Get lambda values for each observation based on cell type
-            k_lambda = torch.exp(x0_clamped[cell_type_indexes])  # (n_obs, n_cres)
+            k_lambda = torch.nn.functional.softplus(x0[cell_type_indexes, :])  # (n_obs, n_cres)
             k_lambda_expanded = k_lambda.unsqueeze(-1)  # (n_obs, n_cres, 1)
             k_values_expanded = k_values.unsqueeze(0).unsqueeze(0)  # (1, 1, dim)
             
@@ -865,8 +864,8 @@ class T7CRE_DistributionEM:
 
             # Compute expected log likelihood
             ll = posterior_k + ll_k
-            ll_sum = torch.logsumexp(ll, dim=1)
-            loss = -ll_sum.sum()
+            ll_sum = torch.logsumexp(ll, dim=-1)
+            loss = -ll_sum.mean()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x0 ** 2).sum()
@@ -889,24 +888,24 @@ class T7CRE_DistributionEM:
             
             obs_t7_expanded = obs_t7.unsqueeze(-1)  # (n_obs, 1)
             dim = posterior_k.shape[-1]
-            k_values = torch.arange(dim, device=self.device, dtype=torch.float32)
-            
-            # Apply constraint within closure: x1 <= -1e-10, but also prevent extreme values
-            logits_t7 = torch.clamp(x1[1], min=-10, max=10)
+            k_values = torch.arange(1, dim, device=self.device, dtype=torch.float32) # (dim-1)
             
             # Vectorized Poisson log PMF for obs_t7 ~ Poisson(exp(x1) * k)
-            total_counts_t7 = torch.exp(torch.clamp(x1[0], min=-10, max=10))
-            mu_t7 = total_counts_t7 * k_values  # (dim,)
-            mu_t7_expanded = mu_t7.unsqueeze(0).unsqueeze(0)  # (1, 1, dim)
+            total_counts_t7 = torch.nn.functional.softplus(x1[0])
+            mu_t7 = total_counts_t7 * k_values  # (dim-1,)
+            mu_t7_expanded = mu_t7.unsqueeze(0).unsqueeze(0)  # (1, 1, dim-1)
             
             # T7 log PMF computation
             ll_t7 = torch.distributions.negative_binomial.NegativeBinomial(
-                total_count=mu_t7_expanded, logits=logits_t7
-            ).log_prob(obs_t7_expanded)  # (n_obs, n_cres, dim)
+                total_count=mu_t7_expanded, logits=x1[1]
+            ).log_prob(obs_t7_expanded)  # (n_obs, n_cres, dim-1)
             
+            # now handle n = 0 case, if obs == 0, prob is 0, otherwise, -inf
+            ll_t7 = torch.concat((torch.where(obs_t7_expanded == 0, 0, -torch.inf), ll_t7), dim=-1)
+
             ll = posterior_k + ll_t7
-            ll_sum = torch.logsumexp(ll, dim=1)
-            loss = -ll_sum.sum()
+            ll_sum = torch.logsumexp(ll, dim=-1)
+            loss = -ll_sum.mean()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x1 ** 2).sum()
@@ -929,21 +928,24 @@ class T7CRE_DistributionEM:
             
             obs_cre_expanded = obs_cre.unsqueeze(-1)  # (n_obs, 1)
             dim = posterior_k.shape[-1]
-            k_values = torch.arange(dim, device=self.device, dtype=torch.float32)
-            
+            k_values = torch.arange(1, dim, device=self.device, dtype=torch.float32) # (dim-1)
+
             # Vectorized obs_cre ~ NegBinom(exp(x2[cell_type_indexes, 0]) * k, torch.sigmoid(x2[cell_type_indexes, 1]))
-            total_counts_cre = torch.exp(torch.clamp(x2[cell_type_indexes, :, 0], min=-10, max=10)).unsqueeze(-1)  # (n_obs, n_cres, 1)
-            logits_cre = torch.clamp(x2[cell_type_indexes, :, 1], min=-10, max=10).unsqueeze(-1)  # (n_obs, n_cres, 1)
-            mu_cre = total_counts_cre * k_values.unsqueeze(0).unsqueeze(0)  # (n_obs, n_cres, dim)
+            total_counts_cre = torch.nn.functional.softplus(x2[cell_type_indexes, :, 0]).unsqueeze(-1)  # (n_obs, n_cres, 1)
+            logits_cre = x2[cell_type_indexes, :, 1].unsqueeze(-1)  # (n_obs, n_cres, 1)
+            mu_cre = total_counts_cre * k_values.unsqueeze(0).unsqueeze(0)  # (n_obs, n_cres, dim-1)
 
             # CRE log PMF computation
             ll_cre = torch.distributions.negative_binomial.NegativeBinomial(
                 total_count=mu_cre, logits=logits_cre
-            ).log_prob(obs_cre_expanded)  # (n_obs, n_cres, dim)
+            ).log_prob(obs_cre_expanded)  # (n_obs, n_cres, dim-1)
+
+            # now handle n = 0 case, if obs == 0, prob is 0, otherwise, -inf
+            ll_cre = torch.concat((torch.where(obs_cre_expanded == 0, 0, -torch.inf), ll_cre), dim=-1)
 
             ll = posterior_k + ll_cre
-            ll_sum = torch.logsumexp(ll, dim=1)
-            loss = -ll_sum.sum()
+            ll_sum = torch.logsumexp(ll, dim=-1)
+            loss = -ll_sum.mean()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x2 ** 2).sum()
