@@ -111,7 +111,7 @@ pseudo_bulk_glm_test_config = {
     'positive_x_or_y': False,  # normalize by T7
     'only_keep_positive_x': False,
     'only_keep_positive_y': False,  # normalize by negative control
-    'log_x_y': True,
+    'transform_x_y': 'log1p',
     'pseudo_bulk_size': [100, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 2000, 2400, 2800, 3200, 3600, 4000],
     'pseudo_bulk_percentage': None,
     'pseudo_bulk_number': [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100],
@@ -123,6 +123,8 @@ cre_blacklist = ['CRE061', 'CRE143', 'CRE001']
 mismatching_cres = pd.read_csv('Data/AAV_ONT_Barcode_Counts_vs_Mismatch_Percentage.csv', index_col=0)
 cre_blacklist = np.unique(cre_blacklist + mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20].tolist()).tolist()
 # %%
+save = False
+infected_cells_threshold = 5
 starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.pkl')
 cell_counts1 = starrfish3_sec1.get_celltypes().value_counts()
 res1 = starrfish3_sec1.pseudo_bulk_glm_test(**pseudo_bulk_glm_test_config)
@@ -131,8 +133,11 @@ res1['pseudo_bulk_adata'].uns['CRE_info'] = starrfish3_sec1.adata.uns['CRE_info'
 res1['pseudo_bulk_adata'].obs.index.name = None
 res1 = STARRFISH(res1['pseudo_bulk_adata'])
 res1.adata.obs['percentage'] = res1.adata.obs['percentage'].astype(float)
-res1.save('results/starrfish3_sec1_pseudo_bulk.pkl', overwrite_adata=True)
-starrfish3_sec1.save('results/starrfish3_sec1.pkl')
+if save:
+    res1.save('results/starrfish3_sec1_pseudo_bulk.pkl', overwrite_adata=True)
+    starrfish3_sec1.save('results/starrfish3_sec1.pkl')
+to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
+to_filter_sec1[cre_blacklist] = True
 del starrfish3_sec1
 
 starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.pkl')
@@ -143,8 +148,11 @@ res2['pseudo_bulk_adata'].uns['CRE_info'] = starrfish3_sec2.adata.uns['CRE_info'
 res2['pseudo_bulk_adata'].obs.index.name = None
 res2 = STARRFISH(res2['pseudo_bulk_adata'])
 res2.adata.obs['percentage'] = res2.adata.obs['percentage'].astype(float)
-res2.save('results/starrfish3_sec2_pseudo_bulk.pkl', overwrite_adata=True)
-starrfish3_sec2.save('results/starrfish3_sec2.pkl')
+if save:
+    res2.save('results/starrfish3_sec2_pseudo_bulk.pkl', overwrite_adata=True)
+    starrfish3_sec2.save('results/starrfish3_sec2.pkl')
+to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < infected_cells_threshold
+to_filter_sec2[cre_blacklist] = True
 del starrfish3_sec2
 
 starrfish3 = STARRFISH.load('results/starrfish3.pkl')
@@ -155,34 +163,39 @@ res['pseudo_bulk_adata'].uns['CRE_info'] = starrfish3.adata.uns['CRE_info'].copy
 res['pseudo_bulk_adata'].obs.index.name = None
 res = STARRFISH(res['pseudo_bulk_adata'])
 res.adata.obs['percentage'] = res.adata.obs['percentage'].astype(float)
-res.save('results/starrfish3_pseudo_bulk.pkl', overwrite_adata=True)
-starrfish3.save('results/starrfish3.pkl')
+if save:
+    res.save('results/starrfish3_pseudo_bulk.pkl', overwrite_adata=True)
+    starrfish3.save('results/starrfish3.pkl')
+to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
+to_filter[cre_blacklist] = True
 del starrfish3
 # %%
 res = STARRFISH.load('results/starrfish3_pseudo_bulk.pkl')
 res1 = STARRFISH.load('results/starrfish3_sec1_pseudo_bulk.pkl')
 res2 = STARRFISH.load('results/starrfish3_sec2_pseudo_bulk.pkl')
-# %% if start over
-glm_test_config = {
-    'cell_types_to_use': None,
-    'variate': 'T7',
-    'multiprocess_threads': 96,
-}
-glm_res1 = res1.glm_test(**glm_test_config)
-glm_res2 = res2.glm_test(**glm_test_config)
-glm_res = res.glm_test(**glm_test_config)
 # %% check the results
-cre_corr, celltype_corr = res.corr_starrfish(res1_summary['coef'], res2_summary['coef'])
+res1_summary_filter = res1_summary['coef'].copy()
+res2_summary_filter = res2_summary['coef'].copy()
+res1_summary_filter[to_filter_sec1] = np.nan
+res2_summary_filter[to_filter_sec2] = np.nan
+# %%
+cre_corr, celltype_corr = res1.corr_starrfish(res1_summary['coef'], res2_summary['coef'])
 # %% plot cell type corr
-cre_corr['libsize'] = res.lib_size['counts'].loc[cre_corr.index]
+cre_corr['libsize'] = res1.lib_size['counts'].loc[cre_corr.index]
 celltype_corr['celltype_sec1'] = cell_counts1.loc[celltype_corr.index].values
 celltype_corr['celltype_sec2'] = cell_counts2.loc[celltype_corr.index].values
 celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
 # %% plot
+n_cre_threshold = 5
+n_celltype_threshold = 5
 fig, ax = plt.subplots(figsize=(4, 4))
-sns.scatterplot(data=celltype_corr, x='celltype_n', y='pearson', ax=ax)
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] > 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='red', ax=ax)
 ax.set_xscale('log')
-# %% visualize best cell type
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
+# %% visualize best cell type-wise corr
 fig, ax = plt.subplots(figsize=(4, 4))
 sns.scatterplot(x=res1_summary['coef'].loc['Oligo NN'], y=res2_summary['coef'].loc['Oligo NN'], color='blue', ax=ax)
 # plot negative control
@@ -196,12 +209,30 @@ sns.scatterplot(x=res1_summary['coef'].loc['Oligo NN', cre_blacklist],
 fig, ax = plt.subplots(figsize=(4, 4))
 ct = 'Oligo NN'
 cre = 'CRE363'
-sns.scatterplot(x=(res1.get_t7_expression()[(res1.get_celltypes() == ct)][cre]),
-                y=(res1.get_cre_expression()[(res1.get_celltypes() == ct)][cre]), alpha=0.5,
+sns.scatterplot(x=np.log1p(res1.get_t7_expression()[(res1.get_celltypes() == ct)][cre]),
+                y=np.log1p(res1.get_cre_expression()[(res1.get_celltypes() == ct)][cre]), alpha=0.5,
                 hue=res1.adata.obs[(res1.get_celltypes() == ct)]['size'], palette='coolwarm',
                 ax=ax)
 ax.set_xlabel('T7 Pseudo bulk Expression')
 ax.set_ylabel('CRE Pseudo bulk Expression')
+# %% visualize best CRE-wise corr: CRE298 or CRE210
+fig, ax = plt.subplots(ncols=2, figsize=(8, 4))
+cre = 'CRE298'
+sns.scatterplot(x=res1_summary['coef'][cre], y=res2_summary['coef'][cre], color='blue', ax=ax[0])
+# plot negative control
+sns.scatterplot(x=res1_summary['coef'].loc[res1.get_positive_control_celltypes(cre, use='atac-peak'), cre], 
+                y=res2_summary['coef'].loc[res1.get_positive_control_celltypes(cre, use='atac-peak'), cre], color='red', ax=ax[0])
+# plot cell type size
+# sns.scatterplot(x=res1_summary['coef'][cre], y=res2_summary['coef'][cre],
+#                 hue=np.log(np.minimum(cell_counts1.loc[res1_summary['coef'].index],
+#                                        cell_counts2.loc[res2_summary['coef'].index])), ax=ax[1])
+sns.scatterplot(x=res1_summary['coef'][cre], hue=res2_summary['coef'][cre],
+                y=np.log(np.minimum(cell_counts1.loc[res1_summary['coef'].index],
+                                       cell_counts2.loc[res2_summary['coef'].index])), ax=ax[1])
+
+
+
+
 # %% check if covariate of size helps
 thres = 0
 import statsmodels.formula.api as smf

@@ -48,22 +48,25 @@ from get_preprocess_utils import get_motif, query_motif
 cmdstanpy_logger = logging.getLogger("cmdstanpy")
 cmdstanpy_logger.disabled = True
 
-def fit_glm(formula, y, x, volm, fov, rna, size, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False, log_x_y=False):
+def fit_glm(formula, y, x, volm, fov, rna, size, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None):
     try:
         # remove zeros in y
         if positive_x_or_y:
             to_keep = (y > 0) | (x > 0)
         else:
             to_keep = np.ones(len(x), dtype=bool)
-        if only_keep_positive_x or log_x_y:
+        if only_keep_positive_x or transform_x_y == 'log':
             to_keep &= x > 0
-        if only_keep_positive_y or log_x_y:
+        if only_keep_positive_y or transform_x_y == 'log':
             to_keep &= y > 0
         y = y[to_keep]
         x = x[to_keep]
-        if log_x_y:
+        if transform_x_y == 'log':
             x = np.log(x)
             y = np.log(y)
+        elif transform_x_y == 'log1p':
+            x = np.log1p(x)
+            y = np.log1p(y)
         volm = volm[to_keep]
         fov = fov[to_keep]
         rna = rna[to_keep] if rna is not None else None
@@ -83,7 +86,7 @@ def fit_glm(formula, y, x, volm, fov, rna, size, positive_x_or_y=True, only_keep
 
 def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=False, 
         volm_covariate=False, fov_covariate=False, rna_covariate=False, size_covariate=False,
-        filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, log_x_y=False,
+        filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None,
         multiprocess_threads=256, verbose=False):
     # result is a matrix of cell_types x CREs
     if CREs is None:
@@ -168,7 +171,7 @@ def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=Fal
             cell_fov,
             cell_rna_sum,
             cell_size,
-            positive_x_or_y, only_keep_positive_x, only_keep_positive_y, log_x_y,
+            positive_x_or_y, only_keep_positive_x, only_keep_positive_y, transform_x_y,
         ) for j in range(len(CREs))]
         
         # Batch assignment
@@ -1364,6 +1367,38 @@ class STARRFISH:
             chromatin_a = chromatin_a.loc[cell_type]
             cres = chromatin_o[chromatin_o > 0.5].index.union(chromatin_a[chromatin_a > 0.5].index)
             return cres
+    
+    def get_positive_control_celltypes(self, cre, use='define') -> pd.Series:
+        # get the positive control cell types
+        if use == 'define':
+            cell_types = self.get_creinfo().copy()
+            cell_types = cell_types['best_subclass'].loc[cre]
+            return pd.Series(cell_types)
+        elif use == 'atac-peak':
+            cre_atac_peaks = pd.read_csv('Data/cre_atac_peaks.csv', index_col=0)
+            if cre not in cre_atac_peaks.columns:
+                return None
+            cre_atac_peaks = cre_atac_peaks[cre]
+            cell_types = cre_atac_peaks[cre_atac_peaks > 0.5].index
+            return cell_types
+        elif use == 'chromatin-a':
+            chromatin_a = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
+            # get the chromatin-a cres for the cell type
+            if cre not in chromatin_a.columns:
+                return None
+            chromatin_a = chromatin_a[cre]
+            cell_types = chromatin_a[chromatin_a > 0.5].index
+            return cell_types
+        elif use == 'chromatin-o':
+            chromatin_o = pd.read_csv('Data/cre_chromatin_state_o.csv', index_col=0)
+            chromatin_a = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
+            # get the chromatin-o cres for the cell type
+            if cre not in chromatin_o.columns or cre not in chromatin_a.columns:
+                return None
+            chromatin_o = chromatin_o[cre]
+            chromatin_a = chromatin_a[cre]
+            cell_types = chromatin_o[chromatin_o > 0.5].index.union(chromatin_a[chromatin_a > 0.5].index)
+            return cell_types
     
     def get_atac_z_cres(self, cell_type, z=2) -> pd.Series:
         # get the positive control cres
@@ -2754,7 +2789,7 @@ class STARRFISH:
         return res
 
     def glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, fov_covariate=False, rna_covariate=False, size_covariate=False,
-                 filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, log_x_y=False, multiprocess_threads=256) -> dict:
+                 filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None, multiprocess_threads=256) -> dict:
         config = {
             'variate': variate,
             'norm_by_volm': norm_by_volm,
@@ -2766,7 +2801,7 @@ class STARRFISH:
             'positive_x_or_y': positive_x_or_y,
             'only_keep_positive_x': only_keep_positive_x,
             'only_keep_positive_y': only_keep_positive_y,
-            'log_x_y': log_x_y,
+            'transform_x_y': transform_x_y,
         }
         # if the results already exist, return the results
         if hasattr(self, 'glm_test_results') and hasattr(self, 'glm_test_configs'):
@@ -2781,7 +2816,7 @@ class STARRFISH:
                      positive_x_or_y=positive_x_or_y,
                      only_keep_positive_x=only_keep_positive_x,
                      only_keep_positive_y=only_keep_positive_y,
-                     log_x_y=log_x_y,
+                     transform_x_y=transform_x_y,
                      multiprocess_threads=multiprocess_threads)
         # add results to attribute
         if not hasattr(self, 'glm_test_results') or not hasattr(self, 'glm_test_configs'):
@@ -2792,7 +2827,7 @@ class STARRFISH:
         return result
 
     def pseudo_bulk_glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, rna_covariate=False, size_covariate=False,
-                             filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, log_x_y=False,
+                             filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None,
                              pseudo_bulk_size=[50], pseudo_bulk_percentage=None, pseudo_bulk_number=[1000], replace=True, 
                              multiprocess_threads=256) -> dict:
         # check if the results already exist
@@ -2806,7 +2841,7 @@ class STARRFISH:
                   'positive_x_or_y': positive_x_or_y,
                   'only_keep_positive_x': only_keep_positive_x,
                   'only_keep_positive_y': only_keep_positive_y,
-                  'log_x_y': log_x_y,
+                  'transform_x_y': transform_x_y,
                   'pseudo_bulk_size': pseudo_bulk_size,
                   'pseudo_bulk_percentage': pseudo_bulk_percentage,
                   'pseudo_bulk_number': pseudo_bulk_number,
@@ -2928,7 +2963,7 @@ class STARRFISH:
                      positive_x_or_y=positive_x_or_y,
                      only_keep_positive_x=only_keep_positive_x,
                      only_keep_positive_y=only_keep_positive_y,
-                     log_x_y=log_x_y,
+                     transform_x_y=transform_x_y,
                      multiprocess_threads=multiprocess_threads)
         pseudo_bulk_glm_test_result = {'pseudo_bulk_adata': pseudo_bulk_adata,
                                        'result': result}
