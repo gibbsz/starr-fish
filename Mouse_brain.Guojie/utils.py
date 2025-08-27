@@ -7,7 +7,7 @@ import multiprocessing
 from joblib import Parallel, delayed
 from scipy.optimize import minimize
 from scipy.special import logsumexp
-import swifter
+import os
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -22,6 +22,8 @@ from typing import Union, List, Literal
 import scanpy as sc
 import pickle
 import torch
+import torch.nn as nn
+import torch.optim as optim
 import matplotlib.pyplot as plt
 # add current path to sys.path
 import sys
@@ -46,7 +48,7 @@ from get_preprocess_utils import get_motif, query_motif
 cmdstanpy_logger = logging.getLogger("cmdstanpy")
 cmdstanpy_logger.disabled = True
 
-def fit_glm(formula, y, x, volm, fov, rna, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False):
+def fit_glm(formula, y, x, volm, fov, rna, size, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False):
     try:
         # remove zeros in y
         if positive_x_or_y:
@@ -62,10 +64,11 @@ def fit_glm(formula, y, x, volm, fov, rna, positive_x_or_y=True, only_keep_posit
         volm = volm[to_keep]
         fov = fov[to_keep]
         rna = rna[to_keep] if rna is not None else None
+        size = size[to_keep] if size is not None else None
         # if data points too few, return NaN
         if len(y) < 3:
             return {'coef': np.nan, 'pvalue': np.nan}
-        fit_data=pd.DataFrame({'y': y, 'x': x, 'volm': volm, 'fov': fov, 'RNA': rna})
+        fit_data=pd.DataFrame({'y': y, 'x': x, 'volm': volm, 'fov': fov, 'RNA': rna, 'size': size})
         glm_results = smf.ols(formula, data=fit_data).fit()
         # Direct access to coefficients and p-values instead of HTML parsing
         coef = glm_results.params.get('x', np.nan)
@@ -76,7 +79,7 @@ def fit_glm(formula, y, x, volm, fov, rna, positive_x_or_y=True, only_keep_posit
 
 
 def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=False, 
-        volm_covariate=False, fov_covariate=False, rna_covariate=False,
+        volm_covariate=False, fov_covariate=False, rna_covariate=False, size_covariate=False,
         filter_infected_cells=True, positive_x_or_y=True, only_keep_positive_x=True, only_keep_positive_y=True, 
         multiprocess_threads=256, verbose=False):
     # result is a matrix of cell_types x CREs
@@ -117,6 +120,9 @@ def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=Fal
         formula += ' + C(fov)'
     if rna_covariate:
         formula += ' + rna'
+    if size_covariate:
+        # pseudo bulk size covariate
+        formula += ' + size'
     
     # Prepare arguments for all GLM fits using pre-allocated arrays (eliminates slow append operations)
     total_combinations = len(cell_types_to_use) * len(CREs)
@@ -135,7 +141,8 @@ def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=Fal
     fov_values = adata.obs['fov'].values
     cre_data = adata.obsm['CRE']
     rna_data = adata.obsm['RNA'] if rna_covariate else None
-    
+    size_data = adata.obs['size'].values if size_covariate else None
+
     idx = 0
     for k, cell_mask in enumerate(cell_masks):
         # Pre-slice all arrays for this cell type once
@@ -143,7 +150,8 @@ def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=Fal
         cell_volm = volm_values[cell_mask]
         cell_fov = fov_values[cell_mask]
         cell_rna_sum = rna_data[cell_mask].sum(axis=1) if rna_covariate else None
-        
+        cell_size = size_data[cell_mask] if size_covariate else None
+
         # Extract all CRE data for this cell type at once (vectorized)
         cell_cre_matrix = cre_data.loc[cell_mask, CREs]
         cell_variate_matrix = variate.loc[cell_obs_names, CREs]
@@ -156,6 +164,7 @@ def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=Fal
             cell_volm,
             cell_fov,
             cell_rna_sum,
+            cell_size,
             positive_x_or_y, only_keep_positive_x, only_keep_positive_y
         ) for j in range(len(CREs))]
         
@@ -756,6 +765,288 @@ def _optimize_celltype_cre_worker(args):
     estimates = minimize(poisson_negative_binomial, initial_guess, args=(obs_cre, obs_t7),
                         bounds=((1e-8, None), (None, -1e-10), (None, -1e-10), (1e-8, None), (1e-8, None)), method='L-BFGS-B')
     return celltype, cre, estimates.x[0], estimates.x[3], estimates.x[4]
+
+
+class T7CRE_DistributionEM:
+    def __init__(self, device='cuda' if torch.cuda.is_available() else 'cpu', use_x0=True):
+        self.device = device
+        self.use_x0 = use_x0
+    
+    def expectation_step(self, x0, x1, x2, obs_t7, obs_cre, cell_type_indexes, dim=20):
+        """
+        E-step: Calculate posterior distribution of k given current parameters
+        x0: shape of (n_celltypes, n_cres)
+        x1: shape of (2): r and q for t7
+        x2: shape of (n_celltypes, n_cres, 2) cre activities
+        obs_t7: shape of (n_obs, n_cres)
+        obs_cre: shape of (n_obs, n_cres)
+        """
+        obs_t7 = obs_t7.to(self.device).long()
+        obs_cre = obs_cre.to(self.device).long()
+        cell_type_indexes = cell_type_indexes.to(self.device).long()
+        x0 = x0.to(self.device).float()
+        x1 = x1.to(self.device).float()
+        x2 = x2.to(self.device).float()
+
+        k_values = torch.arange(dim, device=self.device, dtype=torch.float32)  # (dim,)
+        
+        # Get lambda values for each observation based on cell type
+        k_lambda = torch.exp(torch.clamp(x0[cell_type_indexes, :], min=-10, max=10))  # Clamp to prevent overflow
+        
+        # Expand dimensions for broadcasting
+        obs_t7_expanded = obs_t7.unsqueeze(-1)  # (n_obs, n_cres, 1)
+        obs_cre_expanded = obs_cre.unsqueeze(-1)  # (n_obs, n_cres, 1)
+        k_lambda_expanded = k_lambda.unsqueeze(-1)  # (n_obs, n_cres, 1)
+        k_values_expanded = k_values.unsqueeze(0).unsqueeze(0)  # (1, 1, dim)
+        
+        # k ~ Poisson(k_lambda): log P(k|k_lambda)
+        ll_k = torch.distributions.Poisson(k_lambda_expanded).log_prob(k_values_expanded)  # (n_obs, n_cres, dim)
+        
+        # Apply constraint within closure: x1 <= -1e-10, but also prevent extreme values
+        logits_t7 = torch.clamp(x1[1], min=-10, max=10)
+        
+        # Vectorized Poisson log PMF for obs_t7 ~ Poisson(exp(x1) * k)
+        total_counts_t7 = torch.exp(torch.clamp(x1[0], min=-10, max=10))
+        mu_t7 = total_counts_t7 * k_values  # (dim,)
+        mu_t7_expanded = mu_t7.unsqueeze(0).unsqueeze(0)  # (1, 1, dim)
+        
+        # T7 log PMF computation
+        ll_t7 = torch.distributions.negative_binomial.NegativeBinomial(
+            total_count=mu_t7_expanded, logits=logits_t7
+        ).log_prob(obs_t7_expanded)  # (n_obs, n_cres, dim)
+        
+        # Vectorized obs_cre ~ NegBinom(exp(x2[cell_type_indexes, 0]) * k, torch.sigmoid(x2[cell_type_indexes, 1]))
+        total_counts_cre = torch.exp(torch.clamp(x2[cell_type_indexes, :, 0], min=-10, max=10)).unsqueeze(-1)  # (n_obs, n_cres, 1)
+        logits_cre = torch.clamp(x2[cell_type_indexes, :, 1], min=-10, max=10).unsqueeze(-1)  # (n_obs, n_cres, 1)
+        mu_cre = total_counts_cre * k_values.unsqueeze(0).unsqueeze(0)  # (n_obs, n_cres, dim)
+
+        # CRE log PMF computation
+        ll_cre = torch.distributions.negative_binomial.NegativeBinomial(
+            total_count=mu_cre, logits=logits_cre
+        ).log_prob(obs_cre_expanded)  # (n_obs, n_cres, dim)
+
+        # Combined likelihood
+        likelihood_mat = ll_k + ll_t7 + ll_cre
+        
+        # Posterior distribution using logsumexp for numerical stability
+        likelihood_sum = torch.logsumexp(likelihood_mat, dim=-1, keepdim=True)
+        posterior_k = likelihood_mat - likelihood_sum
+        
+        return posterior_k
+    
+    def maximization_step_x0(self, x0, cell_type_indexes, posterior_k):
+        """M-step: Optimize x0 parameters"""
+        x0_orig = x0.clone().detach()
+        x0 = nn.Parameter(x0.clone().detach().requires_grad_(True))
+        optimizer = optim.LBFGS([x0])  # Reduced lr and max_iter
+        
+        def closure():
+            optimizer.zero_grad()
+            
+            dim = posterior_k.shape[-1]
+            k_values = torch.arange(dim, device=self.device, dtype=torch.float32)
+            
+            # Apply constraint within closure and clamp to prevent overflow
+            x0_clamped = torch.clamp(x0, min=-10, max=10)
+            
+            # Get lambda values for each observation based on cell type
+            k_lambda = torch.exp(x0_clamped[cell_type_indexes])  # (n_obs, n_cres)
+            k_lambda_expanded = k_lambda.unsqueeze(-1)  # (n_obs, n_cres, 1)
+            k_values_expanded = k_values.unsqueeze(0).unsqueeze(0)  # (1, 1, dim)
+            
+            # k ~ Poisson(k_lambda): log P(k|k_lambda)
+            ll_k = torch.distributions.Poisson(k_lambda_expanded).log_prob(k_values_expanded)
+
+            # Compute expected log likelihood
+            ll = posterior_k + ll_k
+            ll_sum = torch.logsumexp(ll, dim=1)
+            loss = -ll_sum.sum()
+            
+            # Add L2 regularization to prevent extreme values
+            loss += 0.001 * (x0 ** 2).sum()
+            
+            loss.backward()
+            return loss
+        
+        optimizer.step(closure)
+        
+        return x0.detach(), x0.detach() - x0_orig
+    
+    def maximization_step_x1(self, x1, obs_t7, posterior_k):
+        """M-step: Optimize x1 parameter"""
+        x1_orig = x1.clone().detach()
+        x1 = nn.Parameter(x1.clone().detach().requires_grad_(True))
+        optimizer = optim.LBFGS([x1])  # Reduced lr and max_iter
+
+        def closure():
+            optimizer.zero_grad()
+            
+            obs_t7_expanded = obs_t7.unsqueeze(-1)  # (n_obs, 1)
+            dim = posterior_k.shape[-1]
+            k_values = torch.arange(dim, device=self.device, dtype=torch.float32)
+            
+            # Apply constraint within closure: x1 <= -1e-10, but also prevent extreme values
+            logits_t7 = torch.clamp(x1[1], min=-10, max=10)
+            
+            # Vectorized Poisson log PMF for obs_t7 ~ Poisson(exp(x1) * k)
+            total_counts_t7 = torch.exp(torch.clamp(x1[0], min=-10, max=10))
+            mu_t7 = total_counts_t7 * k_values  # (dim,)
+            mu_t7_expanded = mu_t7.unsqueeze(0).unsqueeze(0)  # (1, 1, dim)
+            
+            # T7 log PMF computation
+            ll_t7 = torch.distributions.negative_binomial.NegativeBinomial(
+                total_count=mu_t7_expanded, logits=logits_t7
+            ).log_prob(obs_t7_expanded)  # (n_obs, n_cres, dim)
+            
+            ll = posterior_k + ll_t7
+            ll_sum = torch.logsumexp(ll, dim=1)
+            loss = -ll_sum.sum()
+            
+            # Add L2 regularization to prevent extreme values
+            loss += 0.001 * (x1 ** 2).sum()
+            
+            loss.backward()
+            return loss
+        
+        optimizer.step(closure)
+        
+        return x1.detach(), x1.detach() - x1_orig
+
+    def maximization_step_x2(self, x2, obs_cre, posterior_k, cell_type_indexes):
+        """M-step: Optimize x2 parameter"""
+        x2_orig = x2.clone().detach()
+        x2 = nn.Parameter(x2.clone().detach().requires_grad_(True))
+        optimizer = optim.LBFGS([x2])  # Reduced lr and max_iter
+
+        def closure():
+            optimizer.zero_grad()
+            
+            obs_cre_expanded = obs_cre.unsqueeze(-1)  # (n_obs, 1)
+            dim = posterior_k.shape[-1]
+            k_values = torch.arange(dim, device=self.device, dtype=torch.float32)
+            
+            # Vectorized obs_cre ~ NegBinom(exp(x2[cell_type_indexes, 0]) * k, torch.sigmoid(x2[cell_type_indexes, 1]))
+            total_counts_cre = torch.exp(torch.clamp(x2[cell_type_indexes, :, 0], min=-10, max=10)).unsqueeze(-1)  # (n_obs, n_cres, 1)
+            logits_cre = torch.clamp(x2[cell_type_indexes, :, 1], min=-10, max=10).unsqueeze(-1)  # (n_obs, n_cres, 1)
+            mu_cre = total_counts_cre * k_values.unsqueeze(0).unsqueeze(0)  # (n_obs, n_cres, dim)
+
+            # CRE log PMF computation
+            ll_cre = torch.distributions.negative_binomial.NegativeBinomial(
+                total_count=mu_cre, logits=logits_cre
+            ).log_prob(obs_cre_expanded)  # (n_obs, n_cres, dim)
+
+            ll = posterior_k + ll_cre
+            ll_sum = torch.logsumexp(ll, dim=1)
+            loss = -ll_sum.sum()
+            
+            # Add L2 regularization to prevent extreme values
+            loss += 0.001 * (x2 ** 2).sum()
+            
+            loss.backward()
+            return loss
+        
+        optimizer.step(closure)
+        
+        return x2.detach(), x2.detach() - x2_orig
+
+    def fit(self, cell_types, obs_t7, obs_cre, dim=20, max_iter=50):
+        """Main EM algorithm"""
+        # Convert inputs to numpy arrays first
+        # Handle pandas objects (Series, Categorical, etc.)
+        if hasattr(cell_types, 'values'):
+            cell_types = cell_types.values
+        if hasattr(obs_t7, 'values'):
+            obs_t7 = obs_t7.values
+        if hasattr(obs_cre, 'values'):
+            obs_cre = obs_cre.values
+
+        # Ensure we have numpy arrays
+        if not isinstance(cell_types, np.ndarray):
+            cell_types = np.array(cell_types)
+        if not isinstance(obs_t7, np.ndarray):
+            obs_t7 = np.array(obs_t7)
+        if not isinstance(obs_cre, np.ndarray):
+            obs_cre = np.array(obs_cre)
+            
+        # Ensure obs_t7 is float type (while it's still numpy)
+        obs_t7 = obs_t7.astype(np.long)
+        obs_cre = obs_cre.astype(np.long)
+        
+        # Convert categorical cell types to integer indices
+        unique_celltypes, cell_type_indexes = np.unique(cell_types, return_inverse=True)
+        
+        # Convert to torch tensors (no more .astype calls after this point)
+        cell_type_indexes = torch.from_numpy(cell_type_indexes).to(self.device).long()
+        obs_t7 = torch.from_numpy(obs_t7).to(self.device).long()
+        obs_cre = torch.from_numpy(obs_cre).to(self.device).long()
+
+        # Initialize parameters more conservatively
+        # Group by cell types to compute initial x0
+        x0 = torch.zeros((len(unique_celltypes), obs_t7.shape[1]), device=self.device, dtype=torch.float32)
+        
+        x1 = torch.tensor([-1.0, 0], device=self.device, dtype=torch.float32)  # Start with more conservative value
+        x2 = torch.tensor(np.zeros((len(unique_celltypes), obs_t7.shape[1], 2)), device=self.device, dtype=torch.float32)  # Start with more conservative value
+        
+        print(f"Running EM algorithm on {self.device}")
+        print(f"Initial x0: {x0.cpu().numpy().mean()}")
+        print(f"Initial x1: {x1.cpu().numpy()}")
+        print(f"Initial x2: {x2.cpu().numpy().mean()}")
+
+        for i in range(max_iter):
+            # Check for NaN/inf values before each step
+            if torch.isnan(x0).any() or torch.isinf(x0).any() or torch.isnan(x1).any() or torch.isinf(x1).any() or torch.isnan(x2).any() or torch.isinf(x2).any():
+                print(f"Warning: NaN/inf detected in parameters at step {i}")
+                break
+            
+            # E-step
+            start = time.time()
+            posterior_k = self.expectation_step(x0, x1, x2, obs_t7, obs_cre, cell_type_indexes, dim=dim)
+            mid1 = time.time()
+            print(f"Step {i}, E-step time: {mid1 - start:.4f}s")
+            # Check for NaN in posterior
+            if torch.isnan(posterior_k).any():
+                print(f"Warning: NaN in posterior at step {i}")
+                break
+            
+            if self.use_x0:
+                # M-step for x0
+                x0, x0_diff = self.maximization_step_x0(x0, cell_type_indexes, posterior_k)
+                mid2 = time.time()
+                print(f"Step {i}, M-step x0 time: {mid2 - mid1:.4f}s")
+                # Check for NaN in posterior
+                if torch.isnan(x0).any():
+                    print(f"Warning: NaN in posterior at step {i}")
+                    break
+            else:
+                mid2 = time.time()
+                x0_diff = x0.clone()
+            
+            # M-step for x1
+            x1, x1_diff = self.maximization_step_x1(x1, obs_t7, posterior_k)
+            end = time.time()
+            print(f"Step {i}, M-step x1 time: {end - mid2:.4f}s")
+            # Check for NaN in posterior
+            if torch.isnan(x1).any():
+                print(f"Warning: NaN in posterior at step {i}")
+                break
+            
+            # M-step for x2
+            x2, x2_diff = self.maximization_step_x2(x2, obs_cre, posterior_k, cell_type_indexes)
+            end = time.time()
+            print(f"Step {i}, M-step x2 time: {end - mid2:.4f}s")
+            # Check for NaN in posterior
+            if torch.isnan(x2).any():
+                print(f"Warning: NaN in posterior at step {i}")
+                break
+            
+            print(f"Step {i}, x0: {x0.cpu().numpy().mean()}, x1: {x1.cpu().numpy()}, x2: {x2.cpu().numpy().mean()}")
+
+            # check convergence
+            if torch.all(torch.abs(x0_diff) / torch.abs(x0) < 1e-5) and torch.all(torch.abs(x1_diff) / torch.abs(x1) < 1e-5) and torch.all(torch.abs(x2_diff) / torch.abs(x2) < 1e-5):
+                print(f"Converged at step {i}")
+                break
+            
+        return x0.cpu().numpy(), x1.cpu().numpy(), x2.cpu().numpy()
 
 
 class STARRFISH:
@@ -2539,6 +2830,7 @@ class STARRFISH:
             volumes = volumes[celltypes.index]
         # get the cell type cell counts
         cell_counts = celltypes.value_counts().loc[cell_types_to_use]
+        celltypes = pd.DataFrame(celltypes)
         # filter out cell types with insufficient cell counts if not replace
         if not replace:
             if pseudo_bulk_size is not None:
@@ -2566,7 +2858,7 @@ class STARRFISH:
                 # Return sums for all target DataFrames
                 return [df.loc[sampled_idx].sum() for df in df_list]
             # Apply in parallel using swifter
-            grouped_results = df3.groupby('celltype').swifter.apply(sample_and_sum_group)
+            grouped_results = df3.groupby('subclass').apply(sample_and_sum_group)
             # Reorganize results into separate DataFrames
             results = []
             for i in range(len(df_list)):
@@ -2594,14 +2886,14 @@ class STARRFISH:
                 )
                 # change the index to reflect the celltype, i and s
                 cell_types = cre_expression_pseudo_bulk.index.copy()
-                cre_expression_pseudo_bulk.index = cell_types.values + f'_pseudo_bulk_{i}_{s}'
-                t7_expression_pseudo_bulk.index = cell_types.values + f'_pseudo_bulk_{i}_{s}'
-                volumes_pseudo_bulk.index = cell_types.values + f'_pseudo_bulk_{i}_{s}'
+                cre_expression_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
+                t7_expression_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
+                volumes_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
                 pseudo_bulk = pd.concat([pseudo_bulk, cre_expression_pseudo_bulk])
                 pseudo_bulk_t7 = pd.concat([pseudo_bulk_t7, t7_expression_pseudo_bulk])
-                sample_obs = pd.DataFrame(volumes_pseudo_bulk, columns=['volume'])
-                sample_obs['subclass'] = cell_types.values
-                sample_obs['fov'] = cell_types.values
+                sample_obs = pd.DataFrame(volumes_pseudo_bulk, columns=['volm'])
+                sample_obs['subclass'] = cell_types.astype(str)
+                sample_obs['fov'] = cell_types.astype(str)
                 sample_obs['size'] = size
                 sample_obs['percentage'] = percentage
                 sample_obs['seed'] = s
