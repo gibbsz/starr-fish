@@ -111,7 +111,8 @@ pseudo_bulk_glm_test_config = {
     'positive_x_or_y': False,  # normalize by T7
     'only_keep_positive_x': False,
     'only_keep_positive_y': False,  # normalize by negative control
-    'transform_x_y': 'log1p',
+    'transform_x_y': None,
+    'fix_intercept': None, # can be None, negative_control_x, total_x or negative_control_y, total_y
     'pseudo_bulk_size': [100, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 2000, 2400, 2800, 3200, 3600, 4000],
     'pseudo_bulk_percentage': None,
     'pseudo_bulk_number': [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100],
@@ -186,8 +187,8 @@ celltype_corr['celltype_sec1'] = cell_counts1.loc[celltype_corr.index].values
 celltype_corr['celltype_sec2'] = cell_counts2.loc[celltype_corr.index].values
 celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
 # %% plot
-n_cre_threshold = 5
-n_celltype_threshold = 5
+n_cre_threshold = 10
+n_celltype_threshold = 10
 fig, ax = plt.subplots(figsize=(4, 4))
 sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] > 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='blue', ax=ax)
 sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='red', ax=ax)
@@ -195,26 +196,52 @@ ax.set_xscale('log')
 fig, ax = plt.subplots(figsize=(4, 4))
 sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
 sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
+reproducible_celltypes = celltype_corr.index[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)]
+
+
+
 # %% visualize best cell type-wise corr
 fig, ax = plt.subplots(figsize=(4, 4))
-sns.scatterplot(x=res1_summary['coef'].loc['Oligo NN'], y=res2_summary['coef'].loc['Oligo NN'], color='blue', ax=ax)
+celltype = 'OB-in Frmd7 Gaba'
+sns.scatterplot(x=res1_summary['coef'].loc[celltype], y=res2_summary['coef'].loc[celltype], color='blue', ax=ax)
 # plot negative control
-sns.scatterplot(x=res1_summary['coef'].loc['Oligo NN', res1.get_negative_control_cres()], 
-                y=res2_summary['coef'].loc['Oligo NN', res1.get_negative_control_cres()], color='orange', ax=ax)
-sns.scatterplot(x=res1_summary['coef'].loc['Oligo NN', res1.get_positive_control_cres('Oligo NN', use='atac-peak')], 
-                y=res2_summary['coef'].loc['Oligo NN', res1.get_positive_control_cres('Oligo NN', use='atac-peak')], color='red', ax=ax)
-sns.scatterplot(x=res1_summary['coef'].loc['Oligo NN', cre_blacklist], 
-                y=res2_summary['coef'].loc['Oligo NN', cre_blacklist], color='green', ax=ax)
+sns.scatterplot(x=res1_summary['coef'].loc[celltype, res1.get_negative_control_cres()], 
+                y=res2_summary['coef'].loc[celltype, res1.get_negative_control_cres()], color='orange', ax=ax)
+sns.scatterplot(x=res1_summary['coef'].loc[celltype, res1.get_positive_control_cres(celltype, use='atac-peak')], 
+                y=res2_summary['coef'].loc[celltype, res1.get_positive_control_cres(celltype, use='atac-peak')], color='red', ax=ax)
+sns.scatterplot(x=res1_summary['coef'].loc[celltype, cre_blacklist], 
+                y=res2_summary['coef'].loc[celltype, cre_blacklist], color='green', ax=ax)
+ax.set_xlabel(f'Section 1 {celltype}')
+ax.set_ylabel(f'Section 2 {celltype}')
 # %% check CRE363, strongest CRE
-fig, ax = plt.subplots(figsize=(4, 4))
-ct = 'Oligo NN'
-cre = 'CRE363'
+fig, ax = plt.subplots(ncols=2, figsize=(8, 4))
+ct = 'OB-in Frmd7 Gaba'
+cre = 'CRE216'
+# plot regression line
 sns.scatterplot(x=np.log1p(res1.get_t7_expression()[(res1.get_celltypes() == ct)][cre]),
                 y=np.log1p(res1.get_cre_expression()[(res1.get_celltypes() == ct)][cre]), alpha=0.5,
                 hue=res1.adata.obs[(res1.get_celltypes() == ct)]['size'], palette='coolwarm',
-                ax=ax)
-ax.set_xlabel('T7 Pseudo bulk Expression')
-ax.set_ylabel('CRE Pseudo bulk Expression')
+                ax=ax[0])
+sns.regplot(x=np.log1p(res1.get_t7_expression()[(res1.get_celltypes() == ct)][cre]),
+            y=np.log1p(res1.get_cre_expression()[(res1.get_celltypes() == ct)][cre]), ax=ax[0], scatter=False, color='red')
+sns.regplot(x=np.log(res1.get_t7_expression()[(res1.get_celltypes() == ct)][cre][(res1.get_t7_expression()[(res1.get_celltypes() == ct)][cre] > 0) & (res1.get_cre_expression()[(res1.get_celltypes() == ct)][cre] > 0)]),
+            y=np.log(res1.get_cre_expression()[(res1.get_celltypes() == ct)][cre][(res1.get_t7_expression()[(res1.get_celltypes() == ct)][cre] > 0) & (res1.get_cre_expression()[(res1.get_celltypes() == ct)][cre] > 0)]), ax=ax[0], color='blue', scatter=False)
+sns.scatterplot(x=np.log1p(res2.get_t7_expression()[(res2.get_celltypes() == ct)][cre]),
+                y=np.log1p(res2.get_cre_expression()[(res2.get_celltypes() == ct)][cre]), alpha=0.5,
+                hue=res2.adata.obs[(res2.get_celltypes() == ct)]['size'], palette='coolwarm',
+                ax=ax[1])
+sns.regplot(x=np.log1p(res2.get_t7_expression()[(res2.get_celltypes() == ct)][cre]),
+            y=np.log1p(res2.get_cre_expression()[(res2.get_celltypes() == ct)][cre]), ax=ax[1], scatter=False, color='red')
+sns.regplot(x=np.log(res2.get_t7_expression()[(res2.get_celltypes() == ct)][cre][(res2.get_t7_expression()[(res2.get_celltypes() == ct)][cre] > 0) & (res2.get_cre_expression()[(res2.get_celltypes() == ct)][cre] > 0)]),
+            y=np.log(res2.get_cre_expression()[(res2.get_celltypes() == ct)][cre][(res2.get_t7_expression()[(res2.get_celltypes() == ct)][cre] > 0) & (res2.get_cre_expression()[(res2.get_celltypes() == ct)][cre] > 0)]), ax=ax[1], color='blue', scatter=False)
+ax[0].set_xlabel('T7 Pseudo bulk Expression')
+ax[0].set_ylabel('CRE Pseudo bulk Expression')
+ax[1].set_xlabel('T7 Pseudo bulk Expression')
+ax[1].set_ylabel('CRE Pseudo bulk Expression')
+
+
+
+
 # %% visualize best CRE-wise corr: CRE298 or CRE210
 fig, ax = plt.subplots(ncols=2, figsize=(8, 4))
 cre = 'CRE298'
@@ -232,51 +259,105 @@ sns.scatterplot(x=res1_summary['coef'][cre], hue=res2_summary['coef'][cre],
 
 
 
+# %% check the regression on all the CREs
+fig, ax = plt.subplots(ncols=3, figsize=(27, 9))
+ct = 'Oligo NN'
+data = pd.DataFrame({'x': np.log(res1.get_t7_expression()[(res1.get_celltypes() == ct)].values.flatten()),
+                     'y': np.log(res1.get_cre_expression()[(res1.get_celltypes() == ct)].values.flatten()),
+                     'cre': np.repeat(res1.get_cre_expression().columns, res1.get_t7_expression()[(res1.get_celltypes() == ct)].shape[0]),
+                     'size': res1.adata.obs[(res1.get_celltypes() == ct)]['size'].tolist() * res1.get_cre_expression()[(res1.get_celltypes() == ct)].shape[1]})
+data['libsize'] = res1.lib_size['counts'].loc[data['cre']].values
+# drop NaN
+data['x'][np.isinf(data['x'])] = np.nan
+data['y'][np.isinf(data['y'])] = np.nan
+data = data.dropna()
 
-# %% check if covariate of size helps
-thres = 0
-import statsmodels.formula.api as smf
-coef1 = []
-pvalue1 = []
-for cre in res1.get_cre_expression().columns:
-    fit_data=pd.DataFrame({'y': np.log1p(res1.get_cre_expression()[(res1.get_celltypes() == ct) & (res1.adata.obs['size'] >= thres)][cre]), 
-                           'x': np.log1p(res1.get_t7_expression()[(res1.get_celltypes() == ct) & (res1.adata.obs['size'] >= thres)][cre]), 
-                           'volm': None, 'fov': None, 'RNA': None, 
-                           'size': np.log(res1.adata.obs[(res1.get_celltypes() == ct) & (res1.adata.obs['size'] >= thres)]['size'])})
-    glm_results = smf.ols('y ~ x + size', data=fit_data).fit()
-    coef1.append(glm_results.params.get('x', np.nan))
-    pvalue1.append(glm_results.pvalues.get('x', np.nan))
+data['label'] = pd.NA
+data['label'][(data['cre'].isin(['CRE363']))] = 'CRE363'
+data['label'][(data['cre'].isin(res1.get_negative_control_cres()))] = 'Negative Control'
+# plot regression line
+sns.scatterplot(data, x='x', y='y', hue='size', palette='coolwarm', alpha=0.2, ax=ax[0])
+sns.regplot(data, x='x', y='y', ax=ax[0], scatter=False)
+ax[0].set_xlabel('T7 Pseudo bulk Expression')
+ax[0].set_ylabel('CRE Pseudo bulk Expression')
+
+# plot regression line
+sns.scatterplot(data, x='x', y='y', hue='libsize', palette='coolwarm', alpha=0.2, ax=ax[1])
+sns.regplot(data, x='x', y='y', ax=ax[1], scatter=False)
+ax[1].set_xlabel('T7 Pseudo bulk Expression')
+ax[1].set_ylabel('CRE Pseudo bulk Expression')
+
+
+# plot regression line
+sns.scatterplot(data, x='x', y='y', hue='label', alpha=0.2, ax=ax[2])
+sns.regplot(data, x='x', y='y', ax=ax[2], scatter=False, color='green')
+sns.regplot(data[data['label'] == 'Negative Control'], x='x', y='y', ax=ax[2], scatter=False, color='blue')
+ax[2].set_xlabel('T7 Pseudo bulk Expression')
+ax[2].set_ylabel('CRE Pseudo bulk Expression')
+
+
+
+# %% dot plot
+from plots import celltype_pval_dotplot
+cre_info = res.get_creinfo().copy()
+# for cre in cre_info.index:
+#     positive_cts = res.get_positive_control_celltypes(cre, use='atac-peak')
+#     if positive_cts is not None:
+#         cre_info.loc[cre, 'best_subclass'] = ';'.join(positive_cts)
+#     else:
+#         cre_info.loc[cre, 'best_subclass'] = 'CRE'
+cre_info['best_subclass'] = 'CRE'
+cre_info.loc[res.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
+# design a test to compare CRE activity in each cell type to Negative Control
+res_df = res_summary['coef'].copy()
+res_q = pd.DataFrame(1.0, index=res_df.index, columns=res_df.columns)
+# remove to_filter
+res_df[cre_blacklist] = np.nan
+negative_control_mean = res_df[res.get_negative_control_cres()].apply(np.nanmean, axis=1)
+negative_control_std = res_df[res.get_negative_control_cres()].apply(np.nanstd, axis=1)
+negative_control_upper = negative_control_mean + 2 * negative_control_std
+negative_control_lower = negative_control_mean - 2 * negative_control_std
+# for each cell type, anything between negative control upper and lower will be marked as not significant
+for ct in res_df.index:
+    if ct in negative_control_upper.index and ct in negative_control_lower.index:
+        if np.isnan(negative_control_upper[ct]) or np.isnan(negative_control_lower[ct]):
+            res_df.loc[ct, :] = np.nan
+            res_q.loc[ct, :] = np.nan
+        else:
+            # calculate z-score and p-value of normal distribution with regard to negative control
+            z_scores = (res_df.loc[ct] - negative_control_mean[ct]) / negative_control_std[ct]
+            p_values = z_scores.apply(stats.norm.cdf)
+            res_q.loc[ct] = np.minimum(p_values, 1-p_values)
+    # remove irreproduciable results
+    if ct in res1_summary['coef'].index and ct in res2_summary['coef'].index:
+        irr = res1_summary['coef'].columns[np.abs(res1_summary['coef'].loc[ct] - res2_summary['coef'].loc[ct]) > 0.2]
+        irr = res1_summary['coef'].columns[np.isnan(res1_summary['coef'].loc[ct]) | np.isnan(res2_summary['coef'].loc[ct])].union(irr)
+        res_df.loc[ct, irr] = np.nan
+        res_q.loc[ct, irr] = np.nan
+    else:
+        res_df.loc[ct, :] = np.nan
+celltypes_to_use = reproducible_celltypes
+cres_to_use = res_q.columns[np.nanmin(res_q.loc[celltypes_to_use], axis=0) < 0.05].union(res.get_negative_control_cres())
+cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
+fig, final_order = celltype_pval_dotplot(res_q, res_df, cres_to_use, celltypes_to_use,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
+                                         figsize=(15, 30))
+fig
+
+
+
+
 # %%
-coef2 = []
-pvalue2 = []
-for cre in res1.get_cre_expression().columns:
-    fit_data=pd.DataFrame({'y': np.log1p(res2.get_cre_expression()[(res2.get_celltypes() == ct) & (res2.adata.obs['size'] >= thres)][cre]), 
-                           'x': np.log1p(res2.get_t7_expression()[(res2.get_celltypes() == ct) & (res2.adata.obs['size'] >= thres)][cre]), 
-                           'volm': None, 'fov': None, 'RNA': None, 
-                           'size': np.log(res2.adata.obs[(res2.get_celltypes() == ct) & (res2.adata.obs['size'] >= thres)]['size'])})
-    glm_results = smf.ols('y ~ x + size', data=fit_data).fit()
-    coef2.append(glm_results.params.get('x', np.nan))
-    pvalue2.append(glm_results.pvalues.get('x', np.nan))
+res_df[res_q > 0.05] = np.nan
+atac_peaks = pd.read_csv('Data/cre_atac_peaks.csv', index_col=0)
+atac_peaks = atac_peaks.loc[celltypes_to_use.intersection(atac_peaks.index), cres_to_use.intersection(atac_peaks.columns)] >= 0.5
+overlap = res_df.loc[atac_peaks.index, atac_peaks.columns][atac_peaks].notna().sum().sum()
+precision = overlap / atac_peaks.sum().sum()
+precision
 # %%
-res = pd.DataFrame({'coef1': coef1, 'pvalue1': pvalue1, 'coef2': coef2, 'pvalue2': pvalue2}, index=res1.get_cre_expression().columns)
-fig, ax = plt.subplots(figsize=(4, 4))
-sns.scatterplot(x=res['coef1'], y=res['coef2'], color='blue', ax=ax)
-# plot negative control
-sns.scatterplot(x=res['coef1'].loc[res1.get_negative_control_cres()], 
-                y=res['coef2'].loc[res1.get_negative_control_cres()], color='orange', ax=ax)
-sns.scatterplot(x=res['coef1'].loc[res1.get_positive_control_cres('Oligo NN', use='atac-peak')], 
-                y=res['coef2'].loc[res1.get_positive_control_cres('Oligo NN', use='atac-peak')], color='red', ax=ax)
-sns.scatterplot(x=res['coef1'].loc[cre_blacklist], 
-                y=res['coef2'].loc[cre_blacklist], color='green', ax=ax)
-# %%
-res['libsize'] = res1.lib_size['counts'].loc[res.index]
-fig, ax = plt.subplots(figsize=(4, 4))
-sns.scatterplot(data = res, x='coef1', y='coef2', hue='libsize', palette = 'coolwarm', ax=ax)
-# %%
-sns.scatterplot(x=res['libsize'].loc[res1.get_negative_control_cres()], 
-                y=res['coef1'].loc[res1.get_negative_control_cres()], color='orange', ax=ax)
-sns.scatterplot(x=res['libsize'].loc[res1.get_positive_control_cres('Oligo NN', use='atac-peak')], 
-                y=res['coef1'].loc[res1.get_positive_control_cres('Oligo NN', use='atac-peak')], color='red', ax=ax)
-sns.scatterplot(x=res['libsize'].loc[cre_blacklist], 
-                y=res['coef1'].loc[cre_blacklist], color='green', ax=ax)
+atac_peaks = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
+atac_peaks = atac_peaks.loc[celltypes_to_use.intersection(atac_peaks.index), cres_to_use.intersection(atac_peaks.columns)] >= 0.5
+overlap = res_df.loc[atac_peaks.index, atac_peaks.columns][atac_peaks].notna().sum().sum()
+precision = overlap / atac_peaks.sum().sum()
+precision
 # %%

@@ -48,7 +48,7 @@ from get_preprocess_utils import get_motif, query_motif
 cmdstanpy_logger = logging.getLogger("cmdstanpy")
 cmdstanpy_logger.disabled = True
 
-def fit_glm(formula, y, x, volm, fov, rna, size, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None):
+def fit_glm(formula, y, x, volm, fov, rna, size, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None, intercept_x=None, intercept_y=None):
     try:
         # remove zeros in y
         if positive_x_or_y:
@@ -67,26 +67,32 @@ def fit_glm(formula, y, x, volm, fov, rna, size, positive_x_or_y=True, only_keep
         elif transform_x_y == 'log1p':
             x = np.log1p(x)
             y = np.log1p(y)
+        if intercept_x is not None:
+            x -= intercept_x
+        if intercept_y is not None:
+            y -= intercept_y
         volm = volm[to_keep]
         fov = fov[to_keep]
         rna = rna[to_keep] if rna is not None else None
         size = size[to_keep] if size is not None else None
         # if data points too few, return NaN
         if len(y) < 3:
-            return {'coef': np.nan, 'pvalue': np.nan}
+            return {'coef': np.nan, 'pvalue': np.nan, 'intercept': np.nan}
         fit_data=pd.DataFrame({'y': y, 'x': x, 'volm': volm, 'fov': fov, 'RNA': rna, 'size': size})
         glm_results = smf.ols(formula, data=fit_data).fit()
         # Direct access to coefficients and p-values instead of HTML parsing
         coef = glm_results.params.get('x', np.nan)
+        intercept = glm_results.params.get('Intercept', np.nan)
         pvalue = glm_results.pvalues.get('x', np.nan)
-        return {'coef': coef, 'pvalue': pvalue}
+        return {'coef': coef, 'intercept': intercept, 'pvalue': pvalue}
     except Exception as e:
-        return {'coef': np.nan, 'pvalue': np.nan}
+        return {'coef': np.nan, 'intercept': np.nan, 'pvalue': np.nan}
 
 
 def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=False, 
         volm_covariate=False, fov_covariate=False, rna_covariate=False, size_covariate=False,
-        filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None,
+        filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, 
+        transform_x_y=None, fix_intercept=None, 
         multiprocess_threads=256, verbose=False):
     # result is a matrix of cell_types x CREs
     if CREs is None:
@@ -129,6 +135,7 @@ def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=Fal
     if size_covariate:
         # pseudo bulk size covariate
         formula += ' + size'
+    formula_orig = formula
     
     # Prepare arguments for all GLM fits using pre-allocated arrays (eliminates slow append operations)
     total_combinations = len(cell_types_to_use) * len(CREs)
@@ -162,6 +169,47 @@ def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=Fal
         cell_cre_matrix = cre_data.loc[cell_mask, CREs]
         cell_variate_matrix = variate.loc[cell_obs_names, CREs]
         
+        # if we want to fix x or y, we need to get the intercept first
+        if fix_intercept is not None:
+            if fix_intercept.startswith('negative_control'):
+                negative_control_cres = adata.uns['CRE_info']['labeling_type'] == 'negative control'
+                args_batch = [(
+                    formula_orig,
+                    cell_cre_matrix.iloc[:, negative_control_cres.values].values.flatten(),
+                    cell_variate_matrix.iloc[:, negative_control_cres.values].values.flatten(),
+                    np.tile(cell_volm, negative_control_cres.sum()),
+                    np.tile(cell_fov, negative_control_cres.sum()),
+                    np.tile(cell_rna_sum, negative_control_cres.sum()) if rna_covariate else None,
+                    np.tile(cell_size, negative_control_cres.sum()) if size_covariate else None,
+                    positive_x_or_y, only_keep_positive_x, only_keep_positive_y, transform_x_y,
+                )]
+            elif fix_intercept.startswith('total'):
+                args_batch = [(
+                    formula_orig,
+                    cell_cre_matrix.values.flatten(),
+                    cell_variate_matrix.values.flatten(),
+                    np.tile(cell_volm, cell_cre_matrix.shape[1]),
+                    np.tile(cell_fov, cell_cre_matrix.shape[1]),
+                    np.tile(cell_rna_sum, cell_cre_matrix.shape[1]) if rna_covariate else None,
+                    np.tile(cell_size, cell_cre_matrix.shape[1]) if size_covariate else None,
+                    positive_x_or_y, only_keep_positive_x, only_keep_positive_y, transform_x_y,
+                )]
+            else:
+                raise ValueError("fix_intercept must start with 'negative_control' or 'total'.")
+            # get intercept by fitting on all data
+            intercept_res = fit_glm(*args_batch[0])
+            if fix_intercept.endswith('x'):
+                intercept_x = -intercept_res['intercept'] / intercept_res['coef']
+                intercept_y = None
+            elif fix_intercept.endswith('y'):
+                intercept_x = None
+                intercept_y = intercept_res['intercept']
+            else:
+                raise ValueError("fix_intercept must end with 'x' or 'y'.")
+            formula = formula_orig + ' - 1'  # remove intercept from formula
+        else:
+            intercept_x = None
+            intercept_y = None
         # Use list comprehension for remaining loop
         args_batch = [(
             formula,
@@ -171,7 +219,8 @@ def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=Fal
             cell_fov,
             cell_rna_sum,
             cell_size,
-            positive_x_or_y, only_keep_positive_x, only_keep_positive_y, transform_x_y,
+            positive_x_or_y, only_keep_positive_x, only_keep_positive_y, 
+            transform_x_y, intercept_x, intercept_y
         ) for j in range(len(CREs))]
         
         # Batch assignment
@@ -2791,7 +2840,7 @@ class STARRFISH:
         return res
 
     def glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, fov_covariate=False, rna_covariate=False, size_covariate=False,
-                 filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None, multiprocess_threads=256) -> dict:
+                 filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None, fix_intercept=None, multiprocess_threads=256) -> dict:
         config = {
             'variate': variate,
             'norm_by_volm': norm_by_volm,
@@ -2804,6 +2853,7 @@ class STARRFISH:
             'only_keep_positive_x': only_keep_positive_x,
             'only_keep_positive_y': only_keep_positive_y,
             'transform_x_y': transform_x_y,
+            'fix_intercept': fix_intercept
         }
         # if the results already exist, return the results
         if hasattr(self, 'glm_test_results') and hasattr(self, 'glm_test_configs'):
@@ -2819,6 +2869,7 @@ class STARRFISH:
                      only_keep_positive_x=only_keep_positive_x,
                      only_keep_positive_y=only_keep_positive_y,
                      transform_x_y=transform_x_y,
+                     fix_intercept=fix_intercept,
                      multiprocess_threads=multiprocess_threads)
         # add results to attribute
         if not hasattr(self, 'glm_test_results') or not hasattr(self, 'glm_test_configs'):
@@ -2829,7 +2880,7 @@ class STARRFISH:
         return result
 
     def pseudo_bulk_glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, rna_covariate=False, size_covariate=False,
-                             filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None,
+                             filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None, fix_intercept=None,
                              pseudo_bulk_size=[50], pseudo_bulk_percentage=None, pseudo_bulk_number=[1000], replace=True, 
                              multiprocess_threads=256) -> dict:
         # check if the results already exist
@@ -2844,6 +2895,7 @@ class STARRFISH:
                   'only_keep_positive_x': only_keep_positive_x,
                   'only_keep_positive_y': only_keep_positive_y,
                   'transform_x_y': transform_x_y,
+                  'fix_intercept': fix_intercept,
                   'pseudo_bulk_size': pseudo_bulk_size,
                   'pseudo_bulk_percentage': pseudo_bulk_percentage,
                   'pseudo_bulk_number': pseudo_bulk_number,
@@ -2966,6 +3018,7 @@ class STARRFISH:
                      only_keep_positive_x=only_keep_positive_x,
                      only_keep_positive_y=only_keep_positive_y,
                      transform_x_y=transform_x_y,
+                     fix_intercept=fix_intercept,
                      multiprocess_threads=multiprocess_threads)
         pseudo_bulk_glm_test_result = {'pseudo_bulk_adata': pseudo_bulk_adata,
                                        'result': result}

@@ -143,6 +143,13 @@ np.save(f'{PWD}/results/expr3/t7cre_em.x1.sec2.npy', x1_sec2)
 np.save(f'{PWD}/results/expr3/t7cre_em.x2.sec1.npy', x2_sec1)
 np.save(f'{PWD}/results/expr3/t7cre_em.x2.sec2.npy', x2_sec2)
 # %%
+x0_sec1 = np.load(f'{PWD}/results/expr3/t7cre_em.x0.sec1.npy')
+x0_sec2 = np.load(f'{PWD}/results/expr3/t7cre_em.x0.sec2.npy')
+x1_sec1 = np.load(f'{PWD}/results/expr3/t7cre_em.x1.sec1.npy')
+x1_sec2 = np.load(f'{PWD}/results/expr3/t7cre_em.x1.sec2.npy')
+x2_sec1 = np.load(f'{PWD}/results/expr3/t7cre_em.x2.sec1.npy')
+x2_sec2 = np.load(f'{PWD}/results/expr3/t7cre_em.x2.sec2.npy')
+# %%
 # check infection rate differences
 x0_df_sec1 = pd.DataFrame(torch.nn.functional.softplus(torch.from_numpy(x0_sec1)), index=common_celltypes, columns=t7_counts_sec1.columns)
 x0_df_sec2 = pd.DataFrame(torch.nn.functional.softplus(torch.from_numpy(x0_sec2)), index=common_celltypes, columns=t7_counts_sec2.columns)
@@ -153,60 +160,120 @@ x2_p_df_sec2 = pd.DataFrame(torch.nn.functional.sigmoid(torch.from_numpy(x2_sec2
 # %%
 x2_mean_df_sec1 = x2_r_df_sec1 * (1-x2_p_df_sec1) / x2_p_df_sec1
 x2_mean_df_sec2 = x2_r_df_sec2 * (1-x2_p_df_sec2) / x2_p_df_sec2
+x2_log_mean_df_sec1 = np.log1p(x2_mean_df_sec1)
+x2_log_mean_df_sec2 = np.log1p(x2_mean_df_sec2)
 # %% do cre and cell type corr
-cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(x2_mean_df_sec1, x2_mean_df_sec2)
+cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(x2_log_mean_df_sec1, x2_log_mean_df_sec2)
 # %%
 cre_corr['libsize'] = starrfish3_sec1.lib_size['counts'].loc[cre_corr.index]
 celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().loc[celltype_corr.index].values
 celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index].values
 celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
 # %% plot
+n_cre_threshold = 0
+n_celltype_threshold = 0
 fig, ax = plt.subplots(figsize=(4, 4))
-sns.scatterplot(data=celltype_corr, x='celltype_n', y='pearson', ax=ax)
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] > 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='red', ax=ax)
 ax.set_xscale('log')
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
 
 
-# # %%
-# # analysis
-# x0_df_sec1 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x0.sec1.csv', index_col=0)
-# x0_df_sec2 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x0.sec2.csv', index_col=0)
-# x1_df_sec1 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x1.sec1.csv', index_col=0)
-# x1_df_sec2 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x1.sec2.csv', index_col=0)
-# x2_r_df_sec1 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.r.sec1.csv', index_col=0)
-# x2_r_df_sec2 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.r.sec2.csv', index_col=0)
-# x2_p_df_sec1 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.p.sec1.csv', index_col=0)
-# x2_p_df_sec2 = pd.read_csv(f'{PWD}/results/expr3/t7cre_mle_separate_nox0.x2.p.sec2.csv', index_col=0)
-# # %%
-# # make sure no extreme values are used
-# cres_to_use = x1_df_sec1.index[x1_df_sec1['total_counts'].between(-np.exp(5), np.exp(5)) & x1_df_sec2['total_counts'].between(-np.exp(5), np.exp(5)) & x1_df_sec1['logits'].between(-np.exp(5), np.exp(5)) & x1_df_sec2['logits'].between(-np.exp(5), np.exp(5))]
-# # calculate average of the negative binomial distribution
-# sec1_r = np.exp(x2_r_df_sec1[cres_to_use])
-# sec1_p = 1 / (1+np.exp(-x2_p_df_sec1[cres_to_use]))
-# sec2_r = np.exp(x2_r_df_sec2[cres_to_use])
-# sec2_p = 1 / (1+np.exp(-x2_p_df_sec2[cres_to_use]))
-# mu_sec1 = sec1_r * (1-sec1_p) / sec1_p
-# mu_sec2 = sec2_r * (1-sec2_p) / sec2_p
-# # %% 
-# cell_type_counts = starrfish3.get_celltypes().value_counts()
-# cell_types_counts1 = starrfish3_sec1.get_celltypes().value_counts()
-# cell_types_counts2 = starrfish3_sec2.get_celltypes().value_counts()
-# cell_types_to_use_1 = cell_types_counts1[cell_types_counts1 > 1000].index
-# cell_types_to_use_2 = cell_types_counts2[cell_types_counts2 > 1000].index
-# cell_types_to_use = cell_types_to_use_1.intersection(cell_types_to_use_2)
 
-# # %%
-# cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(mu_sec1, mu_sec2, cell_types_to_use=cell_types_to_use)
-# cre_corr['libsize'] = starrfish3_sec1.lib_size['counts'].loc[cre_corr.index].values
-# celltype_corr['celltype_counts_sec1'] = starrfish3_sec1.get_celltypes().value_counts().loc[celltype_corr.index].values
-# celltype_corr['celltype_counts_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index].values
-# celltype_corr['celltype_counts'] = celltype_corr[['celltype_counts_sec1', 'celltype_counts_sec2']].min(axis=1)
-# # %%
-# fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-# sns.scatterplot(data=cre_corr, x='libsize', y='spearman', ax=ax[0])
-# sns.scatterplot(data=celltype_corr, x='celltype_counts', y='spearman', ax=ax[1])
-# ax[1].set_xscale('log')
-# # %%
-# sns.scatterplot(x=mu_sec1['CRE062'].loc[cell_types_to_use], y=mu_sec2['CRE386'].loc[cell_types_to_use])
-# # %%
 
+# %% visualize best cell type-wise corr
+fig, ax = plt.subplots(figsize=(4, 4))
+celltype = 'IT AON-TT-DP Glut'
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype], y=x2_log_mean_df_sec2.loc[celltype], color='blue', ax=ax)
+# plot negative control
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype, x2_log_mean_df_sec1.columns.intersection(starrfish3_sec1.get_negative_control_cres())],
+                y=x2_log_mean_df_sec2.loc[celltype, x2_log_mean_df_sec1.columns.intersection(starrfish3_sec1.get_negative_control_cres())], color='orange', ax=ax)
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype, x2_log_mean_df_sec1.columns.intersection(starrfish3_sec1.get_positive_control_cres(celltype, use='atac-peak'))],
+                y=x2_log_mean_df_sec2.loc[celltype, x2_log_mean_df_sec1.columns.intersection(starrfish3_sec1.get_positive_control_cres(celltype, use='atac-peak'))], color='red', ax=ax)
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype, x2_log_mean_df_sec1.columns.intersection(cre_blacklist)],
+                y=x2_log_mean_df_sec2.loc[celltype, x2_log_mean_df_sec1.columns.intersection(cre_blacklist)], color='green', ax=ax)
+ax.set_xlabel('Activity Sec1 (log)')
+ax.set_ylabel('Activity Sec2 (log)')
+# %% visualize best cell type-wise corr
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype], y=x2_log_mean_df_sec2.loc[celltype], 
+                hue=starrfish3_sec1.lib_size['counts'].loc[x2_log_mean_df_sec1.columns], ax=ax)
+ax.set_xlabel('Activity Sec1 (log)')
+ax.set_ylabel('Activity Sec2 (log)')
+
+
+
+# %% visualize best cell type-wise corr
+fig, ax = plt.subplots(figsize=(4, 4))
+cre = 'CRE155'
+sns.scatterplot(x=x2_log_mean_df_sec1[cre], y=x2_log_mean_df_sec2[cre], color='blue', ax=ax)
+# plot negative control
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[starrfish3_sec1.get_positive_control_celltypes(cre, use='atac-peak').intersection(x2_log_mean_df_sec1.index), cre],
+                y=x2_log_mean_df_sec2.loc[starrfish3_sec1.get_positive_control_celltypes(cre, use='atac-peak').intersection(x2_log_mean_df_sec2.index), cre], color='red', ax=ax)
+ax.set_xlabel('Activity Sec1 (log)')
+ax.set_ylabel('Activity Sec2 (log)')
+
+
+
+
+# %% dot plot
+from plots import celltype_pval_dotplot
+cre_info = starrfish3_sec1.get_creinfo().copy()
+cre_info['best_subclass'] = 'CRE'
+cre_info.loc[starrfish3_sec1.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
+# design a test to compare CRE activity in each cell type to Negative Control
+res_df = x2_log_mean_df_sec1.copy()
+res_q = pd.DataFrame(1.0, index=res_df.index, columns=res_df.columns)
+# remove to_filter
+res_df[cre_blacklist] = np.nan
+negative_control_mean = res_df[starrfish3_sec1.get_negative_control_cres().intersection(res_df.columns)].apply(np.nanmean, axis=1)
+negative_control_std = res_df[starrfish3_sec1.get_negative_control_cres().intersection(res_df.columns)].apply(np.nanstd, axis=1)
+negative_control_upper = negative_control_mean + 2 * negative_control_std
+negative_control_lower = negative_control_mean - 2 * negative_control_std
+# for each cell type, anything between negative control upper and lower will be marked as not significant
+for ct in res_df.index:
+    if ct in negative_control_upper.index and ct in negative_control_lower.index:
+        if np.isnan(negative_control_upper[ct]) or np.isnan(negative_control_lower[ct]):
+            res_df.loc[ct, :] = np.nan
+            res_q.loc[ct, :] = np.nan
+        else:
+            # calculate z-score and p-value of normal distribution with regard to negative control
+            z_scores = (res_df.loc[ct] - negative_control_mean[ct]) / negative_control_std[ct]
+            p_values = z_scores.apply(stats.norm.cdf)
+            res_q.loc[ct] = np.minimum(p_values, 1-p_values)
+    # remove irreproduciable results
+    if ct in x2_log_mean_df_sec1.index and ct in x2_log_mean_df_sec2.index:
+        irr = x2_log_mean_df_sec1.columns[np.abs(x2_log_mean_df_sec1.loc[ct] - x2_log_mean_df_sec2.loc[ct]) > 1]
+        irr = x2_log_mean_df_sec1.columns[np.isnan(x2_log_mean_df_sec1.loc[ct]) | np.isnan(x2_log_mean_df_sec2.loc[ct])].union(irr)
+        res_df.loc[ct, irr] = np.nan
+        res_q.loc[ct, irr] = np.nan
+    else:
+        res_df.loc[ct, :] = np.nan
+        res_q.loc[ct, :] = np.nan
+celltypes_to_use = starrfish3_sec1.get_celltypes().value_counts().index[starrfish3_sec1.get_celltypes().value_counts() >= 1000].intersection(res_q.index)
+cres_to_use = res_q.columns[np.nanmin(res_q.loc[celltypes_to_use], axis=0) < 0.05].union(starrfish3_sec1.get_negative_control_cres())
+cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
+fig, final_order = celltype_pval_dotplot(res_q, res_df, cres_to_use, celltypes_to_use,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
+                                         figsize=(15, 20))
+fig
+
+
+
+
+# %%
+res_df[res_q > 0.05] = np.nan
+atac_peaks = pd.read_csv('Data/cre_atac_peaks.csv', index_col=0)
+atac_peaks = atac_peaks.loc[celltypes_to_use.intersection(atac_peaks.index), cres_to_use.intersection(atac_peaks.columns)] >= 0.5
+overlap = res_df.loc[atac_peaks.index, atac_peaks.columns][atac_peaks].notna().sum().sum()
+precision = overlap / atac_peaks.sum().sum()
+precision
+# %%
+atac_peaks = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
+atac_peaks = atac_peaks.loc[celltypes_to_use.intersection(atac_peaks.index), cres_to_use.intersection(atac_peaks.columns)] >= 0.5
+overlap = res_df.loc[atac_peaks.index, atac_peaks.columns][atac_peaks].notna().sum().sum()
+precision = overlap / atac_peaks.sum().sum()
+precision
 # %%

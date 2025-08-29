@@ -1950,6 +1950,7 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
                           reorder_cres=True, significant_cutoff=0.05, figsize=(20, 12), activity_log=False, z_norm=True, flip_axis=False):
     if cres_to_use is None:
         cres_to_use = q_value.columns
+    cres_to_use = cres_to_use[cres_to_use.isin(q_value.columns)]
     if cell_types_to_use is None:
         cell_types_to_use = q_value.index
     cell_types_to_use = cell_types_to_use[cell_types_to_use.isin(q_value.index)]
@@ -1995,7 +1996,7 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
                         target_df.loc[best_sub, cre] = 'miss'
             # other cell types are off-target
             cell_types = cell_types[cell_types.isin(q_value.index)]
-            if len(cell_types) > 0:
+            if len(cell_types) > 0 and best_subclass != ['CRE'] and best_subclass != ['Negative Control']:
                 target_df.loc[cell_types, cre] = 'off-target'
         # divide the cres into 4 categories: only on-target, on-target + off-target, only off-target, no target
         def assign_cre_type(x):
@@ -2032,8 +2033,12 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
         activity = activity.T
     q_value = -np.log10(q_value).T
     # if scale_by_cre, we scale the test result by the max of each cre
-    hue_name = 'log(activity) (z-score)'
+    hue_name = 'activity'
     size_name = '-log10(q value)'
+    if activity_log:
+        hue_name = 'log10(activity)'
+    if z_norm:
+        hue_name += ' z-score'
     # make to plot dataframe, flatten recall and atac_cpm
     toplot = pd.DataFrame({size_name: q_value.T.values.flatten(),
                             hue_name: activity.T.values.flatten(),
@@ -2138,20 +2143,20 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
         # ax.invert_yaxis()
         ax_dend.axis('off')
         # Add markers for positive controls
-        # if positive_control_info is not None and category != 'CREs':
-        #     markers = {
-        #         'on-target': ('red', 's'), 
-        #         'off-target': ('blue', 's'), 
-        #         'miss': ('grey', 's')
-        #     }
-        #     for control, (color, marker) in markers.items():
-        #         data = subset[subset['positive_control'] == control]
-        #         if not data.empty:
-        #             sns.scatterplot(
-        #                 data=data, x=x, y=y, 
-        #                 s=250, alpha=0.8, marker=marker,
-        #                 facecolor='none', edgecolor=color, legend=False, ax=ax
-        #             )
+        if positive_control_info is not None and category != 'CREs':
+            markers = {
+                'on-target': ('red', 's'), 
+                # 'off-target': ('blue', 's'), 
+                'miss': ('grey', 's')
+            }
+            for control, (color, marker) in markers.items():
+                data = subset[subset['positive_control'] == control]
+                if not data.empty:
+                    sns.scatterplot(
+                        data=data, x=x, y=y, 
+                        s=250, alpha=0.8, marker=marker,
+                        facecolor='none', edgecolor=color, legend=False, ax=ax
+                    )
         # ax.margins(y=0.5/figsize[1]/height_ratios[i] * max(np.array(height_ratios)))
         if flip_axis:
             ax.margins(x=0.6 / height_ratios[i])
