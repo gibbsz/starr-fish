@@ -24,6 +24,7 @@ import pickle
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
 # add current path to sys.path
 import sys
@@ -840,7 +841,10 @@ class T7CRE_DistributionEM:
         likelihood_sum = torch.logsumexp(likelihood_mat, dim=-1, keepdim=True)
         posterior_k = likelihood_mat - likelihood_sum
         
-        return posterior_k
+        # Calculate total log-likelihood for this step
+        total_log_likelihood = likelihood_sum.sum()
+        
+        return posterior_k, total_log_likelihood
     
     def maximization_step_x0(self, x0, cell_type_indexes, posterior_k):
         """M-step: Optimize x0 parameters"""
@@ -865,7 +869,7 @@ class T7CRE_DistributionEM:
             # Compute expected log likelihood
             ll = posterior_k + ll_k
             ll_sum = torch.logsumexp(ll, dim=-1)
-            loss = -ll_sum.mean()
+            loss = -ll_sum.sum()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x0 ** 2).sum()
@@ -905,7 +909,7 @@ class T7CRE_DistributionEM:
 
             ll = posterior_k + ll_t7
             ll_sum = torch.logsumexp(ll, dim=-1)
-            loss = -ll_sum.mean()
+            loss = -ll_sum.sum()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x1 ** 2).sum()
@@ -945,7 +949,7 @@ class T7CRE_DistributionEM:
 
             ll = posterior_k + ll_cre
             ll_sum = torch.logsumexp(ll, dim=-1)
-            loss = -ll_sum.mean()
+            loss = -ll_sum.sum()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x2 ** 2).sum()
@@ -957,8 +961,14 @@ class T7CRE_DistributionEM:
         
         return x2.detach(), x2.detach() - x2_orig
 
-    def fit(self, cell_types, obs_t7, obs_cre, dim=20, max_iter=50):
+    def fit(self, cell_types, obs_t7, obs_cre, dim=20, max_iter=50, log_dir=None):
         """Main EM algorithm"""
+        # Initialize TensorBoard writer
+        if log_dir is None:
+            log_dir = f"runs/em_algorithm_{int(time.time())}"
+        writer = SummaryWriter(log_dir)
+        print(f"TensorBoard logging to: {log_dir}")
+        
         # Convert inputs to numpy arrays first
         # Handle pandas objects (Series, Categorical, etc.)
         if hasattr(cell_types, 'values'):
@@ -999,6 +1009,17 @@ class T7CRE_DistributionEM:
         print(f"Initial x0: {x0.cpu().numpy().mean()}")
         print(f"Initial x1: {x1.cpu().numpy()}")
         print(f"Initial x2: {x2.cpu().numpy().mean()}")
+        
+        # Log initial parameters
+        writer.add_scalar('Parameters/x0_mean', x0.cpu().numpy().mean(), 0)
+        writer.add_scalar('Parameters/x0_std', x0.cpu().numpy().std(), 0)
+        writer.add_scalar('Parameters/x1_0', x1.cpu().numpy()[0], 0)
+        writer.add_scalar('Parameters/x1_1', x1.cpu().numpy()[1], 0)
+        writer.add_scalar('Parameters/x2_mean', x2.cpu().numpy().mean(), 0)
+        writer.add_scalar('Parameters/x2_std', x2.cpu().numpy().std(), 0)
+        
+        # Initialize for likelihood improvement tracking
+        prev_log_likelihood = None
 
         for i in range(max_iter):
             # Check for NaN/inf values before each step
@@ -1008,9 +1029,20 @@ class T7CRE_DistributionEM:
             
             # E-step
             start = time.time()
-            posterior_k = self.expectation_step(x0, x1, x2, obs_t7, obs_cre, cell_type_indexes, dim=dim)
+            posterior_k, log_likelihood = self.expectation_step(x0, x1, x2, obs_t7, obs_cre, cell_type_indexes, dim=dim)
             mid1 = time.time()
-            print(f"Step {i}, E-step time: {mid1 - start:.4f}s")
+            print(f"Step {i}, E-step time: {mid1 - start:.4f}s, Log-likelihood: {log_likelihood.item():.6f}")
+            
+            # Log likelihood to TensorBoard
+            writer.add_scalar('Likelihood/log_likelihood', log_likelihood.item(), i+1)
+            
+            # Log likelihood improvement
+            if prev_log_likelihood is not None:
+                likelihood_improvement = log_likelihood.item() - prev_log_likelihood
+                writer.add_scalar('Likelihood/likelihood_improvement', likelihood_improvement, i+1)
+                print(f"Step {i}, Likelihood improvement: {likelihood_improvement:.6f}")
+            prev_log_likelihood = log_likelihood.item()
+            
             # Check for NaN in posterior
             if torch.isnan(posterior_k).any():
                 print(f"Warning: NaN in posterior at step {i}")
@@ -1048,12 +1080,42 @@ class T7CRE_DistributionEM:
                 break
             
             print(f"Step {i}, x0: {x0.cpu().numpy().mean()}, x1: {x1.cpu().numpy()}, x2: {x2.cpu().numpy().mean()}")
+            
+            # Log parameters to TensorBoard
+            writer.add_scalar('Parameters/x0_mean', x0.cpu().numpy().mean(), i+1)
+            writer.add_scalar('Parameters/x0_std', x0.cpu().numpy().std(), i+1)
+            writer.add_scalar('Parameters/x1_0', x1.cpu().numpy()[0], i+1)
+            writer.add_scalar('Parameters/x1_1', x1.cpu().numpy()[1], i+1)
+            writer.add_scalar('Parameters/x2_mean', x2.cpu().numpy().mean(), i+1)
+            writer.add_scalar('Parameters/x2_std', x2.cpu().numpy().std(), i+1)
+            
+            # Log parameter changes
+            writer.add_scalar('Parameter_Changes/x0_diff_mean', torch.abs(x0_diff).mean().cpu().numpy(), i+1)
+            writer.add_scalar('Parameter_Changes/x1_diff_mean', torch.abs(x1_diff).mean().cpu().numpy(), i+1)
+            writer.add_scalar('Parameter_Changes/x2_diff_mean', torch.abs(x2_diff).mean().cpu().numpy(), i+1)
+            
+            # Log relative changes for convergence monitoring
+            x0_rel_change = torch.abs(x0_diff) / (torch.abs(x0) + 1e-8)
+            x1_rel_change = torch.abs(x1_diff) / (torch.abs(x1) + 1e-8)
+            x2_rel_change = torch.abs(x2_diff) / (torch.abs(x2) + 1e-8)
+            
+            writer.add_scalar('Convergence/x0_rel_change_max', x0_rel_change.max().cpu().numpy(), i+1)
+            writer.add_scalar('Convergence/x1_rel_change_max', x1_rel_change.max().cpu().numpy(), i+1)
+            writer.add_scalar('Convergence/x2_rel_change_max', x2_rel_change.max().cpu().numpy(), i+1)
 
             # check convergence
             if torch.all(torch.abs(x0_diff) / torch.abs(x0) < 1e-5) and torch.all(torch.abs(x1_diff) / torch.abs(x1) < 1e-5) and torch.all(torch.abs(x2_diff) / torch.abs(x2) < 1e-5):
                 print(f"Converged at step {i}")
+                writer.add_scalar('Training/converged_at_step', i, 0)
                 break
-            
+        
+        # Log final training metrics
+        writer.add_scalar('Training/total_iterations', i+1, 0)
+        writer.add_scalar('Training/max_iterations', max_iter, 0)
+        
+        # Close the writer
+        writer.close()
+        
         return x0.cpu().numpy(), x1.cpu().numpy(), x2.cpu().numpy()
 
 

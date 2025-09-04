@@ -133,8 +133,12 @@ celltypes_sec1 = starrfish3_sec1.get_celltypes().loc[t7_counts_sec1.index]
 celltypes_sec2 = starrfish3_sec2.get_celltypes().loc[t7_counts_sec2.index]
 # %%
 em_model = T7CRE_DistributionEM(device='cuda:4', use_x0=True)
-x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1, cre_counts_sec1, dim=20)
-x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2, cre_counts_sec2, dim=20)
+x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1, cre_counts_sec1, dim=40, max_iter=1000)
+x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2, cre_counts_sec2, dim=40, max_iter=1000)
+
+
+
+
 # %%
 np.save(f'{PWD}/results/expr3/t7cre_em.x0.sec1.npy', x0_sec1)
 np.save(f'{PWD}/results/expr3/t7cre_em.x0.sec2.npy', x0_sec2)
@@ -161,9 +165,31 @@ celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().
 celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index].values
 celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
 # %% plot
+n_cre_threshold = 0
+n_celltype_threshold = 0
 fig, ax = plt.subplots(figsize=(4, 4))
-sns.scatterplot(data=celltype_corr, x='celltype_n', y='pearson', ax=ax)
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] > 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='red', ax=ax)
 ax.set_xscale('log')
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
+
+
+
+# %% visualize best cell type-wise corr
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(x=x2_mean_df_sec1.loc['Oligo NN'], y=x2_mean_df_sec2.loc['Oligo NN'], color='blue', ax=ax)
+# plot negative control
+sns.scatterplot(x=x2_mean_df_sec1.loc['Oligo NN', x2_mean_df_sec1.columns.intersection(starrfish3_sec1.get_negative_control_cres())], 
+                y=x2_mean_df_sec2.loc['Oligo NN', x2_mean_df_sec1.columns.intersection(starrfish3_sec1.get_negative_control_cres())], color='orange', ax=ax)
+sns.scatterplot(x=x2_mean_df_sec1.loc['Oligo NN', x2_mean_df_sec1.columns.intersection(starrfish3_sec1.get_positive_control_cres('Oligo NN', use='atac-peak'))], 
+                y=x2_mean_df_sec2.loc['Oligo NN', x2_mean_df_sec1.columns.intersection(starrfish3_sec1.get_positive_control_cres('Oligo NN', use='atac-peak'))], color='red', ax=ax)
+sns.scatterplot(x=x2_mean_df_sec1.loc['Oligo NN', x2_mean_df_sec1.columns.intersection(cre_blacklist)], 
+                y=x2_mean_df_sec2.loc['Oligo NN', x2_mean_df_sec1.columns.intersection(cre_blacklist)], color='green', ax=ax)
+
+
+
 
 
 # # %%
