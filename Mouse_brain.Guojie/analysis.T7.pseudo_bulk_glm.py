@@ -111,7 +111,7 @@ pseudo_bulk_glm_test_config = {
     'positive_x_or_y': False,  # normalize by T7
     'only_keep_positive_x': False,
     'only_keep_positive_y': False,  # normalize by negative control
-    'transform_x_y': None,
+    'transform_x_y': 'log',
     'fix_intercept': None, # can be None, negative_control_x, total_x or negative_control_y, total_y
     'pseudo_bulk_size': [100, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 2000, 2400, 2800, 3200, 3600, 4000],
     'pseudo_bulk_percentage': None,
@@ -360,4 +360,4 @@ atac_peaks = atac_peaks.loc[celltypes_to_use.intersection(atac_peaks.index), cre
 overlap = res_df.loc[atac_peaks.index, atac_peaks.columns][atac_peaks].notna().sum().sum()
 precision = overlap / atac_peaks.sum().sum()
 precision
-# %%
+

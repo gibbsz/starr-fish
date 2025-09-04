@@ -822,7 +822,8 @@ def _optimize_celltype_cre_worker(args):
     return celltype, cre, estimates.x[0], estimates.x[3], estimates.x[4]
 
 
-class T7CRE_DistributionEM:
+class T7CRE_Joint_DistributionEM:
+    # jointly model T7 and CRE distributions via the number of infected virus K
     def __init__(self, device='cuda' if torch.cuda.is_available() else 'cpu', use_x0=True):
         self.device = device
         self.use_x0 = use_x0
@@ -1006,7 +1007,7 @@ class T7CRE_DistributionEM:
         
         return x2.detach(), x2.detach() - x2_orig
 
-    def fit(self, cell_types, obs_t7, obs_cre, dim=20, max_iter=50):
+    def fit(self, cell_types, obs_t7, obs_cre, dim=20, max_iter=50, x0_prior=None):
         """Main EM algorithm"""
         # Convert inputs to numpy arrays first
         # Handle pandas objects (Series, Categorical, etc.)
@@ -1039,8 +1040,17 @@ class T7CRE_DistributionEM:
 
         # Initialize parameters more conservatively
         # Group by cell types to compute initial x0
-        x0 = torch.zeros((len(unique_celltypes), obs_t7.shape[1]), device=self.device, dtype=torch.float32)
-        
+        if x0_prior is None:
+            x0 = torch.zeros((len(unique_celltypes), obs_t7.shape[1]), device=self.device, dtype=torch.float32)
+        elif x0_prior == 'zero_percentage':
+            # check the number of non-zero elements in each cell type
+            zero_counts = (pd.DataFrame(obs_t7.cpu().numpy()) == 0).groupby(cell_type_indexes.cpu().numpy()).mean()
+            # set x0 to the mean of the non-zero elements
+            x0 = np.clip(-np.log(zero_counts), min=1e-9)
+            # transform to torch.softplus logits
+            x0 = np.log(np.exp(x0) - 1)
+            x0 = torch.tensor(x0.values, device=self.device, dtype=torch.float32)
+            
         x1 = torch.tensor([-1.0, 0], device=self.device, dtype=torch.float32)  # Start with more conservative value
         x2 = torch.tensor(np.zeros((len(unique_celltypes), obs_t7.shape[1], 2)), device=self.device, dtype=torch.float32)  # Start with more conservative value
         
@@ -1101,6 +1111,353 @@ class T7CRE_DistributionEM:
             # check convergence
             if torch.all(torch.abs(x0_diff) / torch.abs(x0) < 1e-5) and torch.all(torch.abs(x1_diff) / torch.abs(x1) < 1e-5) and torch.all(torch.abs(x2_diff) / torch.abs(x2) < 1e-5):
                 print(f"Converged at step {i}")
+                break
+            
+        return x0.cpu().numpy(), x1.cpu().numpy(), x2.cpu().numpy()
+
+
+class T7CRE_Split_DistributionEM:
+    # separately model T7 and CRE distribution, first estimate the infection rate
+    # lambda in each cell type and each CRE, then apply the infection rate to correct 
+    # the activity
+    def __init__(self, device='cuda' if torch.cuda.is_available() else 'cpu', use_x0=True, dim=20):
+        self.device = device
+        self.use_x0 = use_x0
+        self.dim = dim
+    
+    def expectation_t7_step(self, x0, x1, obs_t7, cell_type_indexes):
+        """
+        E-step: Calculate posterior distribution of k given current parameters
+        x0: infection rate shape of (n_celltypes, n_cres)
+        x1: shape of (2): r and q for t7
+        obs_t7: shape of (n_obs, n_cres)
+        """
+        obs_t7 = obs_t7.to(self.device).long()
+        cell_type_indexes = cell_type_indexes.to(self.device).long()
+        x0 = x0.to(self.device).float()
+        x1 = x1.to(self.device).float()
+
+        k_values = torch.arange(self.dim, device=self.device, dtype=torch.float32)  # (dim,)
+        k_values_pos = torch.arange(1, self.dim, device=self.device, dtype=torch.float32)  # (dim-1,)
+        
+        # Get lambda values for each observation based on cell type
+        k_lambda = torch.nn.functional.softplus(x0[cell_type_indexes, :])  # (n_obs, n_cres)
+
+        # Expand dimensions for broadcasting
+        obs_t7_expanded = obs_t7.unsqueeze(-1)  # (n_obs, n_cres, 1)
+        k_lambda_expanded = k_lambda.unsqueeze(-1)  # (n_obs, n_cres, 1)
+        k_values_expanded = k_values.unsqueeze(0).unsqueeze(0)  # (1, 1, dim)
+        
+        # k ~ Poisson(k_lambda): log P(k|k_lambda)
+        ll_k = torch.distributions.Poisson(k_lambda_expanded).log_prob(k_values_expanded)  # (n_obs, n_cres, dim)
+        
+        # Vectorized Poisson log PMF for obs_t7 ~ Poisson(exp(x1) * k)
+        total_counts_t7 = torch.nn.functional.softplus(x1[0])
+        mu_t7 = total_counts_t7 * k_values_pos  # (dim-1,)
+        mu_t7_expanded = mu_t7.unsqueeze(0).unsqueeze(0)  # (1, 1, dim-1)
+            
+        # T7 log PMF computation
+        ll_t7 = torch.distributions.negative_binomial.NegativeBinomial(
+            total_count=mu_t7_expanded, logits=x1[1]
+        ).log_prob(obs_t7_expanded)  # (n_obs, n_cres, dim-1)
+        # handle n=0 case, if obs == 0, prob is 0, otherwise, -inf
+        ll_t7 = torch.concat((torch.where(obs_t7_expanded == 0, 0, -torch.inf), ll_t7), dim=-1)
+
+        # Combined likelihood
+        likelihood_mat = ll_k + ll_t7
+        
+        # Posterior distribution using logsumexp for numerical stability
+        likelihood_sum = torch.logsumexp(likelihood_mat, dim=-1, keepdim=True)
+        posterior_k = likelihood_mat - likelihood_sum
+        
+        return posterior_k
+    
+    def maximization_step_x0(self, x0, cell_type_indexes, posterior_k):
+        """M-step: Optimize x0 parameters"""
+        x0_orig = x0.clone().detach()
+        x0 = nn.Parameter(x0.clone().detach().requires_grad_(True))
+        optimizer = optim.LBFGS([x0])  # Reduced lr and max_iter
+        
+        def closure():
+            optimizer.zero_grad()
+            
+            dim = posterior_k.shape[-1]
+            k_values = torch.arange(dim, device=self.device, dtype=torch.float32)
+            
+            # Get lambda values for each observation based on cell type
+            k_lambda = torch.nn.functional.softplus(x0[cell_type_indexes, :])  # (n_obs, n_cres)
+            k_lambda_expanded = k_lambda.unsqueeze(-1)  # (n_obs, n_cres, 1)
+            k_values_expanded = k_values.unsqueeze(0).unsqueeze(0)  # (1, 1, dim)
+            
+            # k ~ Poisson(k_lambda): log P(k|k_lambda)
+            ll_k = torch.distributions.Poisson(k_lambda_expanded).log_prob(k_values_expanded)
+
+            # Compute expected log likelihood
+            ll = posterior_k + ll_k
+            ll_sum = torch.logsumexp(ll, dim=-1)
+            loss = -ll_sum.mean()
+            
+            # Add L2 regularization to prevent extreme values
+            loss += 0.001 * (x0 ** 2).sum()
+            
+            loss.backward()
+            return loss
+        
+        optimizer.step(closure)
+        
+        return x0.detach(), x0.detach() - x0_orig
+    
+    def maximization_step_x1(self, x1, obs_t7, posterior_k):
+        """M-step: Optimize x1 parameter"""
+        x1_orig = x1.clone().detach()
+        x1 = nn.Parameter(x1.clone().detach().requires_grad_(True))
+        optimizer = optim.LBFGS([x1])  # Reduced lr and max_iter
+
+        def closure():
+            optimizer.zero_grad()
+            
+            obs_t7_expanded = obs_t7.unsqueeze(-1)  # (n_obs, 1)
+            dim = posterior_k.shape[-1]
+            k_values = torch.arange(1, dim, device=self.device, dtype=torch.float32) # (dim-1)
+            
+            # Vectorized Poisson log PMF for obs_t7 ~ Poisson(exp(x1) * k)
+            total_counts_t7 = torch.nn.functional.softplus(x1[0])
+            mu_t7 = total_counts_t7 * k_values  # (dim-1,)
+            mu_t7_expanded = mu_t7.unsqueeze(0).unsqueeze(0)  # (1, 1, dim-1)
+            
+            # T7 log PMF computation
+            ll_t7 = torch.distributions.negative_binomial.NegativeBinomial(
+                total_count=mu_t7_expanded, logits=x1[1]
+            ).log_prob(obs_t7_expanded)  # (n_obs, n_cres, dim-1)
+            
+            # now handle n = 0 case, if obs == 0, prob is 0, otherwise, -inf
+            ll_t7 = torch.concat((torch.where(obs_t7_expanded == 0, 0, -torch.inf), ll_t7), dim=-1)
+
+            ll = posterior_k + ll_t7
+            ll_sum = torch.logsumexp(ll, dim=-1)
+            loss = -ll_sum.mean()
+            
+            # Add L2 regularization to prevent extreme values
+            loss += 0.001 * (x1 ** 2).sum()
+            
+            loss.backward()
+            return loss
+        
+        optimizer.step(closure)
+        
+        return x1.detach(), x1.detach() - x1_orig
+
+    def expectation_cre_step(self, x0, x2, obs_cre, cell_type_indexes):
+        """
+        E-step: Calculate posterior distribution of k given current parameters
+        """
+        obs_cre = obs_cre.to(self.device).long()
+        cell_type_indexes = cell_type_indexes.to(self.device).long()
+        x0 = x0.to(self.device).float()
+        x2 = x2.to(self.device).float()
+
+        k_values = torch.arange(self.dim, device=self.device, dtype=torch.float32)  # (dim,)
+        k_values_pos = torch.arange(1, self.dim, device=self.device, dtype=torch.float32)  # (dim-1,)
+        
+        # Get lambda values for each observation based on cell type
+        k_lambda = torch.nn.functional.softplus(x0[cell_type_indexes, :])  # (n_obs, n_cres)
+
+        # Expand dimensions for broadcasting
+        obs_cre_expanded = obs_cre.unsqueeze(-1)  # (n_obs, n_cres, 1)
+        k_lambda_expanded = k_lambda.unsqueeze(-1)  # (n_obs, n_cres, 1)
+        k_values_expanded = k_values.unsqueeze(0).unsqueeze(0)  # (1, 1, dim)
+        
+        # k ~ Poisson(k_lambda): log P(k|k_lambda)
+        ll_k = torch.distributions.Poisson(k_lambda_expanded).log_prob(k_values_expanded)  # (n_obs, n_cres, dim)
+        
+        # Vectorized obs_cre ~ NegBinom(exp(x2[cell_type_indexes, 0]) * k, torch.sigmoid(x2[cell_type_indexes, 1]))
+        total_counts_cre = torch.nn.functional.softplus(x2[cell_type_indexes, :, 0]).unsqueeze(-1)  # (n_obs, n_cres, 1)
+        logits_cre = x2[cell_type_indexes, :, 1].unsqueeze(-1)  # (n_obs, n_cres, 1)
+        mu_cre = total_counts_cre * k_values_pos.unsqueeze(0).unsqueeze(0)  # (n_obs, n_cres, dim-1)
+
+        # CRE log PMF computation
+        ll_cre = torch.distributions.negative_binomial.NegativeBinomial(
+            total_count=mu_cre, logits=logits_cre
+        ).log_prob(obs_cre_expanded)  # (n_obs, n_cres, dim-1)
+        # now handle n = 0 case, if obs == 0, prob is 0, otherwise, -inf
+        ll_cre = torch.concat((torch.where(obs_cre_expanded == 0, 0, -torch.inf), ll_cre), dim=-1)
+
+        # Combined likelihood
+        likelihood_mat = ll_k + ll_cre
+        
+        # Posterior distribution using logsumexp for numerical stability
+        likelihood_sum = torch.logsumexp(likelihood_mat, dim=-1, keepdim=True)
+        posterior_k = likelihood_mat - likelihood_sum
+        
+        return posterior_k
+
+    def maximization_step_x2(self, x2, obs_cre, posterior_k, cell_type_indexes):
+        """M-step: Optimize x2 parameter"""
+        x2_orig = x2.clone().detach()
+        x2 = nn.Parameter(x2.clone().detach().requires_grad_(True))
+        optimizer = optim.LBFGS([x2])  # Reduced lr and max_iter
+
+        def closure():
+            optimizer.zero_grad()
+            
+            obs_cre_expanded = obs_cre.unsqueeze(-1)  # (n_obs, 1)
+            dim = posterior_k.shape[-1]
+            k_values = torch.arange(1, dim, device=self.device, dtype=torch.float32) # (dim-1)
+
+            # Vectorized obs_cre ~ NegBinom(exp(x2[cell_type_indexes, 0]) * k, torch.sigmoid(x2[cell_type_indexes, 1]))
+            total_counts_cre = torch.nn.functional.softplus(x2[cell_type_indexes, :, 0]).unsqueeze(-1)  # (n_obs, n_cres, 1)
+            logits_cre = x2[cell_type_indexes, :, 1].unsqueeze(-1)  # (n_obs, n_cres, 1)
+            mu_cre = total_counts_cre * k_values.unsqueeze(0).unsqueeze(0)  # (n_obs, n_cres, dim-1)
+
+            # CRE log PMF computation
+            ll_cre = torch.distributions.negative_binomial.NegativeBinomial(
+                total_count=mu_cre, logits=logits_cre
+            ).log_prob(obs_cre_expanded)  # (n_obs, n_cres, dim-1)
+
+            # now handle n = 0 case, if obs == 0, prob is 0, otherwise, -inf
+            ll_cre = torch.concat((torch.where(obs_cre_expanded == 0, 0, -torch.inf), ll_cre), dim=-1)
+
+            ll = posterior_k + ll_cre
+            ll_sum = torch.logsumexp(ll, dim=-1)
+            loss = -ll_sum.mean()
+            
+            # Add L2 regularization to prevent extreme values
+            loss += 0.001 * (x2 ** 2).sum()
+            
+            loss.backward()
+            return loss
+        
+        optimizer.step(closure)
+        
+        return x2.detach(), x2.detach() - x2_orig
+
+    def fit(self, cell_types, obs_t7, obs_cre, max_iter=50, x0_prior=None):
+        """Main EM algorithm"""
+        # Convert inputs to numpy arrays first
+        # Handle pandas objects (Series, Categorical, etc.)
+        if hasattr(cell_types, 'values'):
+            cell_types = cell_types.values
+        if hasattr(obs_t7, 'values'):
+            obs_t7 = obs_t7.values
+        if hasattr(obs_cre, 'values'):
+            obs_cre = obs_cre.values
+
+        # Ensure we have numpy arrays
+        if not isinstance(cell_types, np.ndarray):
+            cell_types = np.array(cell_types)
+        if not isinstance(obs_t7, np.ndarray):
+            obs_t7 = np.array(obs_t7)
+        if not isinstance(obs_cre, np.ndarray):
+            obs_cre = np.array(obs_cre)
+            
+        # Ensure obs_t7 is float type (while it's still numpy)
+        obs_t7 = obs_t7.astype(np.long)
+        obs_cre = obs_cre.astype(np.long)
+        
+        # Convert categorical cell types to integer indices
+        unique_celltypes, cell_type_indexes = np.unique(cell_types, return_inverse=True)
+        
+        # Convert to torch tensors (no more .astype calls after this point)
+        cell_type_indexes = torch.from_numpy(cell_type_indexes).to(self.device).long()
+        obs_t7 = torch.from_numpy(obs_t7).to(self.device).long()
+        obs_cre = torch.from_numpy(obs_cre).to(self.device).long()
+
+        # Initialize parameters more conservatively
+        # Group by cell types to compute initial x0
+        if x0_prior is None:
+            x0 = torch.zeros((len(unique_celltypes), obs_t7.shape[1]), device=self.device, dtype=torch.float32)
+        elif x0_prior == 'zero_percentage':
+            # check the number of non-zero elements in each cell type
+            zero_counts = (pd.DataFrame(obs_t7.cpu().numpy()) == 0).groupby(cell_type_indexes.cpu().numpy()).mean()
+            # set x0 to the mean of the non-zero elements
+            x0 = np.clip(-np.log(zero_counts), min=1e-9)
+            # transform to torch.softplus logits
+            x0 = np.log(np.exp(x0) - 1)
+            x0 = torch.tensor(x0.values, device=self.device, dtype=torch.float32)
+        x1 = torch.tensor([-1.0, 0], device=self.device, dtype=torch.float32)  # Start with more conservative value
+        x2 = torch.tensor(np.zeros((len(unique_celltypes), obs_t7.shape[1], 2)), device=self.device, dtype=torch.float32)  # Start with more conservative value
+        
+        print(f"Running EM algorithm on {self.device}")
+        print(f"Initial x0: {x0.cpu().numpy().mean()}")
+        print(f"Initial x1: {x1.cpu().numpy()}")
+        print(f"Initial x2: {x2.cpu().numpy().mean()}")
+
+        for i in range(max_iter):
+            # Check for NaN/inf values before each step
+            if torch.isnan(x0).any() or torch.isinf(x0).any() or torch.isnan(x1).any() or torch.isinf(x1).any() or torch.isnan(x2).any() or torch.isinf(x2).any():
+                print(f"Warning: NaN/inf detected in parameters at step {i}")
+                break
+            
+            # E-step
+            start = time.time()
+            posterior_k = self.expectation_t7_step(x0, x1, obs_t7, cell_type_indexes)
+            mid1 = time.time()
+            print(f"Step {i}, E-step time: {mid1 - start:.4f}s")
+            # Check for NaN in posterior
+            if torch.isnan(posterior_k).any():
+                print(f"Warning: NaN in posterior at step {i}")
+                break
+            
+            if self.use_x0:
+                # M-step for x0
+                x0, x0_diff = self.maximization_step_x0(x0, cell_type_indexes, posterior_k)
+                mid2 = time.time()
+                print(f"Step {i}, M-step x0 time: {mid2 - mid1:.4f}s")
+                # Check for NaN in posterior
+                if torch.isnan(x0).any():
+                    print(f"Warning: NaN in posterior at step {i}")
+                    break
+            else:
+                mid2 = time.time()
+                x0_diff = x0.clone()
+            
+            # M-step for x1
+            x1, x1_diff = self.maximization_step_x1(x1, obs_t7, posterior_k)
+            end = time.time()
+            print(f"T7 Step {i}, M-step x1 time: {end - mid2:.4f}s")
+            # Check for NaN in posterior
+            if torch.isnan(x1).any():
+                print(f"Warning: NaN in posterior at T7 step {i}")
+                break
+
+            print(f"T7 Step {i}, x0: {x0.cpu().numpy().mean()}, x1: {x1.cpu().numpy()}")
+
+            # check convergence
+            if torch.all(torch.abs(x0_diff) / torch.abs(x0) < 1e-5) and torch.all(torch.abs(x1_diff) / torch.abs(x1) < 1e-5):
+                print(f"Converged for T7 at step {i}")
+                break
+            
+        # next, fix x0 and update x2
+        for i in range(max_iter):
+            # Check for NaN/inf values before each step
+            if torch.isnan(x0).any() or torch.isinf(x0).any() or torch.isnan(x1).any() or torch.isinf(x1).any() or torch.isnan(x2).any() or torch.isinf(x2).any():
+                print(f"Warning: NaN/inf detected in parameters at step {i}")
+                break
+            
+            # E-step
+            start = time.time()
+            posterior_k = self.expectation_cre_step(x0, x2, obs_cre, cell_type_indexes)
+            mid1 = time.time()
+            print(f"Step {i}, E-step time: {mid1 - start:.4f}s")
+            # Check for NaN in posterior
+            if torch.isnan(posterior_k).any():
+                print(f"Warning: NaN in posterior at step {i}")
+                break
+            
+            # M-step for x2
+            x2, x2_diff = self.maximization_step_x2(x2, obs_cre, posterior_k, cell_type_indexes)
+            end = time.time()
+            print(f"CRE Step {i}, M-step x2 time: {end - mid2:.4f}s")
+            # Check for NaN in posterior
+            if torch.isnan(x2).any():
+                print(f"Warning: NaN in posterior at step {i}")
+                break
+            
+            print(f"CRE Step {i}, x0: {x0.cpu().numpy().mean()}, x1: {x1.cpu().numpy()}, x2: {x2.cpu().numpy().mean()}")
+
+            # check convergence
+            if torch.all(torch.abs(x2_diff) / torch.abs(x2) < 1e-5):
+                print(f"Converged for CRE at step {i}")
                 break
             
         return x0.cpu().numpy(), x1.cpu().numpy(), x2.cpu().numpy()

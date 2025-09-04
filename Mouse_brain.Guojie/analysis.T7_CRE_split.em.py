@@ -110,7 +110,7 @@ def preprocess(adata_path):
 starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.pkl')
 starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.pkl')
 # %%
-from utils import T7CRE_Joint_DistributionEM
+from utils import T7CRE_Split_DistributionEM
 # %% for cre in t7_counts.columns:
 cell_counts_sec1 = starrfish3_sec1.get_celltypes().value_counts()
 cell_counts_sec2 = starrfish3_sec2.get_celltypes().value_counts()
@@ -132,23 +132,23 @@ cre_counts_sec2 = starrfish3_sec2.get_cre_expression().loc[t7_counts_sec2.index,
 celltypes_sec1 = starrfish3_sec1.get_celltypes().loc[t7_counts_sec1.index]
 celltypes_sec2 = starrfish3_sec2.get_celltypes().loc[t7_counts_sec2.index]
 # %%
-em_model = T7CRE_Joint_DistributionEM(device='cuda', use_x0=False)
-x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1, cre_counts_sec1, dim=20, max_iter=1000, x0_prior='zero_percentage')
-x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2, cre_counts_sec2, dim=20, max_iter=1000, x0_prior='zero_percentage')
+em_model = T7CRE_Split_DistributionEM(device='cuda', use_x0=True, dim=40)
+x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1, cre_counts_sec1, max_iter=400, x0_prior='zero_percentage')
+x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2, cre_counts_sec2, max_iter=400, x0_prior='zero_percentage')
 # %%
-np.save(f'{PWD}/results/expr3/t7cre_em.joint.x0.sec1.npy', x0_sec1)
-np.save(f'{PWD}/results/expr3/t7cre_em.joint.x0.sec2.npy', x0_sec2)
-np.save(f'{PWD}/results/expr3/t7cre_em.joint.x1.sec1.npy', x1_sec1)
-np.save(f'{PWD}/results/expr3/t7cre_em.joint.x1.sec2.npy', x1_sec2)
-np.save(f'{PWD}/results/expr3/t7cre_em.joint.x2.sec1.npy', x2_sec1)
-np.save(f'{PWD}/results/expr3/t7cre_em.joint.x2.sec2.npy', x2_sec2)
+np.save(f'{PWD}/results/expr3/t7cre_em.split.x0.sec1.npy', x0_sec1)
+np.save(f'{PWD}/results/expr3/t7cre_em.split.x0.sec2.npy', x0_sec2)
+np.save(f'{PWD}/results/expr3/t7cre_em.split.x1.sec1.npy', x1_sec1)
+np.save(f'{PWD}/results/expr3/t7cre_em.split.x1.sec2.npy', x1_sec2)
+np.save(f'{PWD}/results/expr3/t7cre_em.split.x2.sec1.npy', x2_sec1)
+np.save(f'{PWD}/results/expr3/t7cre_em.split.x2.sec2.npy', x2_sec2)
 # %%
-x0_sec1 = np.load(f'{PWD}/results/expr3/t7cre_em.joint.x0.sec1.npy')
-x0_sec2 = np.load(f'{PWD}/results/expr3/t7cre_em.joint.x0.sec2.npy')
-x1_sec1 = np.load(f'{PWD}/results/expr3/t7cre_em.joint.x1.sec1.npy')
-x1_sec2 = np.load(f'{PWD}/results/expr3/t7cre_em.joint.x1.sec2.npy')
-x2_sec1 = np.load(f'{PWD}/results/expr3/t7cre_em.joint.x2.sec1.npy')
-x2_sec2 = np.load(f'{PWD}/results/expr3/t7cre_em.joint.x2.sec2.npy')
+x0_sec1 = np.load(f'{PWD}/results/expr3/t7cre_em.split.x0.sec1.npy')
+x0_sec2 = np.load(f'{PWD}/results/expr3/t7cre_em.split.x0.sec2.npy')
+x1_sec1 = np.load(f'{PWD}/results/expr3/t7cre_em.split.x1.sec1.npy')
+x1_sec2 = np.load(f'{PWD}/results/expr3/t7cre_em.split.x1.sec2.npy')
+x2_sec1 = np.load(f'{PWD}/results/expr3/t7cre_em.split.x2.sec1.npy')
+x2_sec2 = np.load(f'{PWD}/results/expr3/t7cre_em.split.x2.sec2.npy')
 # %%
 # check infection rate differences
 x0_df_sec1 = pd.DataFrame(torch.nn.functional.softplus(torch.from_numpy(x0_sec1)), index=common_celltypes, columns=t7_counts_sec1.columns)
