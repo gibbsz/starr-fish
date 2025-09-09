@@ -2486,3 +2486,72 @@ def plot_bar(df_bar, legend_loc=None, figsize=(3, 1.5), flip_axis=False, fontsiz
     if legend_loc is not None:
         ax.legend(bbox_to_anchor=legend_loc, loc='upper right', borderaxespad=0.)
     return fig, ax
+
+def plot_grouped_clustermap(data_df, cre_info, title=None, final_order=None, figsize=(15, 6)):
+    """
+    Plot clustermap with CRE group hierarchically clustered and Negative Control ungrouped
+    
+    Parameters:
+    - data_df: DataFrame to plot
+    - cre_info: DataFrame with CRE information including 'best_subclass' column
+    - title: Optional title for the plot
+    - final_order: Optional list/array specifying column order. If None, will compute clustering.
+    - figsize: Tuple of (width, height) for figure size
+    """
+    if final_order is None:
+        common_cols = data_df.columns.intersection(cre_info.index)
+        cre_mask = cre_info.loc[common_cols, 'best_subclass'] == 'CRE'
+        neg_ctrl_mask = cre_info.loc[common_cols, 'best_subclass'] == 'Negative Control'
+        cre_cols = common_cols[cre_mask]
+        neg_ctrl_cols = common_cols[neg_ctrl_mask]
+        
+        # Cluster only CRE columns
+        if len(cre_cols) > 1:
+            import numpy as np
+            cre_data = data_df[cre_cols].T
+            
+            # Handle NaN and infinite values robustly
+            if cre_data.isnull().any().any() or not np.isfinite(cre_data).all().all():
+                # Fill NaN with column means, then fill any remaining NaN/inf with 0
+                cre_data_filled = cre_data.fillna(cre_data.mean())
+                cre_data_filled = cre_data_filled.fillna(0)  # Handle case where entire columns are NaN
+                cre_data_filled = cre_data_filled.replace([np.inf, -np.inf], 0)  # Handle inf values
+                
+                # Ensure all values are finite
+                if not np.isfinite(cre_data_filled).all().all():
+                    cre_data_filled = cre_data_filled.fillna(0).replace([np.inf, -np.inf], 0)
+                
+                distances = pdist(cre_data_filled, metric='euclidean')
+            else:
+                distances = pdist(cre_data, metric='euclidean')
+            
+            # Final check to ensure distances are finite
+            if not np.isfinite(distances).all():
+                distances = np.nan_to_num(distances, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            cre_linkage = linkage(distances, method='ward')
+            cre_dendro = dendrogram(cre_linkage, labels=cre_cols, no_plot=True)
+            cre_ordered = [cre_cols[i] for i in cre_dendro['leaves']]
+        else:
+            cre_ordered = list(cre_cols)
+        
+        final_order = cre_ordered + list(neg_ctrl_cols)
+    
+    col_colors = cre_info.loc[final_order, 'best_subclass'].map({'CRE': 'red', 'Negative Control': 'blue'})
+    
+    g = sns.clustermap(data_df[final_order], row_cluster=False, col_cluster=False, 
+                       cmap='coolwarm', center=0, col_colors=col_colors, figsize=figsize)
+    
+    # Remove column names and make row names smaller
+    g.ax_heatmap.set_xticklabels([])
+    g.ax_heatmap.tick_params(axis='y', labelsize=8)
+    
+    # Add vertical line to separate CRE and Negative Control groups
+    cre_count = sum(cre_info.loc[final_order, 'best_subclass'] == 'CRE')
+    if cre_count > 0 and cre_count < len(final_order):
+        g.ax_heatmap.axvline(x=cre_count, color='black', linewidth=2, linestyle='--')
+    
+    if title:
+        g.figure.suptitle(title)
+    return g, final_order
+

@@ -101,88 +101,53 @@ def preprocess(adata_path):
     return adata
 # %%
 # run the pseudo bulk bootstrap test for T7
-pseudo_bulk_glm_test_config = {
+glm_test_config = {
     'cell_types_to_use': None,
     'variate': 'T7',
     'norm_by_volm': False,
     'volm_covariate': False,  # normalize by T7, filter cells with T7 < 4
     'rna_covariate': False,
     'filter_infected_cells': False,
-    'positive_x_or_y': False,  # normalize by T7
+    'positive_x_or_y': True,  # only keep non zero cells
     'only_keep_positive_x': False,
     'only_keep_positive_y': False,  # normalize by negative control
     'transform_x_y': None,
     'fix_intercept': None, # can be None, negative_control_x, total_x or negative_control_y, total_y
-    'pseudo_bulk_size': [100, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 2000, 2400, 2800, 3200, 3600, 4000],
-    'pseudo_bulk_percentage': None,
-    'pseudo_bulk_number': [100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100, 100],
-    'replace': True,
-    'multiprocess_threads': 96,
+    'multiprocess_threads': 48,
 }
 # %%
 cre_blacklist = ['CRE061', 'CRE143', 'CRE001']
 mismatching_cres = pd.read_csv('Data/AAV_ONT_Barcode_Counts_vs_Mismatch_Percentage.csv', index_col=0)
 cre_blacklist = np.unique(cre_blacklist + mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20].tolist()).tolist()
 # %%
-save = False
 infected_cells_threshold = 5
 starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.pkl')
 cell_counts1 = starrfish3_sec1.get_celltypes().value_counts()
-res1 = starrfish3_sec1.pseudo_bulk_glm_test(**pseudo_bulk_glm_test_config)
-res1_summary = res1['result'].copy()
-res1['pseudo_bulk_adata'].uns['CRE_info'] = starrfish3_sec1.adata.uns['CRE_info'].copy()
-res1['pseudo_bulk_adata'].obs.index.name = None
-res1 = STARRFISH(res1['pseudo_bulk_adata'])
-res1.adata.obs['percentage'] = res1.adata.obs['percentage'].astype(float)
-if save:
-    res1.save('results/starrfish3_sec1_pseudo_bulk.pkl', overwrite_adata=True)
-    starrfish3_sec1.save('results/starrfish3_sec1.pkl')
+res1 = starrfish3_sec1.glm_test(**glm_test_config)
 to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
 to_filter_sec1[cre_blacklist] = True
-del starrfish3_sec1
 
 starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.pkl')
 cell_counts2 = starrfish3_sec2.get_celltypes().value_counts()
-res2 = starrfish3_sec2.pseudo_bulk_glm_test(**pseudo_bulk_glm_test_config)
-res2_summary = res2['result'].copy()
-res2['pseudo_bulk_adata'].uns['CRE_info'] = starrfish3_sec2.adata.uns['CRE_info'].copy()
-res2['pseudo_bulk_adata'].obs.index.name = None
-res2 = STARRFISH(res2['pseudo_bulk_adata'])
-res2.adata.obs['percentage'] = res2.adata.obs['percentage'].astype(float)
-if save:
-    res2.save('results/starrfish3_sec2_pseudo_bulk.pkl', overwrite_adata=True)
-    starrfish3_sec2.save('results/starrfish3_sec2.pkl')
+res2 = starrfish3_sec2.glm_test(**glm_test_config)
 to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < infected_cells_threshold
 to_filter_sec2[cre_blacklist] = True
-del starrfish3_sec2
 
 starrfish3 = STARRFISH.load('results/starrfish3.pkl')
 cell_counts = starrfish3.get_celltypes().value_counts()
-res = starrfish3.pseudo_bulk_glm_test(**pseudo_bulk_glm_test_config)
-res_summary = res['result'].copy()
-res['pseudo_bulk_adata'].uns['CRE_info'] = starrfish3.adata.uns['CRE_info'].copy()
-res['pseudo_bulk_adata'].obs.index.name = None
-res = STARRFISH(res['pseudo_bulk_adata'])
-res.adata.obs['percentage'] = res.adata.obs['percentage'].astype(float)
-if save:
-    res.save('results/starrfish3_pseudo_bulk.pkl', overwrite_adata=True)
-    starrfish3.save('results/starrfish3.pkl')
+res = starrfish3.glm_test(**glm_test_config)
 to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
 to_filter[cre_blacklist] = True
 del starrfish3
-# %%
-res = STARRFISH.load('results/starrfish3_pseudo_bulk.pkl')
-res1 = STARRFISH.load('results/starrfish3_sec1_pseudo_bulk.pkl')
-res2 = STARRFISH.load('results/starrfish3_sec2_pseudo_bulk.pkl')
 # %% check the results
-res1_summary_filter = res1_summary['coef'].copy()
-res2_summary_filter = res2_summary['coef'].copy()
-res1_summary_filter[to_filter_sec1] = np.nan
-res2_summary_filter[to_filter_sec2] = np.nan
+res1_filter = res1['coef'].copy()
+res2_filter = res2['coef'].copy()
+res1_filter[to_filter_sec1] = np.nan
+res2_filter[to_filter_sec2] = np.nan
 # %%
-cre_corr, celltype_corr = res1.corr_starrfish(res1_summary['coef'], res2_summary['coef'])
+cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(res1['coef'], res2['coef'])
 # %% plot cell type corr
-cre_corr['libsize'] = res1.lib_size['counts'].loc[cre_corr.index]
+cre_corr['libsize'] = starrfish3_sec1.lib_size['counts'].loc[cre_corr.index]
 celltype_corr['celltype_sec1'] = cell_counts1.loc[celltype_corr.index].values
 celltype_corr['celltype_sec2'] = cell_counts2.loc[celltype_corr.index].values
 celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
@@ -201,26 +166,26 @@ reproducible_celltypes = celltype_corr.index[(celltype_corr['pearson_p'] <= 0.05
 
 # %% plot the heatmap
 from plots import plot_grouped_clustermap
-cre_info = res1.get_creinfo().copy()
+cre_info = starrfish3_sec1.get_creinfo().copy()
 cre_info['best_subclass'] = 'CRE'
-cre_info.loc[res1.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
+cre_info.loc[starrfish3_sec1.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
 
-_, final_order = plot_grouped_clustermap(res1_summary['coef'].loc[reproducible_celltypes], cre_info, 'Section 1', figsize=(15, 8))
-_, _ = plot_grouped_clustermap(res2_summary['coef'].loc[reproducible_celltypes], cre_info, 'Section 2', final_order=final_order, figsize=(15, 8))
+_, final_order = plot_grouped_clustermap(res1['coef'].loc[reproducible_celltypes], cre_info, 'Section 1', figsize=(15, 8))
+_, _ = plot_grouped_clustermap(res2['coef'].loc[reproducible_celltypes], cre_info, 'Section 2', final_order=final_order, figsize=(15, 8))
 
 
 
 # %% visualize best cell type-wise corr
 fig, ax = plt.subplots(figsize=(4, 4))
 celltype = 'OB-in Frmd7 Gaba'
-sns.scatterplot(x=res1_summary['coef'].loc[celltype], y=res2_summary['coef'].loc[celltype], color='blue', ax=ax)
+sns.scatterplot(x=res1['coef'].loc[celltype], y=res2['coef'].loc[celltype], color='blue', ax=ax)
 # plot negative control
-sns.scatterplot(x=res1_summary['coef'].loc[celltype, res1.get_negative_control_cres()], 
-                y=res2_summary['coef'].loc[celltype, res1.get_negative_control_cres()], color='orange', ax=ax)
-sns.scatterplot(x=res1_summary['coef'].loc[celltype, res1.get_positive_control_cres(celltype, use='atac-peak')], 
-                y=res2_summary['coef'].loc[celltype, res1.get_positive_control_cres(celltype, use='atac-peak')], color='red', ax=ax)
-sns.scatterplot(x=res1_summary['coef'].loc[celltype, cre_blacklist], 
-                y=res2_summary['coef'].loc[celltype, cre_blacklist], color='green', ax=ax)
+sns.scatterplot(x=res1['coef'].loc[celltype, res1.get_negative_control_cres()], 
+                y=res2['coef'].loc[celltype, res1.get_negative_control_cres()], color='orange', ax=ax)
+sns.scatterplot(x=res1['coef'].loc[celltype, res1.get_positive_control_cres(celltype, use='atac-peak')], 
+                y=res2['coef'].loc[celltype, res1.get_positive_control_cres(celltype, use='atac-peak')], color='red', ax=ax)
+sns.scatterplot(x=res1['coef'].loc[celltype, cre_blacklist], 
+                y=res2['coef'].loc[celltype, cre_blacklist], color='green', ax=ax)
 ax.set_xlabel(f'Section 1 {celltype}')
 ax.set_ylabel(f'Section 2 {celltype}')
 # %% check CRE363, strongest CRE
@@ -255,17 +220,17 @@ ax[1].set_ylabel('CRE Pseudo bulk Expression')
 # %% visualize best CRE-wise corr: CRE298 or CRE210
 fig, ax = plt.subplots(ncols=2, figsize=(8, 4))
 cre = 'CRE298'
-sns.scatterplot(x=res1_summary['coef'][cre], y=res2_summary['coef'][cre], color='blue', ax=ax[0])
+sns.scatterplot(x=res1['coef'][cre], y=res2['coef'][cre], color='blue', ax=ax[0])
 # plot negative control
-sns.scatterplot(x=res1_summary['coef'].loc[res1.get_positive_control_celltypes(cre, use='atac-peak'), cre], 
-                y=res2_summary['coef'].loc[res1.get_positive_control_celltypes(cre, use='atac-peak'), cre], color='red', ax=ax[0])
+sns.scatterplot(x=res1['coef'].loc[res1.get_positive_control_celltypes(cre, use='atac-peak'), cre], 
+                y=res2['coef'].loc[res1.get_positive_control_celltypes(cre, use='atac-peak'), cre], color='red', ax=ax[0])
 # plot cell type size
-# sns.scatterplot(x=res1_summary['coef'][cre], y=res2_summary['coef'][cre],
-#                 hue=np.log(np.minimum(cell_counts1.loc[res1_summary['coef'].index],
-#                                        cell_counts2.loc[res2_summary['coef'].index])), ax=ax[1])
-sns.scatterplot(x=res1_summary['coef'][cre], hue=res2_summary['coef'][cre],
-                y=np.log(np.minimum(cell_counts1.loc[res1_summary['coef'].index],
-                                       cell_counts2.loc[res2_summary['coef'].index])), ax=ax[1])
+# sns.scatterplot(x=res1['coef'][cre], y=res2['coef'][cre],
+#                 hue=np.log(np.minimum(cell_counts1.loc[res1['coef'].index],
+#                                        cell_counts2.loc[res2['coef'].index])), ax=ax[1])
+sns.scatterplot(x=res1['coef'][cre], hue=res2['coef'][cre],
+                y=np.log(np.minimum(cell_counts1.loc[res1['coef'].index],
+                                       cell_counts2.loc[res2['coef'].index])), ax=ax[1])
 
 
 
@@ -319,7 +284,7 @@ cre_info = res.get_creinfo().copy()
 cre_info['best_subclass'] = 'CRE'
 cre_info.loc[res.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
 # design a test to compare CRE activity in each cell type to Negative Control
-res_df = res_summary['coef'].copy()
+res_df = res['coef'].copy()
 res_q = pd.DataFrame(1.0, index=res_df.index, columns=res_df.columns)
 # remove to_filter
 res_df[cre_blacklist] = np.nan
@@ -339,9 +304,9 @@ for ct in res_df.index:
             p_values = z_scores.apply(stats.norm.cdf)
             res_q.loc[ct] = np.minimum(p_values, 1-p_values)
     # remove irreproduciable results
-    if ct in res1_summary['coef'].index and ct in res2_summary['coef'].index:
-        irr = res1_summary['coef'].columns[np.abs(res1_summary['coef'].loc[ct] - res2_summary['coef'].loc[ct]) > 0.2]
-        irr = res1_summary['coef'].columns[np.isnan(res1_summary['coef'].loc[ct]) | np.isnan(res2_summary['coef'].loc[ct])].union(irr)
+    if ct in res1['coef'].index and ct in res2['coef'].index:
+        irr = res1['coef'].columns[np.abs(res1['coef'].loc[ct] - res2['coef'].loc[ct]) > 0.2]
+        irr = res1['coef'].columns[np.isnan(res1['coef'].loc[ct]) | np.isnan(res2['coef'].loc[ct])].union(irr)
         res_df.loc[ct, irr] = np.nan
         res_q.loc[ct, irr] = np.nan
     else:

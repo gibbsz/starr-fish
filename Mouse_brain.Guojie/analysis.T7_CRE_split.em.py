@@ -133,8 +133,14 @@ celltypes_sec1 = starrfish3_sec1.get_celltypes().loc[t7_counts_sec1.index]
 celltypes_sec2 = starrfish3_sec2.get_celltypes().loc[t7_counts_sec2.index]
 # %%
 em_model = T7CRE_Split_DistributionEM(device='cuda', use_x0=True, dim=40)
-x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1, cre_counts_sec1, max_iter=400, x0_prior='zero_percentage')
-x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2, cre_counts_sec2, max_iter=400, x0_prior='zero_percentage')
+x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1, cre_counts_sec1, max_iter=1000, x0_prior='zero_percentage',
+                                         x0_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.split.x0.sec1.npy',
+                                         x1_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.split.x1.sec1.npy',
+                                         x2_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.split.x2.sec1.npy')
+x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2, cre_counts_sec2, max_iter=1000, x0_prior='zero_percentage',
+                                         x0_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.split.x0.sec2.npy',
+                                         x1_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.split.x1.sec2.npy',
+                                         x2_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.split.x2.sec2.npy')
 # %%
 np.save(f'{PWD}/results/expr3/t7cre_em.split.x0.sec1.npy', x0_sec1)
 np.save(f'{PWD}/results/expr3/t7cre_em.split.x0.sec2.npy', x0_sec2)
@@ -170,9 +176,41 @@ x2_mean_df_sec1 = x2_r_df_sec1 * (1-x2_p_df_sec1) / x2_p_df_sec1
 x2_mean_df_sec2 = x2_r_df_sec2 * (1-x2_p_df_sec2) / x2_p_df_sec2
 x2_log_mean_df_sec1 = np.log1p(x2_mean_df_sec1)
 x2_log_mean_df_sec2 = np.log1p(x2_mean_df_sec2)
+# %% infection rate corr
+cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(x0_df_sec1, x0_df_sec2)
+cre_corr['libsize'] = starrfish3_sec1.lib_size['counts'].loc[cre_corr.index]
+celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().loc[celltype_corr.index].values
+celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index].values
+celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
+
+# %% corr to library size
+fig, ax = plt.subplots(figsize=(4, 4))
+celltype = 'Oligo NN'
+sns.scatterplot(x=x0_df_sec1.loc[celltype], 
+                y=x0_df_sec2.loc[celltype],
+                hue=starrfish3_sec1.lib_size['counts'].loc[x0_df_sec1.columns], 
+                ax=ax)
+ax.set_xscale('log')
+ax.set_xlabel('Infection Rate Sec1 (log)')
+# ax.set_ylabel('Library Size (log)')
+ax.set_ylabel('Infection Rate Sec2 (log)')
+ax.set_yscale('log')
+# %% plot
+n_cre_threshold = 5
+n_celltype_threshold = 5
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] > 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='red', ax=ax)
+ax.set_xscale('log')
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
+
+
+
+
 # %% do cre and cell type corr
 cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(x2_log_mean_df_sec1, x2_log_mean_df_sec2)
-# %%
 cre_corr['libsize'] = starrfish3_sec1.lib_size['counts'].loc[cre_corr.index]
 celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().loc[celltype_corr.index].values
 celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index].values
@@ -193,7 +231,7 @@ sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effec
 
 # %% visualize best cell type-wise corr
 fig, ax = plt.subplots(figsize=(4, 4))
-celltype = 'IT AON-TT-DP Glut'
+celltype = 'TH Prkcd Grin2c Glut'
 sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype], y=x2_log_mean_df_sec2.loc[celltype], color='blue', ax=ax)
 # plot negative control
 sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype, x2_log_mean_df_sec1.columns.intersection(starrfish3_sec1.get_negative_control_cres())],
@@ -224,12 +262,21 @@ ax.set_xlabel('Activity Sec1 (log)')
 ax.set_ylabel('Activity Sec2 (log)')
 
 
+# %% directly plot x2_log_mean_df_sec1
+from plots import plot_grouped_clustermap
+cre_info = starrfish3_sec1.get_creinfo().copy()
+cre_info['best_subclass'] = 'CRE'
+cre_info.loc[starrfish3_sec1.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
+
+_, final_order = plot_grouped_clustermap(x2_log_mean_df_sec1, cre_info, 'Section 1', figsize=(15, 8))
+_, _ = plot_grouped_clustermap(x2_log_mean_df_sec2, cre_info, 'Section 2', final_order=final_order, figsize=(15, 8))
+
 
 
 # %% dot plot
 from plots import celltype_pval_dotplot
 cre_info = starrfish3_sec1.get_creinfo().copy()
-cre_info['best_subclass'] = 'CRE'
+# cre_info['best_subclass'] = 'CRE'
 cre_info.loc[starrfish3_sec1.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
 # design a test to compare CRE activity in each cell type to Negative Control
 res_df = x2_log_mean_df_sec1.copy()
@@ -265,7 +312,7 @@ cres_to_use = res_q.columns[np.nanmin(res_q.loc[celltypes_to_use], axis=0) < 0.0
 cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
 fig, final_order = celltype_pval_dotplot(res_q, res_df, cres_to_use, celltypes_to_use,
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(15, 20))
+                                         figsize=(15, 35))
 fig
 
 

@@ -24,6 +24,7 @@ import pickle
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.utils.tensorboard import SummaryWriter
 import matplotlib.pyplot as plt
 # add current path to sys.path
 import sys
@@ -890,7 +891,10 @@ class T7CRE_Joint_DistributionEM:
         likelihood_sum = torch.logsumexp(likelihood_mat, dim=-1, keepdim=True)
         posterior_k = likelihood_mat - likelihood_sum
         
-        return posterior_k
+        # Calculate total log-likelihood for this step
+        total_log_likelihood = likelihood_sum.sum()
+        
+        return posterior_k, total_log_likelihood
     
     def maximization_step_x0(self, x0, cell_type_indexes, posterior_k):
         """M-step: Optimize x0 parameters"""
@@ -915,7 +919,7 @@ class T7CRE_Joint_DistributionEM:
             # Compute expected log likelihood
             ll = posterior_k + ll_k
             ll_sum = torch.logsumexp(ll, dim=-1)
-            loss = -ll_sum.mean()
+            loss = -ll_sum.sum()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x0 ** 2).sum()
@@ -955,7 +959,7 @@ class T7CRE_Joint_DistributionEM:
 
             ll = posterior_k + ll_t7
             ll_sum = torch.logsumexp(ll, dim=-1)
-            loss = -ll_sum.mean()
+            loss = -ll_sum.sum()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x1 ** 2).sum()
@@ -995,7 +999,7 @@ class T7CRE_Joint_DistributionEM:
 
             ll = posterior_k + ll_cre
             ll_sum = torch.logsumexp(ll, dim=-1)
-            loss = -ll_sum.mean()
+            loss = -ll_sum.sum()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x2 ** 2).sum()
@@ -1007,8 +1011,14 @@ class T7CRE_Joint_DistributionEM:
         
         return x2.detach(), x2.detach() - x2_orig
 
-    def fit(self, cell_types, obs_t7, obs_cre, dim=20, max_iter=50, x0_prior=None):
+    def fit(self, cell_types, obs_t7, obs_cre, dim=20, max_iter=50, x0_prior=None, log_dir=None, 
+            x0_checkpoint_path=None, x1_checkpoint_path=None, x2_checkpoint_path=None):
         """Main EM algorithm"""
+        # Initialize TensorBoard writer
+        if log_dir is None:
+            log_dir = f"runs/em_algorithm_{int(time.time())}"
+        writer = SummaryWriter(log_dir)
+        print(f"TensorBoard logging to: {log_dir}")
         # Convert inputs to numpy arrays first
         # Handle pandas objects (Series, Categorical, etc.)
         if hasattr(cell_types, 'values'):
@@ -1038,9 +1048,14 @@ class T7CRE_Joint_DistributionEM:
         obs_t7 = torch.from_numpy(obs_t7).to(self.device).long()
         obs_cre = torch.from_numpy(obs_cre).to(self.device).long()
 
-        # Initialize parameters more conservatively
-        # Group by cell types to compute initial x0
-        if x0_prior is None:
+        # Initialize parameters from checkpoints if provided, otherwise use default initialization
+        x0_loaded, x1_loaded, x2_loaded = self.load_checkpoint(x0_checkpoint_path, x1_checkpoint_path, x2_checkpoint_path)
+        
+        # Initialize x0
+        if x0_loaded is not None:
+            x0 = x0_loaded
+            print("Using x0 from checkpoint")
+        elif x0_prior is None:
             x0 = torch.zeros((len(unique_celltypes), obs_t7.shape[1]), device=self.device, dtype=torch.float32)
         elif x0_prior == 'zero_percentage':
             # check the number of non-zero elements in each cell type
@@ -1050,14 +1065,36 @@ class T7CRE_Joint_DistributionEM:
             # transform to torch.softplus logits
             x0 = np.log(np.exp(x0) - 1)
             x0 = torch.tensor(x0.values, device=self.device, dtype=torch.float32)
-            
-        x1 = torch.tensor([-1.0, 0], device=self.device, dtype=torch.float32)  # Start with more conservative value
-        x2 = torch.tensor(np.zeros((len(unique_celltypes), obs_t7.shape[1], 2)), device=self.device, dtype=torch.float32)  # Start with more conservative value
+        
+        # Initialize x1
+        if x1_loaded is not None:
+            x1 = x1_loaded
+            print("Using x1 from checkpoint")
+        else:
+            x1 = torch.tensor([-1.0, 0], device=self.device, dtype=torch.float32)  # Start with more conservative value
+        
+        # Initialize x2
+        if x2_loaded is not None:
+            x2 = x2_loaded
+            print("Using x2 from checkpoint")
+        else:
+            x2 = torch.tensor(np.zeros((len(unique_celltypes), obs_t7.shape[1], 2)), device=self.device, dtype=torch.float32)  # Start with more conservative value
         
         print(f"Running EM algorithm on {self.device}")
         print(f"Initial x0: {x0.cpu().numpy().mean()}")
         print(f"Initial x1: {x1.cpu().numpy()}")
         print(f"Initial x2: {x2.cpu().numpy().mean()}")
+        
+        # Log initial parameters
+        writer.add_scalar('Parameters/x0_mean', x0.cpu().numpy().mean(), 0)
+        writer.add_scalar('Parameters/x0_std', x0.cpu().numpy().std(), 0)
+        writer.add_scalar('Parameters/x1_0', x1.cpu().numpy()[0], 0)
+        writer.add_scalar('Parameters/x1_1', x1.cpu().numpy()[1], 0)
+        writer.add_scalar('Parameters/x2_mean', x2.cpu().numpy().mean(), 0)
+        writer.add_scalar('Parameters/x2_std', x2.cpu().numpy().std(), 0)
+        
+        # Initialize for likelihood improvement tracking
+        prev_log_likelihood = None
 
         for i in range(max_iter):
             # Check for NaN/inf values before each step
@@ -1067,9 +1104,19 @@ class T7CRE_Joint_DistributionEM:
             
             # E-step
             start = time.time()
-            posterior_k = self.expectation_step(x0, x1, x2, obs_t7, obs_cre, cell_type_indexes, dim=dim)
+            posterior_k, log_likelihood = self.expectation_step(x0, x1, x2, obs_t7, obs_cre, cell_type_indexes, dim=dim)
             mid1 = time.time()
-            print(f"Step {i}, E-step time: {mid1 - start:.4f}s")
+            print(f"Step {i}, E-step time: {mid1 - start:.4f}s, Log-likelihood: {log_likelihood.item():.6f}")
+            
+            # Log likelihood to TensorBoard
+            writer.add_scalar('Likelihood/log_likelihood', log_likelihood.item(), i+1)
+            
+            # Log likelihood improvement
+            if prev_log_likelihood is not None:
+                likelihood_improvement = log_likelihood.item() - prev_log_likelihood
+                writer.add_scalar('Likelihood/likelihood_improvement', likelihood_improvement, i+1)
+                print(f"Step {i}, Likelihood improvement: {likelihood_improvement:.6f}")
+            prev_log_likelihood = log_likelihood.item()
             # Check for NaN in posterior
             if torch.isnan(posterior_k).any():
                 print(f"Warning: NaN in posterior at step {i}")
@@ -1107,13 +1154,62 @@ class T7CRE_Joint_DistributionEM:
                 break
             
             print(f"Step {i}, x0: {x0.cpu().numpy().mean()}, x1: {x1.cpu().numpy()}, x2: {x2.cpu().numpy().mean()}")
+            
+            # Log parameters to TensorBoard
+            writer.add_scalar('Parameters/x0_mean', x0.cpu().numpy().mean(), i+1)
+            writer.add_scalar('Parameters/x0_std', x0.cpu().numpy().std(), i+1)
+            writer.add_scalar('Parameters/x1_0', x1.cpu().numpy()[0], i+1)
+            writer.add_scalar('Parameters/x1_1', x1.cpu().numpy()[1], i+1)
+            writer.add_scalar('Parameters/x2_mean', x2.cpu().numpy().mean(), i+1)
+            writer.add_scalar('Parameters/x2_std', x2.cpu().numpy().std(), i+1)
+            
+            # Log parameter changes
+            writer.add_scalar('Parameter_Changes/x0_diff_mean', torch.abs(x0_diff).mean().cpu().numpy(), i+1)
+            writer.add_scalar('Parameter_Changes/x1_diff_mean', torch.abs(x1_diff).mean().cpu().numpy(), i+1)
+            writer.add_scalar('Parameter_Changes/x2_diff_mean', torch.abs(x2_diff).mean().cpu().numpy(), i+1)
+            
+            # Log relative changes for convergence monitoring
+            x0_rel_change = torch.abs(x0_diff) / (torch.abs(x0) + 1e-8)
+            x1_rel_change = torch.abs(x1_diff) / (torch.abs(x1) + 1e-8)
+            x2_rel_change = torch.abs(x2_diff) / (torch.abs(x2) + 1e-8)
+            
+            writer.add_scalar('Convergence/x0_rel_change_max', x0_rel_change.max().cpu().numpy(), i+1)
+            writer.add_scalar('Convergence/x1_rel_change_max', x1_rel_change.max().cpu().numpy(), i+1)
+            writer.add_scalar('Convergence/x2_rel_change_max', x2_rel_change.max().cpu().numpy(), i+1)
 
             # check convergence
             if torch.all(torch.abs(x0_diff) / torch.abs(x0) < 1e-5) and torch.all(torch.abs(x1_diff) / torch.abs(x1) < 1e-5) and torch.all(torch.abs(x2_diff) / torch.abs(x2) < 1e-5):
                 print(f"Converged at step {i}")
+                writer.add_scalar('Training/converged_at_step', i, 0)
                 break
-            
+        
+        # Log final training metrics
+        writer.add_scalar('Training/total_iterations', i+1, 0)
+        writer.add_scalar('Training/max_iterations', max_iter, 0)
+        
+        
+        # Close the writer
+        writer.close()
+        
         return x0.cpu().numpy(), x1.cpu().numpy(), x2.cpu().numpy()
+    
+    def load_checkpoint(self, x0_path=None, x1_path=None, x2_path=None):
+        """Load model parameters from separate .npy files"""
+        x0, x1, x2 = None, None, None
+        
+        if x0_path is not None:
+            x0 = torch.from_numpy(np.load(x0_path)).to(self.device).float()
+            print(f"Loaded x0 from {x0_path}")
+        
+        if x1_path is not None:
+            x1 = torch.from_numpy(np.load(x1_path)).to(self.device).float()
+            print(f"Loaded x1 from {x1_path}")
+        
+        if x2_path is not None:
+            x2 = torch.from_numpy(np.load(x2_path)).to(self.device).float()
+            print(f"Loaded x2 from {x2_path}")
+        
+        return x0, x1, x2
 
 
 class T7CRE_Split_DistributionEM:
@@ -1170,7 +1266,10 @@ class T7CRE_Split_DistributionEM:
         likelihood_sum = torch.logsumexp(likelihood_mat, dim=-1, keepdim=True)
         posterior_k = likelihood_mat - likelihood_sum
         
-        return posterior_k
+        # Calculate total log-likelihood for this step
+        total_log_likelihood = likelihood_sum.sum()
+        
+        return posterior_k, total_log_likelihood
     
     def maximization_step_x0(self, x0, cell_type_indexes, posterior_k):
         """M-step: Optimize x0 parameters"""
@@ -1195,7 +1294,7 @@ class T7CRE_Split_DistributionEM:
             # Compute expected log likelihood
             ll = posterior_k + ll_k
             ll_sum = torch.logsumexp(ll, dim=-1)
-            loss = -ll_sum.mean()
+            loss = -ll_sum.sum()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x0 ** 2).sum()
@@ -1235,7 +1334,7 @@ class T7CRE_Split_DistributionEM:
 
             ll = posterior_k + ll_t7
             ll_sum = torch.logsumexp(ll, dim=-1)
-            loss = -ll_sum.mean()
+            loss = -ll_sum.sum()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x1 ** 2).sum()
@@ -1289,7 +1388,10 @@ class T7CRE_Split_DistributionEM:
         likelihood_sum = torch.logsumexp(likelihood_mat, dim=-1, keepdim=True)
         posterior_k = likelihood_mat - likelihood_sum
         
-        return posterior_k
+        # Calculate total log-likelihood for this step
+        total_log_likelihood = likelihood_sum.sum()
+        
+        return posterior_k, total_log_likelihood
 
     def maximization_step_x2(self, x2, obs_cre, posterior_k, cell_type_indexes):
         """M-step: Optimize x2 parameter"""
@@ -1319,7 +1421,7 @@ class T7CRE_Split_DistributionEM:
 
             ll = posterior_k + ll_cre
             ll_sum = torch.logsumexp(ll, dim=-1)
-            loss = -ll_sum.mean()
+            loss = -ll_sum.sum()
             
             # Add L2 regularization to prevent extreme values
             loss += 0.001 * (x2 ** 2).sum()
@@ -1331,8 +1433,14 @@ class T7CRE_Split_DistributionEM:
         
         return x2.detach(), x2.detach() - x2_orig
 
-    def fit(self, cell_types, obs_t7, obs_cre, max_iter=50, x0_prior=None):
+    def fit(self, cell_types, obs_t7, obs_cre, max_iter=50, x0_prior=None, log_dir=None,
+            x0_checkpoint_path=None, x1_checkpoint_path=None, x2_checkpoint_path=None):
         """Main EM algorithm"""
+        # Initialize TensorBoard writer
+        if log_dir is None:
+            log_dir = f"runs/em_split_algorithm_{int(time.time())}"
+        writer = SummaryWriter(log_dir)
+        print(f"TensorBoard logging to: {log_dir}")
         # Convert inputs to numpy arrays first
         # Handle pandas objects (Series, Categorical, etc.)
         if hasattr(cell_types, 'values'):
@@ -1362,9 +1470,14 @@ class T7CRE_Split_DistributionEM:
         obs_t7 = torch.from_numpy(obs_t7).to(self.device).long()
         obs_cre = torch.from_numpy(obs_cre).to(self.device).long()
 
-        # Initialize parameters more conservatively
-        # Group by cell types to compute initial x0
-        if x0_prior is None:
+        # Initialize parameters from checkpoints if provided, otherwise use default initialization
+        x0_loaded, x1_loaded, x2_loaded = self.load_checkpoint(x0_checkpoint_path, x1_checkpoint_path, x2_checkpoint_path)
+        
+        # Initialize x0
+        if x0_loaded is not None:
+            x0 = x0_loaded
+            print("Using x0 from checkpoint")
+        elif x0_prior is None:
             x0 = torch.zeros((len(unique_celltypes), obs_t7.shape[1]), device=self.device, dtype=torch.float32)
         elif x0_prior == 'zero_percentage':
             # check the number of non-zero elements in each cell type
@@ -1374,13 +1487,37 @@ class T7CRE_Split_DistributionEM:
             # transform to torch.softplus logits
             x0 = np.log(np.exp(x0) - 1)
             x0 = torch.tensor(x0.values, device=self.device, dtype=torch.float32)
-        x1 = torch.tensor([-1.0, 0], device=self.device, dtype=torch.float32)  # Start with more conservative value
-        x2 = torch.tensor(np.zeros((len(unique_celltypes), obs_t7.shape[1], 2)), device=self.device, dtype=torch.float32)  # Start with more conservative value
+        
+        # Initialize x1
+        if x1_loaded is not None:
+            x1 = x1_loaded
+            print("Using x1 from checkpoint")
+        else:
+            x1 = torch.tensor([-1.0, 0], device=self.device, dtype=torch.float32)  # Start with more conservative value
+        
+        # Initialize x2
+        if x2_loaded is not None:
+            x2 = x2_loaded
+            print("Using x2 from checkpoint")
+        else:
+            x2 = torch.tensor(np.zeros((len(unique_celltypes), obs_t7.shape[1], 2)), device=self.device, dtype=torch.float32)  # Start with more conservative value
         
         print(f"Running EM algorithm on {self.device}")
         print(f"Initial x0: {x0.cpu().numpy().mean()}")
         print(f"Initial x1: {x1.cpu().numpy()}")
         print(f"Initial x2: {x2.cpu().numpy().mean()}")
+        
+        # Log initial parameters
+        writer.add_scalar('Parameters/x0_mean', x0.cpu().numpy().mean(), 0)
+        writer.add_scalar('Parameters/x0_std', x0.cpu().numpy().std(), 0)
+        writer.add_scalar('Parameters/x1_0', x1.cpu().numpy()[0], 0)
+        writer.add_scalar('Parameters/x1_1', x1.cpu().numpy()[1], 0)
+        writer.add_scalar('Parameters/x2_mean', x2.cpu().numpy().mean(), 0)
+        writer.add_scalar('Parameters/x2_std', x2.cpu().numpy().std(), 0)
+        
+        # Initialize for likelihood improvement tracking
+        prev_log_likelihood_t7 = None
+        prev_log_likelihood_cre = None
 
         for i in range(max_iter):
             # Check for NaN/inf values before each step
@@ -1390,9 +1527,19 @@ class T7CRE_Split_DistributionEM:
             
             # E-step
             start = time.time()
-            posterior_k = self.expectation_t7_step(x0, x1, obs_t7, cell_type_indexes)
+            posterior_k, log_likelihood_t7 = self.expectation_t7_step(x0, x1, obs_t7, cell_type_indexes)
             mid1 = time.time()
-            print(f"Step {i}, E-step time: {mid1 - start:.4f}s")
+            print(f"Step {i}, T7 E-step time: {mid1 - start:.4f}s, Log-likelihood: {log_likelihood_t7.item():.6f}")
+            
+            # Log T7 likelihood to TensorBoard
+            writer.add_scalar('Likelihood/log_likelihood_t7', log_likelihood_t7.item(), i+1)
+            
+            # Log T7 likelihood improvement
+            if prev_log_likelihood_t7 is not None:
+                likelihood_improvement_t7 = log_likelihood_t7.item() - prev_log_likelihood_t7
+                writer.add_scalar('Likelihood/likelihood_improvement_t7', likelihood_improvement_t7, i+1)
+                print(f"Step {i}, T7 Likelihood improvement: {likelihood_improvement_t7:.6f}")
+            prev_log_likelihood_t7 = log_likelihood_t7.item()
             # Check for NaN in posterior
             if torch.isnan(posterior_k).any():
                 print(f"Warning: NaN in posterior at step {i}")
@@ -1436,9 +1583,19 @@ class T7CRE_Split_DistributionEM:
             
             # E-step
             start = time.time()
-            posterior_k = self.expectation_cre_step(x0, x2, obs_cre, cell_type_indexes)
+            posterior_k, log_likelihood_cre = self.expectation_cre_step(x0, x2, obs_cre, cell_type_indexes)
             mid1 = time.time()
-            print(f"Step {i}, E-step time: {mid1 - start:.4f}s")
+            print(f"Step {i}, CRE E-step time: {mid1 - start:.4f}s, Log-likelihood: {log_likelihood_cre.item():.6f}")
+            
+            # Log CRE likelihood to TensorBoard
+            writer.add_scalar('Likelihood/log_likelihood_cre', log_likelihood_cre.item(), i+1)
+            
+            # Log CRE likelihood improvement
+            if prev_log_likelihood_cre is not None:
+                likelihood_improvement_cre = log_likelihood_cre.item() - prev_log_likelihood_cre
+                writer.add_scalar('Likelihood/likelihood_improvement_cre', likelihood_improvement_cre, i+1)
+                print(f"Step {i}, CRE Likelihood improvement: {likelihood_improvement_cre:.6f}")
+            prev_log_likelihood_cre = log_likelihood_cre.item()
             # Check for NaN in posterior
             if torch.isnan(posterior_k).any():
                 print(f"Warning: NaN in posterior at step {i}")
@@ -1461,6 +1618,24 @@ class T7CRE_Split_DistributionEM:
                 break
             
         return x0.cpu().numpy(), x1.cpu().numpy(), x2.cpu().numpy()
+    
+    def load_checkpoint(self, x0_path=None, x1_path=None, x2_path=None):
+        """Load model parameters from separate .npy files"""
+        x0, x1, x2 = None, None, None
+        
+        if x0_path is not None:
+            x0 = torch.from_numpy(np.load(x0_path)).to(self.device).float()
+            print(f"Loaded x0 from {x0_path}")
+        
+        if x1_path is not None:
+            x1 = torch.from_numpy(np.load(x1_path)).to(self.device).float()
+            print(f"Loaded x1 from {x1_path}")
+        
+        if x2_path is not None:
+            x2 = torch.from_numpy(np.load(x2_path)).to(self.device).float()
+            print(f"Loaded x2 from {x2_path}")
+        
+        return x0, x1, x2
 
 
 class STARRFISH:

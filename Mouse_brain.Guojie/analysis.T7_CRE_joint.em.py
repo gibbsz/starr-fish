@@ -132,9 +132,15 @@ cre_counts_sec2 = starrfish3_sec2.get_cre_expression().loc[t7_counts_sec2.index,
 celltypes_sec1 = starrfish3_sec1.get_celltypes().loc[t7_counts_sec1.index]
 celltypes_sec2 = starrfish3_sec2.get_celltypes().loc[t7_counts_sec2.index]
 # %%
-em_model = T7CRE_Joint_DistributionEM(device='cuda', use_x0=False)
-x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1, cre_counts_sec1, dim=20, max_iter=1000, x0_prior='zero_percentage')
-x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2, cre_counts_sec2, dim=20, max_iter=1000, x0_prior='zero_percentage')
+em_model = T7CRE_Joint_DistributionEM(device='cuda', use_x0=True)
+x0_sec1, x1_sec1, x2_sec1 = em_model.fit(celltypes_sec1.values, t7_counts_sec1, cre_counts_sec1, dim=40, max_iter=1000, x0_prior='zero_percentage',
+                                         x0_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.joint.x0.sec1.npy',
+                                         x1_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.joint.x1.sec1.npy',
+                                         x2_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.joint.x2.sec1.npy')
+x0_sec2, x1_sec2, x2_sec2 = em_model.fit(celltypes_sec2.values, t7_counts_sec2, cre_counts_sec2, dim=40, max_iter=1000, x0_prior='zero_percentage',
+                                         x0_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.joint.x0.sec2.npy',
+                                         x1_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.joint.x1.sec2.npy',
+                                         x2_checkpoint_path=f'{PWD}/results/expr3/t7cre_em.joint.x2.sec2.npy')
 # %%
 np.save(f'{PWD}/results/expr3/t7cre_em.joint.x0.sec1.npy', x0_sec1)
 np.save(f'{PWD}/results/expr3/t7cre_em.joint.x0.sec2.npy', x0_sec2)
@@ -168,10 +174,41 @@ x1_var_sec1 = x1_r_sec1 * (1-x1_p_sec1) / (x1_p_sec1**2)
 x1_var_sec2 = x1_r_sec2 * (1-x1_p_sec2) / (x1_p_sec2**2)
 x2_mean_df_sec1 = x2_r_df_sec1 * (1-x2_p_df_sec1) / x2_p_df_sec1
 x2_mean_df_sec2 = x2_r_df_sec2 * (1-x2_p_df_sec2) / x2_p_df_sec2
-x2_log_mean_df_sec1 = np.log1p(x2_mean_df_sec1)
-x2_log_mean_df_sec2 = np.log1p(x2_mean_df_sec2)
+x2_var_df_sec1 = x2_r_df_sec1 * (1-x2_p_df_sec1) / (x2_p_df_sec1**2)
+x2_var_df_sec2 = x2_r_df_sec2 * (1-x2_p_df_sec2) / (x2_p_df_sec2**2)
+x2_log_mean_df_sec1 = np.log(x2_mean_df_sec1)
+x2_log_mean_df_sec2 = np.log(x2_mean_df_sec2)
+x2_log_var_df_sec1 = np.log(x2_var_df_sec1)
+x2_log_var_df_sec2 = np.log(x2_var_df_sec2)
+
+
+
+
 # %% do cre and cell type corr
 cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(x2_log_mean_df_sec1, x2_log_mean_df_sec2)
+
+
+
+# %%
+cres_to_use = cre_corr[cre_corr['pearson_p'] <= 0.05].index
+cre_corr, celltype_corr = starrfish3_sec1.corr_atac_cpm(acvitity_df=x2_log_mean_df_sec1[cres_to_use], cell_types_to_use=x2_log_mean_df_sec1.index)
+sum(cre_corr['spearman_p'] <= 0.05), sum(celltype_corr['pearson_p'] <= 0.05)
+cres_to_use = cre_corr[cre_corr['spearman_p'] <= 0.05].index
+
+
+
+# %% visualize best cell type-wise corr
+fig, ax = plt.subplots(figsize=(4, 4))
+cre = 'CRE132'
+sns.scatterplot(x=x2_log_mean_df_sec1[cre], y=starrfish3_sec1.atac_cpm[cre], color='blue', ax=ax)
+# plot negative control
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[starrfish3_sec1.get_positive_control_celltypes(cre, use='atac-peak').intersection(x2_log_mean_df_sec1.index), cre],
+                y=starrfish3_sec1.atac_cpm.loc[starrfish3_sec1.get_positive_control_celltypes(cre, use='atac-peak').intersection(x2_log_mean_df_sec2.index), cre], color='red', ax=ax)
+ax.set_xlabel('Activity Sec1 (log)')
+ax.set_ylabel('ATAC cpm')
+
+
+
 # %%
 cre_corr['libsize'] = starrfish3_sec1.lib_size['counts'].loc[cre_corr.index]
 celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().loc[celltype_corr.index].values
@@ -193,7 +230,7 @@ sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effec
 
 # %% visualize best cell type-wise corr
 fig, ax = plt.subplots(figsize=(4, 4))
-celltype = 'IT AON-TT-DP Glut'
+celltype = 'OB Eomes Ms4a15 Glut'
 sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype], y=x2_log_mean_df_sec2.loc[celltype], color='blue', ax=ax)
 # plot negative control
 sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype, x2_log_mean_df_sec1.columns.intersection(starrfish3_sec1.get_negative_control_cres())],
@@ -210,6 +247,31 @@ sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype], y=x2_log_mean_df_sec2.loc[c
                 hue=starrfish3_sec1.lib_size['counts'].loc[x2_log_mean_df_sec1.columns], ax=ax)
 ax.set_xlabel('Activity Sec1 (log)')
 ax.set_ylabel('Activity Sec2 (log)')
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype], 
+                y=starrfish3_sec1.lib_size['counts'].loc[x2_log_mean_df_sec1.columns], ax=ax)
+ax.set_xlabel('Activity Sec1 (log)')
+ax.set_ylabel('Library Size (counts)')
+
+# %% take out the CREs that didn't align well
+cres_mismatch = x2_log_mean_df_sec1.columns[(np.abs(x2_log_mean_df_sec1.loc[celltype] - x2_log_mean_df_sec2.loc[celltype]) > 1) & (~x2_log_mean_df_sec1.loc[celltype].isna()) & (~x2_log_mean_df_sec2.loc[celltype].isna())]
+cres_match = x2_log_mean_df_sec1.columns[(np.abs(x2_log_mean_df_sec1.loc[celltype] - x2_log_mean_df_sec2.loc[celltype]) <= 1) | (x2_log_mean_df_sec1.loc[celltype].isna()) | (x2_log_mean_df_sec2.loc[celltype].isna())]
+# plot the variance
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype, cres_mismatch], y=x2_log_mean_df_sec2.loc[celltype, cres_mismatch], color='red', ax=ax)
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype, cres_match], y=x2_log_mean_df_sec2.loc[celltype, cres_match], color='blue', ax=ax)
+ax.set_xlabel('Activity Sec1 (log) mean')
+ax.set_ylabel('Activity Sec2 (log) mean')
+# plot their variances
+fig, ax = plt.subplots(ncols=2, figsize=(8, 4))
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype, cres_mismatch], y=x2_log_var_df_sec1.loc[celltype, cres_mismatch], color='red', ax=ax[0], alpha=0.5)
+sns.scatterplot(x=x2_log_mean_df_sec2.loc[celltype, cres_mismatch], y=x2_log_var_df_sec2.loc[celltype, cres_mismatch], color='red', ax=ax[1], alpha=0.5)
+sns.scatterplot(x=x2_log_mean_df_sec1.loc[celltype, cres_match], y=x2_log_var_df_sec1.loc[celltype, cres_match], color='blue', ax=ax[0], alpha=0.5)
+sns.scatterplot(x=x2_log_mean_df_sec2.loc[celltype, cres_match], y=x2_log_var_df_sec2.loc[celltype, cres_match], color='blue', ax=ax[1], alpha=0.5)
+ax[0].set_xlabel('Activity Sec1 (log) mean')
+ax[0].set_ylabel('Activity Sec1 (log) variance')
+ax[1].set_xlabel('Activity Sec2 (log) mean')
+ax[1].set_ylabel('Activity Sec2 (log) variance')
 
 
 
@@ -225,14 +287,57 @@ ax.set_ylabel('Activity Sec2 (log)')
 
 
 
+# %% directly plot x2_log_mean_df_sec1
+from plots import plot_grouped_clustermap
+cre_info = starrfish3_sec1.get_creinfo().copy()
+cre_info['best_subclass'] = 'CRE'
+cre_info.loc[starrfish3_sec1.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
+
+_, final_order = plot_grouped_clustermap(x2_log_mean_df_sec1, cre_info, 'Section 1', figsize=(15, 8))
+_, _ = plot_grouped_clustermap(x2_log_mean_df_sec2, cre_info, 'Section 2', final_order=final_order, figsize=(15, 8))
+# %% filter to reproducible results
+nonreproducible = np.abs(x2_log_mean_df_sec1 - x2_log_mean_df_sec2) > 1
+x2_log_mean_df_sec1_filtered = x2_log_mean_df_sec1.copy()
+x2_log_mean_df_sec2_filtered = x2_log_mean_df_sec2.copy()
+x2_log_mean_df_sec1_filtered[nonreproducible] = np.nan
+x2_log_mean_df_sec2_filtered[nonreproducible] = np.nan
+_, final_order = plot_grouped_clustermap(x2_log_mean_df_sec1_filtered, cre_info, 'Section 1 Filtered', figsize=(15, 8))
+_, _ = plot_grouped_clustermap(x2_log_mean_df_sec2_filtered, cre_info, 'Section 2 Filtered', final_order=final_order, figsize=(15, 8))
+# %% do cre and cell type corr
+cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(x2_log_mean_df_sec1_filtered, x2_log_mean_df_sec2_filtered)
+# %%
+cre_corr['libsize'] = starrfish3_sec1.lib_size['counts'].loc[cre_corr.index]
+celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().loc[celltype_corr.index].values
+celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index].values
+celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
+# %% plot
+n_cre_threshold = 5
+n_celltype_threshold = 5
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] > 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='red', ax=ax)
+ax.set_xscale('log')
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
+
+
+
 
 # %% dot plot
 from plots import celltype_pval_dotplot
 cre_info = starrfish3_sec1.get_creinfo().copy()
-cre_info['best_subclass'] = 'CRE'
+for cre in cre_info.index:
+    positive_cts = starrfish3_sec1.get_positive_control_celltypes(cre, use='chromatin-a')
+    if positive_cts is not None:
+        cre_info.loc[cre, 'best_subclass'] = ';'.join(positive_cts)
+    else:
+        cre_info.loc[cre, 'best_subclass'] = 'CRE'
+# cre_info['best_subclass'] = 'CRE'
 cre_info.loc[starrfish3_sec1.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
 # design a test to compare CRE activity in each cell type to Negative Control
-res_df = x2_log_mean_df_sec1.copy()
+# res_df = x2_log_mean_df_sec1.copy()
+res_df = x2_log_mean_df_sec1_filtered.copy()
 res_q = pd.DataFrame(1.0, index=res_df.index, columns=res_df.columns)
 # remove to_filter
 res_df[cre_blacklist] = np.nan
@@ -272,18 +377,30 @@ fig
 
 
 # %%
-res_df[res_q > 0.05] = np.nan
+# res_df[res_q > 0.05] = np.nan
+res_df = x2_log_mean_df_sec1_filtered.copy()
 atac_peaks = pd.read_csv('Data/cre_atac_peaks.csv', index_col=0)
-atac_peaks = atac_peaks.loc[celltypes_to_use.intersection(atac_peaks.index), cres_to_use.intersection(atac_peaks.columns)] >= 0.5
+atac_peaks = atac_peaks.loc[res_df.index.intersection(atac_peaks.index), res_df.columns.intersection(atac_peaks.columns)] >= 0.5
+res_df = res_df.loc[atac_peaks.index, atac_peaks.columns]
+atac_peaks[res_df.isna()] = False
+# res_df[res_df < 1] = np.nan
+res_df[res_q > 0.05] = np.nan
 overlap = res_df.loc[atac_peaks.index, atac_peaks.columns][atac_peaks].notna().sum().sum()
 precision = overlap / atac_peaks.sum().sum()
-precision
+recall = overlap / res_df.notna().sum().sum()
+precision, recall
 # %%
+res_df = x2_log_mean_df_sec1_filtered.copy()
 atac_peaks = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
-atac_peaks = atac_peaks.loc[celltypes_to_use.intersection(atac_peaks.index), cres_to_use.intersection(atac_peaks.columns)] >= 0.5
+atac_peaks = atac_peaks.loc[res_df.index.intersection(atac_peaks.index), res_df.columns.intersection(atac_peaks.columns)] >= 0.5
+res_df = res_df.loc[atac_peaks.index, atac_peaks.columns]
+atac_peaks[res_df.isna()] = False
+# res_df[res_df < 1] = np.nan
+res_df[res_q > 0.05] = np.nan
 overlap = res_df.loc[atac_peaks.index, atac_peaks.columns][atac_peaks].notna().sum().sum()
 precision = overlap / atac_peaks.sum().sum()
-precision
+recall = overlap / res_df.notna().sum().sum()
+precision, recall
 
 
 # %% compare with pseudo_glm_df
@@ -316,3 +433,4 @@ texts = []
 for i in overlap_df.index:
     texts.append(ax.text(overlap_df.loc[i, 'pseudo_glm_neg_n'], overlap_df.loc[i, 'em_neg_n'], i + ': ' + '{:.2f}'.format(overlap_df.loc[i, 'overlap_neg_pct']), fontsize=9))
 adjust_text(texts, ax=ax)
+# %%
