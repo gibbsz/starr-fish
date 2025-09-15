@@ -182,9 +182,18 @@ x2_log_var_df_sec1 = np.log(x2_var_df_sec1)
 x2_log_var_df_sec2 = np.log(x2_var_df_sec2)
 
 
+# %% filter by cell number ≥ 5
+infected_cells_threshold = 5
+to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
+to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < infected_cells_threshold
+to_filter_sec1[cre_blacklist] = True
+to_filter_sec2[cre_blacklist] = True
+
 
 
 # %% do cre and cell type corr
+x2_log_mean_df_sec1[to_filter_sec1] = np.nan
+x2_log_mean_df_sec2[to_filter_sec2] = np.nan
 cre_corr, celltype_corr = starrfish3_sec1.corr_starrfish(x2_log_mean_df_sec1, x2_log_mean_df_sec2)
 
 
@@ -215,8 +224,8 @@ celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().
 celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index].values
 celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
 # %% plot
-n_cre_threshold = 5
-n_celltype_threshold = 5
+n_cre_threshold = 10
+n_celltype_threshold = 10
 fig, ax = plt.subplots(figsize=(4, 4))
 sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] > 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='blue', ax=ax)
 sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='red', ax=ax)

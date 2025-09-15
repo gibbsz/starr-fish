@@ -2027,8 +2027,8 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
         activity = activity.clip(lower=1e-2).astype(float)  # Clip to avoid log10(0)
         activity = np.log10(activity)  # Transpose for CRE clustering
     if z_norm:
-        activity = activity.T
         activity = activity.sub(np.nanmean(activity, axis=1), axis=0).div(np.nanstd(activity, axis=1), axis=0)  # Z-score per CRE
+        activity = activity.T
     else:
         activity = activity.T
     q_value = -np.log10(q_value).T
@@ -2043,7 +2043,7 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
     toplot = pd.DataFrame({size_name: q_value.T.values.flatten(),
                             hue_name: activity.T.values.flatten(),
                             'cre_type': np.tile(cre_type, len(cell_types_to_use))})
-    hue_min, hue_max = toplot[hue_name].min(), toplot[hue_name].max()
+    hue_min, hue_max = -np.abs(toplot[hue_name]).max(), np.abs(toplot[hue_name]).max()
     size_min, size_max = toplot[size_name].min(), toplot[size_name].max()
     # plot dot plot, no edge color, use 4 sub plots
     # Set the height ratios for the subplots
@@ -2095,10 +2095,12 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
                 significant_cell_types_idx = np.pad(significant_cell_types_idx, (0, max_sig_n - len(significant_cell_types_idx)), constant_values=0)
                 significant_activities = np.pad(significant_activities, (0, max_sig_n - len(significant_activities)), constant_values=0)
                 # append the q-value
-                cre_order_token.append(
-                    np.concatenate((significant_activities_mean.reshape(-1), 
-                                    np.concatenate((significant_cell_types_idx.reshape(-1, 1), 
-                                                    significant_activities.reshape(-1, 1)), axis=1).reshape(-1))))
+                # cre_order_token.append(
+                #     np.concatenate((significant_activities_mean.reshape(-1), 
+                #                     np.concatenate((significant_cell_types_idx.reshape(-1, 1), 
+                #                                     significant_activities.reshape(-1, 1)), axis=1).reshape(-1))))
+                cre_order_token.append(np.concatenate((significant_cell_types_idx.reshape(-1, 1), 
+                                                       significant_activities.reshape(-1, 1)), axis=1).reshape(-1))
             # sort the cres by the order token
             cre_order_token = np.array(cre_order_token)
             # sort cres by the order token

@@ -112,7 +112,7 @@ starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.pkl')
 starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.pkl')
 starrfish2 = STARRFISH.load('results/starrfish2.pkl')
 starrfish3 = STARRFISH.load('results/starrfish3.pkl')
-# get subclass name and subclass transform
+# %% get subclass name and subclass transform
 subclass_annotation = pd.read_excel(f'Data/abc_atlas/allen_institute_nominature.xlsx')
 subclass_annotation['subclass'] = subclass_annotation['subclass_id_label'].str.replace('^[0-9]+ ', '', regex=True)
 subclass_annotation['subclass'] = subclass_annotation['subclass'].str.replace('/', '-', regex=True)
@@ -618,11 +618,28 @@ average_bootstrap_test_config = {
     'n_jobs': 128,
 }
 threshold = 'neg_control_mean'
+starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.bak.pkl')
 res1 = starrfish3_sec1.average_bootstrap_test(**average_bootstrap_test_config)
+del starrfish3_sec1
+starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.pkl')
+to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
+to_filter_sec1[cre_blacklist] = True
 res_q1, res_df1 = starrfish3_sec1.average_bootstrap_test_q(res1, threshold=threshold, norm='T7', tail='both', to_filter=to_filter_sec1, calibrate=None)
+
+starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.bak.pkl')
 res2 = starrfish3_sec2.average_bootstrap_test(**average_bootstrap_test_config)
+del starrfish3_sec2
+starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.pkl')
+to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < infected_cells_threshold
+to_filter_sec2[cre_blacklist] = True
 res_q2, res_df2 = starrfish3_sec2.average_bootstrap_test_q(res2, threshold=threshold, norm='T7', tail='both', to_filter=to_filter_sec2, calibrate=None)
+
+starrfish3 = STARRFISH.load('results/starrfish3.bak.pkl')
 res = starrfish3.average_bootstrap_test(**average_bootstrap_test_config)
+del starrfish3
+starrfish3 = STARRFISH.load('results/starrfish3.pkl')
+to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
+to_filter[cre_blacklist] = True
 res_q, res_df = starrfish3.average_bootstrap_test_q(res, threshold=threshold, norm='T7', tail='both', to_filter=to_filter, calibrate=None)
 
 

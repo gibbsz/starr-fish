@@ -111,7 +111,7 @@ pseudo_bulk_glm_test_config = {
     'positive_x_or_y': False,  # normalize by T7
     'only_keep_positive_x': False,
     'only_keep_positive_y': False,  # normalize by negative control
-    'transform_x_y': None,
+    'transform_x_y': 'log',
     'fix_intercept': None, # can be None, negative_control_x, total_x or negative_control_y, total_y
     'pseudo_bulk_size': [100, 200, 400, 600, 800, 1000, 1200, 1400, 1600, 2000, 2400, 2800, 3200, 3600, 4000],
     'pseudo_bulk_percentage': None,
@@ -179,8 +179,19 @@ res1_summary_filter = res1_summary['coef'].copy()
 res2_summary_filter = res2_summary['coef'].copy()
 res1_summary_filter[to_filter_sec1] = np.nan
 res2_summary_filter[to_filter_sec2] = np.nan
+# do calibration in CRE wise manner
+cre_mean1 = res1_summary_filter.apply(np.nanmean, axis=0)
+cre_mean2 = res2_summary_filter.apply(np.nanmean, axis=0)
+celltype_mean1 = res1_summary_filter.apply(np.nanmean, axis=1)
+celltype_mean2 = res2_summary_filter.apply(np.nanmean, axis=1)
+res1_summary_filter = res1_summary_filter.subtract(cre_mean1, axis=1).subtract(celltype_mean1, axis=0)
+res2_summary_filter = res2_summary_filter.subtract(cre_mean2, axis=1).subtract(celltype_mean2, axis=0)
+res1_summary_filter = res1_summary_filter - np.nanmean(res1_summary_filter.values.flatten())
+res2_summary_filter = res2_summary_filter - np.nanmean(res2_summary_filter.values.flatten())
+
+
 # %%
-cre_corr, celltype_corr = res1.corr_starrfish(res1_summary['coef'], res2_summary['coef'])
+cre_corr, celltype_corr = res1.corr_starrfish(res1_summary_filter, res2_summary_filter)
 # %% plot cell type corr
 cre_corr['libsize'] = res1.lib_size['counts'].loc[cre_corr.index]
 celltype_corr['celltype_sec1'] = cell_counts1.loc[celltype_corr.index].values
@@ -205,8 +216,8 @@ cre_info = res1.get_creinfo().copy()
 cre_info['best_subclass'] = 'CRE'
 cre_info.loc[res1.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
 
-_, final_order = plot_grouped_clustermap(res1_summary['coef'].loc[reproducible_celltypes], cre_info, 'Section 1', figsize=(15, 8))
-_, _ = plot_grouped_clustermap(res2_summary['coef'].loc[reproducible_celltypes], cre_info, 'Section 2', final_order=final_order, figsize=(15, 8))
+_, final_order = plot_grouped_clustermap(res1_summary_filter.loc[reproducible_celltypes], cre_info, 'Section 1', figsize=(15, 8))
+_, _ = plot_grouped_clustermap(res2_summary_filter.loc[reproducible_celltypes], cre_info, 'Section 2', final_order=final_order, figsize=(15, 8))
 
 
 
@@ -319,33 +330,41 @@ cre_info = res.get_creinfo().copy()
 cre_info['best_subclass'] = 'CRE'
 cre_info.loc[res.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
 # design a test to compare CRE activity in each cell type to Negative Control
-res_df = res_summary['coef'].copy()
-res_q = pd.DataFrame(1.0, index=res_df.index, columns=res_df.columns)
-# remove to_filter
-res_df[cre_blacklist] = np.nan
-negative_control_mean = res_df[res.get_negative_control_cres()].apply(np.nanmean, axis=1)
-negative_control_std = res_df[res.get_negative_control_cres()].apply(np.nanstd, axis=1)
-negative_control_upper = negative_control_mean + 2 * negative_control_std
-negative_control_lower = negative_control_mean - 2 * negative_control_std
-# for each cell type, anything between negative control upper and lower will be marked as not significant
-for ct in res_df.index:
-    if ct in negative_control_upper.index and ct in negative_control_lower.index:
-        if np.isnan(negative_control_upper[ct]) or np.isnan(negative_control_lower[ct]):
-            res_df.loc[ct, :] = np.nan
-            res_q.loc[ct, :] = np.nan
+def calculate_q(res_df):
+    # calibrate based on CRE mean and std
+    cre_mean = res_df.apply(np.nanmean, axis=0)
+    celltype_mean = res_df.apply(np.nanmean, axis=1)
+    res_df = res_df.subtract(cre_mean, axis=1).subtract(celltype_mean, axis=0)
+    res_df = res_df - np.nanmean(res_df.values.flatten())
+    res_q = pd.DataFrame(1.0, index=res_df.index, columns=res_df.columns)
+    # remove to_filter
+    res_df[cre_blacklist] = np.nan
+    negative_control_mean = res_df[res.get_negative_control_cres()].apply(np.nanmean, axis=1)
+    negative_control_std = res_df[res.get_negative_control_cres()].apply(np.nanstd, axis=1)
+    negative_control_upper = negative_control_mean + 2 * negative_control_std
+    negative_control_lower = negative_control_mean - 2 * negative_control_std
+    # for each cell type, anything between negative control upper and lower will be marked as not significant
+    for ct in res_df.index:
+        if ct in negative_control_upper.index and ct in negative_control_lower.index:
+            if np.isnan(negative_control_upper[ct]) or np.isnan(negative_control_lower[ct]):
+                res_df.loc[ct, :] = np.nan
+                res_q.loc[ct, :] = np.nan
+            else:
+                # calculate z-score and p-value of normal distribution with regard to negative control
+                z_scores = (res_df.loc[ct] - negative_control_mean[ct]) / negative_control_std[ct]
+                p_values = z_scores.apply(stats.norm.cdf)
+                res_q.loc[ct] = np.minimum(p_values, 1-p_values)
+        # remove irreproduciable results
+        if ct in res1_summary['coef'].index and ct in res2_summary['coef'].index:
+            irr = res1_summary['coef'].columns[np.abs(res1_summary['coef'].loc[ct] - res2_summary['coef'].loc[ct]) > 0.2]
+            irr = res1_summary['coef'].columns[np.isnan(res1_summary['coef'].loc[ct]) | np.isnan(res2_summary['coef'].loc[ct])].union(irr)
+            res_df.loc[ct, irr] = np.nan
+            res_q.loc[ct, irr] = np.nan
         else:
-            # calculate z-score and p-value of normal distribution with regard to negative control
-            z_scores = (res_df.loc[ct] - negative_control_mean[ct]) / negative_control_std[ct]
-            p_values = z_scores.apply(stats.norm.cdf)
-            res_q.loc[ct] = np.minimum(p_values, 1-p_values)
-    # remove irreproduciable results
-    if ct in res1_summary['coef'].index and ct in res2_summary['coef'].index:
-        irr = res1_summary['coef'].columns[np.abs(res1_summary['coef'].loc[ct] - res2_summary['coef'].loc[ct]) > 0.2]
-        irr = res1_summary['coef'].columns[np.isnan(res1_summary['coef'].loc[ct]) | np.isnan(res2_summary['coef'].loc[ct])].union(irr)
-        res_df.loc[ct, irr] = np.nan
-        res_q.loc[ct, irr] = np.nan
-    else:
-        res_df.loc[ct, :] = np.nan
+            res_df.loc[ct, :] = np.nan
+    return res_q, res_df
+res_q, res_df = calculate_q(res_summary['coef'].copy())
+# %%
 celltypes_to_use = reproducible_celltypes
 cres_to_use = res_q.columns[np.nanmin(res_q.loc[celltypes_to_use], axis=0) < 0.05].union(res.get_negative_control_cres())
 cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
@@ -355,31 +374,66 @@ fig, final_order = celltype_pval_dotplot(res_q, res_df, cres_to_use, celltypes_t
 fig
 
 
+# %% check significant cres overlaping between sections
+res1_q, res1_df = calculate_q(res1_summary['coef'].copy())
+res2_q, res2_df = calculate_q(res2_summary['coef'].copy())
+
+# %% check percentage of overlap
+overlap_df = pd.DataFrame(0, index=res1_q.index.intersection(res2_q.index), columns=['sec1', 'sec2', 'overlap'])
+res1_q_nona = res1_q[(~res1_q.isna()) & (~res2_q.isna())]
+res2_q_nona = res2_q[(~res1_q.isna()) & (~res2_q.isna())]
+overlap_df['sec1'] = (res1_q_nona.loc[overlap_df.index] < 0.05).sum(axis=1)
+overlap_df['sec2'] = (res2_q_nona.loc[overlap_df.index] < 0.05).sum(axis=1)
+for ct in overlap_df.index:
+    overlap_df.loc[ct, 'overlap'] = ((res1_q_nona.loc[ct] < 0.05) & (res2_q_nona.loc[ct] < 0.05)).sum()
+overlap_df['percentage'] = overlap_df['overlap'] / np.minimum(overlap_df['sec1'], overlap_df['sec2'])
+overlap_df = overlap_df.sort_values('overlap', ascending=False)
+overlap_df['celltype_n'] = celltype_corr.loc[overlap_df.index, 'celltype_n']
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=overlap_df.loc[reproducible_celltypes], x='celltype_n', y='percentage', ax=ax)
+ax.set_xscale('log')
+
+
 
 
 # %%
-# res_df[res_q > 0.05] = np.nan
 atac_peaks = pd.read_csv('Data/cre_atac_peaks.csv', index_col=0)
 atac_peaks = atac_peaks.loc[res_df.index.intersection(atac_peaks.index), res_df.columns.intersection(atac_peaks.columns)] >= 0.5
-res_df = res_df.loc[atac_peaks.index, atac_peaks.columns]
-atac_peaks[res_df.isna()] = False
+res_df_atac = res_df.loc[atac_peaks.index, atac_peaks.columns].copy()
+atac_peaks[res_df_atac.isna()] = False
 # res_df[res_df < 1] = np.nan
-res_df[res_q > 0.05] = np.nan
-overlap = res_df.loc[atac_peaks.index, atac_peaks.columns][atac_peaks].notna().sum().sum()
+res_df_atac[res_q > 0.05] = np.nan
+overlap = res_df_atac.loc[atac_peaks.index, atac_peaks.columns][atac_peaks].notna().sum().sum()
 precision = overlap / atac_peaks.sum().sum()
-recall = overlap / res_df.notna().sum().sum()
+recall = overlap / res_df_atac.notna().sum().sum()
 precision, recall
 # %%
 atac_peaks = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
 atac_peaks = atac_peaks.loc[res_df.index.intersection(atac_peaks.index), res_df.columns.intersection(atac_peaks.columns)] >= 0.5
-res_df = res_df.loc[atac_peaks.index, atac_peaks.columns]
-atac_peaks[res_df.isna()] = False
+res_df_atac = res_df.loc[atac_peaks.index, atac_peaks.columns].copy()
+atac_peaks[res_df_atac.isna()] = False
 # res_df[res_df < 1] = np.nan
-res_df[res_q > 0.05] = np.nan
-overlap = res_df.loc[atac_peaks.index, atac_peaks.columns][atac_peaks].notna().sum().sum()
+res_df_atac[res_q > 0.05] = np.nan
+overlap = res_df_atac.loc[atac_peaks.index, atac_peaks.columns][atac_peaks].notna().sum().sum()
 precision = overlap / atac_peaks.sum().sum()
-recall = overlap / res_df.notna().sum().sum()
+recall = overlap / res_df_atac.notna().sum().sum()
 precision, recall
 
+
+# %%
+cre_corr, celltype_corr = starrfish3.corr_atac_cpm(None, None, res_df)
+cre_corr['libsize'] = res1.lib_size['counts'].loc[cre_corr.index]
+celltype_corr['celltype_n'] = starrfish3.get_celltypes().value_counts().loc[celltype_corr.index].values# %% plot
+# %%
+n_cre_threshold = 0
+n_celltype_threshold = 0
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=celltype_corr[(celltype_corr['spearman_p'] > 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='spearman', color='blue', ax=ax)
+sns.scatterplot(data=celltype_corr[(celltype_corr['spearman_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='spearman', color='red', ax=ax)
+ax.set_xscale('log')
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=cre_corr[(cre_corr['spearman_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='spearman', color='blue', ax=ax)
+sns.scatterplot(data=cre_corr[(cre_corr['spearman_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='spearman', color='red', ax=ax)
+reproducible_celltypes = celltype_corr.index[(celltype_corr['spearman_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)]
 
 # %%

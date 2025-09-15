@@ -3050,19 +3050,50 @@ class STARRFISH:
                 res_array[:, res['celltype_activity'].index == cell_type, to_filter.loc[cell_type]] = np.nan
         if calibrate is not None:
             # calibrate the fdc by total T7 or libsize
-            if calibrate == 'T7':
+            if calibrate == 'T7-CRE':
                 t7_all = np.log(self.get_t7_expression().sum().values).reshape(1, 1, -1)
                 res_array = res_array + t7_all
+            elif calibrate == 'T7-all':
+                t7_all1 = np.log(self.get_t7_expression().sum().values).reshape(1, 1, -1)
+                t7_all2 = np.log(self.get_t7_expression().sum(axis=1).groupby(self.get_celltypes()).sum().values).reshape(1, -1, 1)
+                res_array = res_array + t7_all1 + t7_all2
             elif calibrate == 'CRE/T7':
                 cre_t7_all = np.log(self.get_cre_expression().sum().values).reshape(1, 1, -1) - np.log(self.get_t7_expression().sum().values).reshape(1, 1, -1)
                 res_array = res_array - cre_t7_all
             elif calibrate == 'libsize':
                 lib_all = np.log(self.lib_size['counts'].values).reshape(1, 1, -1)
                 res_array = res_array + lib_all
+            elif calibrate == 'self-CRE':
+                # self calibrate based on average of activity across all cell types, all bootstraps
+                cre_mean = np.nanmean(res_array, axis=(0, 1)).reshape(1, 1, -1)
+                res_array = res_array - cre_mean
+            elif calibrate == 'self-CRE-avg':
+                # self calibrate based on average of activity across all cell types, all bootstraps
+                cre_mean = np.nanmean(np.nanmean(res_array, axis=0), axis=0).reshape(1, 1, -1)
+                res_array = res_array - cre_mean
+            elif calibrate == 'self-CellType':
+                # self calibrate based on average of activity across all cell types, all bootstraps
+                cre_mean = np.nanmean(res_array, axis=(0, 2)).reshape(1, -1, 1)
+                res_array = res_array - cre_mean
+            elif calibrate == 'self-CellType-avg':
+                # self calibrate based on average of activity across all cell types, all bootstraps
+                cre_mean = np.nanmean(np.nanmean(res_array, axis=0), axis=1).reshape(1, -1, 1)
+                res_array = res_array - cre_mean
+            elif calibrate == 'self-all':
+                # self calibrate based on average of activity across all cell types, all bootstraps
+                cre_mean1 = np.nanmean(res_array, axis=(0, 2)).reshape(1, -1, 1)
+                cre_mean2 = np.nanmean(res_array, axis=(0, 1)).reshape(1, 1, -1)
+                res_array = res_array - cre_mean1 - cre_mean2
+            elif calibrate == 'self-all-avg':
+                # self calibrate based on average of activity across all cell types, all bootstraps
+                cre_mean1 = np.nanmean(np.nanmean(res_array, axis=0), axis=1).reshape(1, -1, 1)
+                cre_mean2 = np.nanmean(np.nanmean(res_array, axis=0), axis=0).reshape(1, 1, -1)
+                res_array = res_array - cre_mean1 - cre_mean2
         neg_control_array = res_array[:, :, res['celltype_activity'].columns.isin(self.get_negative_control_cres())]
         neg_control_array = np.nanmean(neg_control_array, axis=2)
         # turn to DataFrame
         res_df = pd.DataFrame(np.nanmean(res_array, axis=0), index=res['celltype_activity'].index, columns=res['celltype_activity'].columns)
+        res_df_fdc = res_df.copy()
         # for each cell type, calculate the fold change of total CRE / total T7
         res_p1 = pd.DataFrame(index=res['celltype_activity'].index, columns=res['celltype_activity'].columns)
         res_p2 = pd.DataFrame(index=res['celltype_activity'].index, columns=res['celltype_activity'].columns)
@@ -3115,6 +3146,8 @@ class STARRFISH:
                 res_p2.loc[cell_type] = np.nan
             else:
                 res_p2.loc[cell_type] = np.nanmean(res_array[:, res['celltype_activity'].index == cell_type, :] > fdc_l, axis=0)
+            # store the fdc calibrated res_df
+            res_df_fdc.loc[cell_type] = res_df.loc[cell_type] - fdc
             # if too many nan, the test is failed
             res_nansum = (~np.isnan(res_array[:, res['celltype_activity'].index == cell_type, :])).sum(axis=0)
             res_p1.loc[cell_type][res_nansum[0] < res_array.shape[0] * 0.01] = np.nan
@@ -3138,11 +3171,13 @@ class STARRFISH:
         res2_q2 = pd.DataFrame(q_values_flat2.reshape(res_p2.shape), index=res_p2.index, columns=res_p2.columns)
         res2_q = pd.DataFrame(np.minimum(res2_q1.values, res2_q2.values), index=res_p1.index, columns=res_p1.columns)
         if tail == 'right':
-            return res2_q1, res_df
+            return res2_q1, res_df, res_df_fdc
         elif tail == 'left':
-            return res2_q2, res_df
+            return res2_q2, res_df, res_df_fdc
         elif tail == 'both':
-            return res2_q, res_df
+            return res2_q, res_df, res_df_fdc
+        elif tail == 'all':
+            return res2_q, res2_q1, res2_q2, res_df, res_df_fdc
 
     def neg_control_regression_test(self, cell_types_to_use: List=None, 
                                     negative_control=None,
@@ -3562,6 +3597,114 @@ class STARRFISH:
         self.pseudo_bulk_glm_test_configs.append(config)
         return pseudo_bulk_glm_test_result
     
+    def pseudo_bulk_t7_sum_test(self, cell_types_to_use: List=None, t7_pseudo_bulk_size=100, 
+                                pseudo_bulk_number=1000, infected_cells_threshold=None, replace=True, multiprocess_threads=256) -> dict:
+        # check if the results already exist
+        config = {'cell_types_to_use': cell_types_to_use,
+                  't7_pseudo_bulk_size': t7_pseudo_bulk_size,
+                  'pseudo_bulk_number': pseudo_bulk_number,
+                  'infected_cells_threshold': infected_cells_threshold,
+                  'replace': replace}
+        if hasattr(self, 'pseudo_bulk_glm_test_results') and hasattr(self, 'pseudo_bulk_glm_test_configs'):
+            for stored_config, pseudo_bulk_glm_test_result in zip(self.pseudo_bulk_glm_test_configs, self.pseudo_bulk_glm_test_results):
+                if stored_config == config:
+                    # if the results already exist, return the results
+                    print('Results already exist, return stored results')
+                    return pseudo_bulk_glm_test_result.copy()
+        # for each cell type to use, create a pseudo bulk
+        celltypes = self.get_celltypes()
+        cre_expression = self.get_cre_expression()
+        t7_expression = self.get_t7_expression()
+        volumes = self.get_tag('obs:volm')
+        if cell_types_to_use is None:
+            cell_types_to_use = celltypes.unique()
+        else:
+            celltypes = celltypes[celltypes.isin(cell_types_to_use)]
+            cre_expression = cre_expression[celltypes.index]
+            t7_expression = t7_expression[celltypes.index]
+            volumes = volumes[celltypes.index]
+        # get the cell type cell counts
+        cell_counts = celltypes.value_counts().loc[cell_types_to_use]
+        # redefine the cell types to use
+        cell_types_to_use = cell_counts.index.tolist()
+        # generate pseudo bulk for each cell type
+        def sample_to_fixed_t7(t7_array, cre_array):
+            # Estimate number of samples needed based on mean
+            mean_t7 = np.mean(t7_array)
+            if mean_t7 > 0:
+                estimated_samples = max(10, int(t7_pseudo_bulk_size / mean_t7 * 1.2))  # 20% buffer
+            else:
+                estimated_samples = len(t7_array)
+            # Sample indices with replacement
+            indices = np.random.choice(len(t7_array), size=estimated_samples, replace=True)
+            sampled_t7 = t7_array[indices]
+            sampled_cre = cre_array[indices]
+            # Check if we have enough samples, if not continue sampling
+            while np.sum(sampled_t7) < t7_pseudo_bulk_size:
+                # Sample additional batch
+                additional_indices = np.random.choice(len(t7_array), size=estimated_samples, replace=True)
+                sampled_t7 = np.concatenate([sampled_t7, t7_array[additional_indices]])
+                sampled_cre = np.concatenate([sampled_cre, cre_array[additional_indices]])
+            # Find cutoff point where cumsum reaches threshold
+            cumsum = np.cumsum(sampled_t7)
+            cutoff_idx = np.searchsorted(cumsum, t7_pseudo_bulk_size, side='right') + 1
+            return np.sum(sampled_t7[:cutoff_idx]), np.sum(sampled_cre[:cutoff_idx]), cutoff_idx
+        def sample_single_combination(args):
+            pseudo_bulk_idx, cell_type_idx, cre_idx = args
+            # Get data for this cell type and CRE
+            if isinstance(celltypes, pd.DataFrame):
+                cell_mask = (celltypes.iloc[:, 0] == cell_types_to_use[cell_type_idx]).values
+            else:
+                cell_mask = (celltypes == cell_types_to_use[cell_type_idx]).values
+            t7_data = t7_expression.iloc[cell_mask, cre_idx].values
+            cre_data = cre_expression.iloc[cell_mask, cre_idx].values
+            # Apply sampling function
+            sampled_t7, sampled_cre, n_samples = sample_to_fixed_t7(t7_data, cre_data)
+            return pseudo_bulk_idx, cell_type_idx, cre_idx, sampled_t7, sampled_cre, n_samples
+        # Prepare all combinations
+        n_cres = cre_expression.shape[1]
+        n_cell_types = len(cell_types_to_use)
+        combinations = []
+        for pseudo_bulk_idx in range(pseudo_bulk_number):
+            for cell_type_idx in range(n_cell_types):
+                for cre_idx in range(n_cres):
+                    if infected_cells_threshold is not None:
+                        # check if the cell type has enough infected cells
+                        cell_mask = (celltypes == cell_types_to_use[cell_type_idx]).values
+                        cre_data = cre_expression.iloc[cell_mask, cre_idx].values
+                        n_infected_cells = (cre_data > 0).sum()
+                        if n_infected_cells < infected_cells_threshold:
+                            continue
+                    combinations.append((pseudo_bulk_idx, cell_type_idx, cre_idx))
+        # Run in parallel
+        results = Parallel(n_jobs=min(multiprocess_threads, int(multiprocessing.cpu_count() * 0.8)))(
+            delayed(sample_single_combination)(combo) for combo in combinations
+        )
+        # Initialize arrays
+        pseudo_bulk_t7_array = np.zeros((pseudo_bulk_number, n_cell_types, n_cres))
+        pseudo_bulk_t7_array.fill(np.nan)
+        pseudo_bulk_cre_array = np.zeros((pseudo_bulk_number, n_cell_types, n_cres))
+        pseudo_bulk_cre_array.fill(np.nan)
+        pseudo_bulk_n_array = np.zeros((pseudo_bulk_number, n_cell_types, n_cres))
+        pseudo_bulk_n_array.fill(np.nan)
+        # Fill arrays with results
+        for pseudo_bulk_idx, cell_type_idx, cre_idx, t7_sum, cre_sum, n_samples in results:
+            pseudo_bulk_t7_array[pseudo_bulk_idx, cell_type_idx, cre_idx] = t7_sum
+            pseudo_bulk_cre_array[pseudo_bulk_idx, cell_type_idx, cre_idx] = cre_sum
+            pseudo_bulk_n_array[pseudo_bulk_idx, cell_type_idx, cre_idx] = n_samples
+        pseudo_bulk_t7_sum_test_result = {
+            'pseudo_bulk_t7': pseudo_bulk_t7_array,
+            'pseudo_bulk_cre': pseudo_bulk_cre_array,
+            'pseudo_bulk_n': pseudo_bulk_n_array,
+        }
+        # add results to attribute
+        if not hasattr(self, 'pseudo_bulk_t7_sum_test_results') or not hasattr(self, 'pseudo_bulk_t7_sum_test_configs'):
+            self.pseudo_bulk_t7_sum_test_results = []
+            self.pseudo_bulk_t7_sum_test_configs = []
+        self.pseudo_bulk_t7_sum_test_results.append(pseudo_bulk_t7_sum_test_result)
+        self.pseudo_bulk_t7_sum_test_configs.append(config)
+        return pseudo_bulk_t7_sum_test_result
+
     def scvi(self, use_model: Literal['STARRFISHVI', 'SCVI'] = 'STARRFISHVI', model_args: dict = None, train_args: dict = None) -> dict:
         # use scvi to denoise the data
         if use_model == 'STARRFISHVI':
