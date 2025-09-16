@@ -165,7 +165,7 @@ toplot_avg = res_df.apply(np.nanmean, axis=0)
 sns.scatterplot(x=starrfish3.get_t7_expression().sum().values, y=toplot_avg.values, color='red', ax=ax, alpha=0.5)
 ax.set_xscale('log')
 ax.set_xlabel('Total T7 counts (per CRE)')
-ax.set_ylabel('Average Bootstrap Test Statistic')
+ax.set_ylabel('Activity per CRE/Cell Type pair')
 # %% check cell type bias
 toplot = pd.DataFrame({'value': res_df.values.flatten(), 
                        'T7 total': np.repeat(starrfish3.get_t7_expression().sum(axis=1).groupby(starrfish3.get_celltypes()).sum().values, res_df.shape[1])})
@@ -175,7 +175,7 @@ toplot_avg = res_df.apply(np.nanmean, axis=1)
 sns.scatterplot(x=starrfish3.get_t7_expression().sum(axis=1).groupby(starrfish3.get_celltypes()).sum().values, y=toplot_avg.values, color='red', ax=ax, alpha=0.5)
 ax.set_xscale('log')
 ax.set_xlabel('Total T7 counts (per Cell Type)')
-ax.set_ylabel('Average Bootstrap Test Statistic')
+ax.set_ylabel('Activity per CRE/Cell Type pair')
 
 
 
@@ -205,18 +205,76 @@ res_q2, res_q2_right, res_q2_left, res_df2, res_df2_fdc = starrfish3.average_boo
                                                                                               to_filter=to_filter_sec2, calibrate='self-CRE')
 
 # %% check overlap of significant CREs between sections
-res_q2_overlap = res_q2_right[(~res_q2_right.isna()) & (~res_q1_right.isna())].copy()
-res_q1_overlap = res_q1_right[(~res_q2_right.isna()) & (~res_q1_right.isna())].copy()
-overlap_df = pd.DataFrame(index=res_q2_overlap.index.intersection(res_q1_overlap.index), columns=['sec1', 'sec2', 'overlap'])
+res_q2_overlap = res_q2_right[(~res_q2_right.isna()) & (~res_q1_right.isna()) & (~res_q_right.isna())].copy()
+res_q1_overlap = res_q1_right[(~res_q2_right.isna()) & (~res_q1_right.isna()) & (~res_q_right.isna())].copy()
+res_q_overlap = res_q_right[(~res_q2_right.isna()) & (~res_q1_right.isna()) & (~res_q_right.isna())].copy()
+overlap_df = pd.DataFrame(index=res_q2_overlap.index.intersection(res_q1_overlap.index),
+                          columns=['sec1', 'sec2', 'overlap'])
 overlap_df['sec1'] = (res_q1_overlap.loc[overlap_df.index] <= 0.05).sum(axis=1)
 overlap_df['sec2'] = (res_q2_overlap.loc[overlap_df.index] <= 0.05).sum(axis=1)
-overlap_df['overlap'] = ((res_q1_overlap.loc[overlap_df.index] <= 0.05) & (res_q2_overlap.loc[overlap_df.index] <= 0.05)).sum(axis=1)
-overlap_df['percentage'] = overlap_df['overlap'] / np.minimum(overlap_df['sec1'], overlap_df['sec2'])
-overlap_df = overlap_df.sort_values('percentage', ascending=False)
-overlap_df['celltype_n'] = starrfish3.get_celltypes().value_counts().loc[overlap_df.index]
-fig, ax = plt.subplots(figsize=(4, 4))
-sns.scatterplot(data=overlap_df, x='celltype_n', y='percentage', ax=ax)
-ax.set_xscale('log')
+overlap_df['all'] = (res_q_overlap.loc[overlap_df.index] <= 0.05).sum(axis=1)
+overlap_df['overlap_sec1_sec2'] = ((res_q1_overlap.loc[overlap_df.index] <= 0.05) & (res_q2_overlap.loc[overlap_df.index] <= 0.05)).sum(axis=1)
+overlap_df['overlap_sec1_all'] = ((res_q1_overlap.loc[overlap_df.index] <= 0.05) & (res_q_overlap.loc[overlap_df.index] <= 0.05)).sum(axis=1) 
+overlap_df['overlap_sec2_all'] = ((res_q2_overlap.loc[overlap_df.index] <= 0.05) & (res_q_overlap.loc[overlap_df.index] <= 0.05)).sum(axis=1)
+overlap_df['percentage_sec1_sec2'] = overlap_df['overlap_sec1_sec2'] / np.minimum(overlap_df['sec1'], overlap_df['sec2'])
+overlap_df['percentage_sec1_all'] = overlap_df['overlap_sec1_all'] / np.minimum(overlap_df['sec1'], overlap_df['all'])
+overlap_df['percentage_sec2_all'] = overlap_df['overlap_sec2_all'] / np.minimum(overlap_df['sec2'], overlap_df['all'])
+overlap_df = overlap_df.sort_values('percentage_sec1_sec2', ascending=False)
+overlap_df['celltype_n_sec1'] = starrfish3_sec1.get_celltypes().value_counts().reindex(overlap_df.index).fillna(0).astype(int).values
+overlap_df['celltype_n_sec2'] = starrfish3_sec2.get_celltypes().value_counts().reindex(overlap_df.index).fillna(0).astype(int).values
+overlap_df['celltype_n_all'] = starrfish3.get_celltypes().value_counts().reindex(overlap_df.index).fillna(0).astype(int).values
+overlap_df['celltype_n'] = np.minimum(overlap_df['celltype_n_sec1'], overlap_df['celltype_n_sec2'], overlap_df['celltype_n_all'])
+# %%
+def plot_reproducibility(overlap_df, percentage_col, bar1_col, bar2_col, bar1_label, bar2_label):
+    # get cell type orders
+    # order by allen institute's nominature
+    cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
+    cluster_annotation_term['subclass'] = cluster_annotation_term['subclass'].str.replace('/', '-')
+    overlap_df['cell_type_rank'] = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[overlap_df.index].values
+    overlap_df = overlap_df.sort_values(['cell_type_rank'], ascending=[True])
+    # Filter for cell types with celltype_n >= 1000
+    overlap_df_filtered = overlap_df[overlap_df['celltype_n'] >= 1000]
+
+    # Create x positions
+    x = np.arange(len(overlap_df_filtered))
+    cell_types = overlap_df_filtered.index
+
+    fig, ax1 = plt.subplots(figsize=(14, 6))
+
+    # Left y-axis for percentage
+    sns.barplot(x=cell_types, y=overlap_df_filtered[percentage_col], ax=ax1, alpha=0.8)
+    ax1.set_xlabel('Cell Types')
+    ax1.set_ylabel('Reproducibility (percentage)', color='black')
+    ax1.tick_params(axis='y', labelcolor='black')
+    plt.setp(ax1.get_xticklabels(), rotation=45, ha='right')
+
+    # Right y-axis for bar values
+    ax2 = ax1.twinx()
+    x_pos = np.arange(len(overlap_df_filtered))
+
+    # Set colors based on column names
+    color1 = 'orange' if bar1_col == 'sec1' else 'green' if bar1_col == 'sec2' else 'pink'
+    color2 = 'orange' if bar2_col == 'sec1' else 'green' if bar2_col == 'sec2' else 'pink'
+
+    ax2.bar(x_pos - 0.2, overlap_df_filtered[bar1_col], 0.4, label=bar1_label, alpha=0.8, color=color1)
+    ax2.bar(x_pos + 0.2, overlap_df_filtered[bar2_col], 0.4, label=bar2_label, alpha=0.8, color=color2)
+    ax2.set_ylabel('# significant CREs', color='black')
+    ax2.tick_params(axis='y', labelcolor='black')
+    ax2.legend(loc='upper right')
+
+    plt.tight_layout()
+    return fig
+
+# Plot sec1-sec2
+fig = plot_reproducibility(overlap_df, 'percentage_sec1_sec2', 'sec1', 'sec2', 'sec1', 'sec2')
+fig.savefig('results/expr3/reproducibility_by_celltype_sec1_sec2.pdf')
+# Plot sec1-all
+fig = plot_reproducibility(overlap_df, 'percentage_sec1_all', 'sec1', 'all', 'sec1', 'all')
+fig.savefig('results/expr3/reproducibility_by_celltype_sec1_all.pdf')
+
+# Plot sec2-all
+fig = plot_reproducibility(overlap_df, 'percentage_sec2_all', 'sec2', 'all', 'sec2', 'all')
+fig.savefig('results/expr3/reproducibility_by_celltype_sec2_all.pdf')
 
 
 # %% get some numbers of reproducibility in each CRE
@@ -238,34 +296,15 @@ for cre in res_q1_overlap.columns:
             overlap_cre_df.loc[cre, 'percentage'] = -1
     else:
         overlap_cre_df.loc[cre, 'percentage'] = overlap_cre_df.loc[cre, 'overlap'] / np.maximum(overlap_cre_df.loc[cre, 'sec1'], overlap_cre_df.loc[cre, 'sec2'])
-sum(overlap_cre_df['percentage'] > 0)
+sum(overlap_cre_df['percentage'] > 0), sum(overlap_cre_df['percentage'] == -1), sum(overlap_cre_df['percentage'] == 1)
 
 
-
-# %%
-from plots import celltype_pval_dotplot
-cell_types_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
-cres_to_use = res_q.columns[np.nanmin(res_q.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
-cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
-fig, final_order = celltype_pval_dotplot(res_q_right, res_df, cres_to_use, cell_types_to_use,
-                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(15, 45))
-fig
-# %%
-fig, final_order = celltype_pval_dotplot(res_q1_right, res_df1, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
-                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(15, 45))
-fig
-# %%
-fig, final_order = celltype_pval_dotplot(res_q2_right, res_df2, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
-                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(15, 45))
-fig
 # %% reproducibility
-cre_corr, celltype_corr = starrfish3.corr_starrfish(res_df1_fdc, res_df2_fdc)
+cre_corr, celltype_corr = starrfish3.corr_starrfish(res_df1, res_df2)
 cre_corr['libsize'] = starrfish3.lib_size['counts'].loc[cre_corr.index]
-celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().loc[celltype_corr.index].values
-celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().loc[celltype_corr.index].values
+celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_full'] = starrfish3.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
 celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
 # %% plot
 n_cre_threshold = 5
@@ -279,7 +318,33 @@ sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect
 sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
 reproducible_celltypes = celltype_corr.index[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)]
 ax.set_xscale('log')
+# %% plot pearson R in violin
+fig, ax = plt.subplots(figsize=(2, 4))
+sns.violinplot(data=celltype_corr[(celltype_corr['effect_n'] >= n_cre_threshold) & (celltype_corr['celltype_n'] >= 1000)], y='pearson', ax=ax)
+reproducible_celltypes = celltype_corr.index[(celltype_corr['effect_n'] >= n_cre_threshold) & (celltype_corr['celltype_n'] >= 1000)]
 
+
+
+# %%
+from plots import celltype_pval_dotplot
+# cell_types_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
+cell_types_to_use = reproducible_celltypes
+cres_to_use = res_q.columns[np.nanmin(res_q.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
+cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
+fig, final_order = celltype_pval_dotplot(res_q_right, res_df_fdc, cres_to_use, cell_types_to_use,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
+                                         figsize=(12, 30))
+fig.savefig('results/expr3/celltype_pval_dotplot_all.pdf')
+# %%
+fig, final_order = celltype_pval_dotplot(res_q1_right, res_df1_fdc, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
+                                         figsize=(12, 30))
+fig.savefig('results/expr3/celltype_pval_dotplot_sec1.pdf')
+# %%
+fig, final_order = celltype_pval_dotplot(res_q2_right, res_df2_fdc, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
+                                         figsize=(12, 30))
+fig.savefig('results/expr3/celltype_pval_dotplot_sec2.pdf')
 
 
 
