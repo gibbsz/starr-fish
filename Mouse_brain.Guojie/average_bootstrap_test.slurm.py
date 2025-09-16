@@ -204,6 +204,34 @@ to_filter_sec2[cre_blacklist] = True
 res_q2, res_q2_right, res_q2_left, res_df2, res_df2_fdc = starrfish3.average_bootstrap_test_q(res2, threshold=threshold, norm='T7', tail='all',
                                                                                               to_filter=to_filter_sec2, calibrate='self-CRE')
 
+# %% reproducibility
+cre_corr, celltype_corr = starrfish3.corr_starrfish(res_df1, res_df2)
+cre_corr['libsize'] = starrfish3.lib_size['counts'].loc[cre_corr.index]
+celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_full'] = starrfish3.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
+# %% plot
+n_cre_threshold = 20
+n_celltype_threshold = 5
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] > 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='red', ax=ax)
+ax.set_xscale('log')
+fig.savefig('results/expr3/reproducibility_by_celltype_pearson_sec1_sec2.pdf')
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
+reproducible_celltypes = celltype_corr.index[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)]
+ax.set_xscale('log')
+# %% plot pearson R in violin
+fig, ax = plt.subplots(figsize=(2, 4))
+sns.violinplot(data=celltype_corr[(celltype_corr['effect_n'] >= n_cre_threshold) & (celltype_corr['celltype_n'] >= 1000)], y='pearson', ax=ax)
+reproducible_celltypes = celltype_corr.index[(celltype_corr['effect_n'] >= n_cre_threshold) & (celltype_corr['celltype_n'] >= 1000)]
+fig.savefig('results/expr3/reproducibility_by_celltype_pearson_violin_sec1_sec2.pdf')
+
+
+
 # %% check overlap of significant CREs between sections
 res_q2_overlap = res_q2_right[(~res_q2_right.isna()) & (~res_q1_right.isna()) & (~res_q_right.isna())].copy()
 res_q1_overlap = res_q1_right[(~res_q2_right.isna()) & (~res_q1_right.isna()) & (~res_q_right.isna())].copy()
@@ -225,7 +253,7 @@ overlap_df['celltype_n_sec2'] = starrfish3_sec2.get_celltypes().value_counts().r
 overlap_df['celltype_n_all'] = starrfish3.get_celltypes().value_counts().reindex(overlap_df.index).fillna(0).astype(int).values
 overlap_df['celltype_n'] = np.minimum(overlap_df['celltype_n_sec1'], overlap_df['celltype_n_sec2'], overlap_df['celltype_n_all'])
 # %%
-def plot_reproducibility(overlap_df, percentage_col, bar1_col, bar2_col, bar1_label, bar2_label):
+def plot_reproducibility(overlap_df, celltypes_to_use, percentage_col, bar1_col, bar2_col, bar1_label, bar2_label):
     # get cell type orders
     # order by allen institute's nominature
     cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
@@ -234,6 +262,7 @@ def plot_reproducibility(overlap_df, percentage_col, bar1_col, bar2_col, bar1_la
     overlap_df = overlap_df.sort_values(['cell_type_rank'], ascending=[True])
     # Filter for cell types with celltype_n >= 1000
     overlap_df_filtered = overlap_df[overlap_df['celltype_n'] >= 1000]
+    overlap_df_filtered = overlap_df_filtered.loc[celltypes_to_use.intersection(overlap_df_filtered.index)]
 
     # Create x positions
     x = np.arange(len(overlap_df_filtered))
@@ -266,14 +295,14 @@ def plot_reproducibility(overlap_df, percentage_col, bar1_col, bar2_col, bar1_la
     return fig
 
 # Plot sec1-sec2
-fig = plot_reproducibility(overlap_df, 'percentage_sec1_sec2', 'sec1', 'sec2', 'sec1', 'sec2')
+fig = plot_reproducibility(overlap_df, reproducible_celltypes, 'percentage_sec1_sec2', 'sec1', 'sec2', 'sec1', 'sec2')
 fig.savefig('results/expr3/reproducibility_by_celltype_sec1_sec2.pdf')
 # Plot sec1-all
-fig = plot_reproducibility(overlap_df, 'percentage_sec1_all', 'sec1', 'all', 'sec1', 'all')
+fig = plot_reproducibility(overlap_df, reproducible_celltypes, 'percentage_sec1_all', 'sec1', 'all', 'sec1', 'all')
 fig.savefig('results/expr3/reproducibility_by_celltype_sec1_all.pdf')
 
 # Plot sec2-all
-fig = plot_reproducibility(overlap_df, 'percentage_sec2_all', 'sec2', 'all', 'sec2', 'all')
+fig = plot_reproducibility(overlap_df, reproducible_celltypes, 'percentage_sec2_all', 'sec2', 'all', 'sec2', 'all')
 fig.savefig('results/expr3/reproducibility_by_celltype_sec2_all.pdf')
 
 
@@ -297,31 +326,6 @@ for cre in res_q1_overlap.columns:
     else:
         overlap_cre_df.loc[cre, 'percentage'] = overlap_cre_df.loc[cre, 'overlap'] / np.maximum(overlap_cre_df.loc[cre, 'sec1'], overlap_cre_df.loc[cre, 'sec2'])
 sum(overlap_cre_df['percentage'] > 0), sum(overlap_cre_df['percentage'] == -1), sum(overlap_cre_df['percentage'] == 1)
-
-
-# %% reproducibility
-cre_corr, celltype_corr = starrfish3.corr_starrfish(res_df1, res_df2)
-cre_corr['libsize'] = starrfish3.lib_size['counts'].loc[cre_corr.index]
-celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
-celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
-celltype_corr['celltype_full'] = starrfish3.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
-celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
-# %% plot
-n_cre_threshold = 5
-n_celltype_threshold = 5
-fig, ax = plt.subplots(figsize=(4, 4))
-sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] > 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='blue', ax=ax)
-sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='red', ax=ax)
-ax.set_xscale('log')
-fig, ax = plt.subplots(figsize=(4, 4))
-sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
-sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
-reproducible_celltypes = celltype_corr.index[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)]
-ax.set_xscale('log')
-# %% plot pearson R in violin
-fig, ax = plt.subplots(figsize=(2, 4))
-sns.violinplot(data=celltype_corr[(celltype_corr['effect_n'] >= n_cre_threshold) & (celltype_corr['celltype_n'] >= 1000)], y='pearson', ax=ax)
-reproducible_celltypes = celltype_corr.index[(celltype_corr['effect_n'] >= n_cre_threshold) & (celltype_corr['celltype_n'] >= 1000)]
 
 
 
