@@ -1998,7 +1998,7 @@ class STARRFISH:
                   average_by_celltype=False, 
                   norm_by_negative_control_cell_type_mean=False, norm_by_negative_control_cell_type_sum=False, norm_by_negative_control_single_cell=False,
                   norm_by_t7_cell_type_mean=True, norm_by_t7_cell_type_sum=False, norm_by_t7_single_cell=False,
-                  log=True,
+                  log=True, calibrate=None,
                   cell_types_to_use=None, cell_types_to_visualize=None, 
                   nmin=None, nmax=None, sz_background=3, sz_min=5, sz_max=30, 
                   scale_size_by: Literal['counts', 'celltype_number']='counts',  
@@ -2052,6 +2052,9 @@ class STARRFISH:
             cts = cts / t7_counts.values
         if log:
             cts = np.log1p(cts)
+        # do calibration if specified
+        if calibrate is not None:
+            cts = cts - calibrate
         if cell_types_to_use is not None:
             # only cts for the cell types to use
             cts[~self.get_celltypes().isin(cell_types_to_use)] = np.nan
@@ -2143,7 +2146,10 @@ class STARRFISH:
                 ax_main.set_title(f'{gene}', color='white', fontsize=20)
             ax_main.set_facecolor('black')
             # Plot data
-            cell_with_genes = np.where(cts > 0)[0]
+            if calibrate is not None:
+                cell_with_genes = np.where(cts > -calibrate)[0]
+            else:
+                cell_with_genes = np.where(cts > 0)[0]
             # first plot cells without genes, then plot cells with genes
             ax_main.scatter(Xcells[:, 0], Xcells[:, 1], c='grey', s=sz_background, marker='.', alpha=0.7, rasterized=True, edgecolors='none')
             # scale the alpha values for the points based on counts

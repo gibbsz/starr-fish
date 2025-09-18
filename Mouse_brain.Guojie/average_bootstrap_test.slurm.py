@@ -333,7 +333,7 @@ sum(overlap_cre_df['percentage'] > 0), sum(overlap_cre_df['percentage'] == -1), 
 from plots import celltype_pval_dotplot
 # cell_types_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
 cell_types_to_use = reproducible_celltypes
-cres_to_use = res_q.columns[np.nanmin(res_q.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
+cres_to_use = res_q_right.columns[np.nanmin(res_q_right.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
 cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
 fig, final_order = celltype_pval_dotplot(res_q_right, res_df_fdc, cres_to_use, cell_types_to_use,
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
@@ -349,6 +349,65 @@ fig, final_order = celltype_pval_dotplot(res_q2_right, res_df2_fdc, pd.Index(fin
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
                                          figsize=(12, 30))
 fig.savefig('results/expr3/celltype_pval_dotplot_sec2.pdf')
+
+
+
+# %% get calibration matrix
+res_array = res['celltype_activity_array'].copy()
+res_array = np.log1p(res_array)
+# assign inf to NaN
+res_array[np.isinf(res_array)] = np.nan
+# if we have to_filter, then fill it with np.nan
+for cell_type in to_filter.index:
+    res_array[:, res['celltype_activity'].index == cell_type, to_filter.loc[cell_type]] = np.nan
+# self calibrate based on average of activity across all cell types, all bootstraps
+cre_mean = np.nanmean(res_array, axis=(0, 1))
+cre_celltype_mean = np.nanmean(res_array, axis=0)
+# %% plot some examples
+for celltype in reproducible_celltypes:
+    # rank by activity
+    cre_activity = res_df_fdc.loc[celltype]
+    # find significant right tail and left tails
+    cre_q_values_right = res_q_right.loc[celltype]
+    cre_q_values_left = res_q_left.loc[celltype]
+    cre_q_values_right = cre_q_values_right[cre_q_values_right <= 0.05]
+    cre_q_values_left = cre_q_values_left[cre_q_values_left <= 0.05]
+    # order by rank
+    cre_right = cre_activity.loc[cre_q_values_right.index].sort_values(ascending=False).index
+    cre_left = cre_activity.loc[cre_q_values_left.index].sort_values(ascending=True).index
+    # get nmax
+    nmax = starrfish3.get_cre_expression().loc[starrfish3.get_celltypes() == celltype, cre_right[0]].max()
+    t7_nmax = starrfish3.get_t7_expression().loc[starrfish3.get_celltypes() == celltype, cre_right[0]].mean()
+    nmax = np.log1p(nmax / t7_nmax) - cre_mean[res_df_fdc.columns==cre_right[0]][0]
+    # round up nmax to nearest integer
+    nmax = int(np.ceil(nmax))
+    # only plot top 1 of each tail
+    if len(cre_right) > 0:
+        cre = cre_right[0]
+        print(f'Plotting {cre} in {celltype} (right tail)')
+        cell_types_to_visualize = [celltype]
+        fig = starrfish3.plot_gene(
+            cre, average_by_celltype=False, # if true, all cells from same cell type will have same value
+            cell_types_to_visualize=cell_types_to_visualize, # only visualize some cell types
+            scale_size_by='counts', # scale size by "counts": normalized counts; or "celltype_number": number of cells in the cell type
+            log=True, calibrate=cre_mean[res_df_fdc.columns==cre][0], nmax=nmax,
+            transpose=-1, flipx=-1, sz_max=50,
+            cell_types_to_use=cell_types_to_visualize)
+        fig.savefig(f'results/expr3/celltype_significant_cres/{celltype}_{cre}_right_tail.pdf')
+    if len(cre_left) > 0:
+        cre = cre_left[0]
+        print(f'Plotting {cre} in {celltype} (left tail)')
+        cell_types_to_visualize = [celltype]
+        fig = starrfish3.plot_gene(
+            cre, average_by_celltype=False, # if true, all cells from same cell type will have same value
+            cell_types_to_visualize=cell_types_to_visualize, # only visualize some cell types
+            scale_size_by='counts', # scale size by "counts": normalized counts; or "celltype_number": number of cells in the cell type
+            log=True, calibrate=cre_mean[res_df_fdc.columns==cre][0], nmax=nmax,
+            transpose=-1, flipx=-1, sz_max=50,
+            cell_types_to_use=cell_types_to_visualize)
+        fig.savefig(f'results/expr3/celltype_significant_cres/{celltype}_{cre}_left_tail.pdf')
+
+
 
 
 
