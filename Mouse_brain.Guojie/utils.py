@@ -1690,7 +1690,34 @@ class STARRFISH:
             self.adata.obs['subclass'] = self.adata.obs['class']
             # change the cre info
             best_class = self.get_creinfo()['best_subclass'].copy()
-            best_class[best_class != ''] = allen_cell_type_nomination['class_label'].groupby(allen_cell_type_nomination['subclass_label']).first().loc[best_class[best_class != '']].values
+            best_class[best_class.isin(allen_cell_type_nomination['subclass_label'])] = allen_cell_type_nomination['class_label'].groupby(allen_cell_type_nomination['subclass_label']).first().loc[best_class[best_class.isin(allen_cell_type_nomination['subclass_label'])]].values
+            self.adata.uns['CRE_info']['best_class'] = best_class
+            # just in case, change the subclass to class
+            self.adata.uns['CRE_info']['best_subclass_orig'] = self.adata.uns['CRE_info']['best_subclass'].copy()
+            self.adata.uns['CRE_info']['best_subclass'] = best_class
+        elif celltype_tag == 'obs:region':
+            allen_cell_type_nomination = pd.read_excel('Data/abc_atlas/allen_institute_nominature.xlsx', sheet_name='subclass_annotation')
+            allen_cell_type_nomination['subclass_label'] = allen_cell_type_nomination['subclass_label'].str.replace('/', '-')
+            atac_counts = pd.read_csv('Data/ATAC/count_peakBysubclass.csv', index_col=0)
+            atac_counts.columns = atac_counts.columns.str.replace('\\.', '-')
+            atac_counts.columns = atac_counts.columns.str.replace('_', ' ')
+            # transpose and group by class
+            atac_counts = atac_counts.transpose()
+            atac_counts_class = allen_cell_type_nomination['neighborhood'].groupby(allen_cell_type_nomination['subclass_label']).first().loc[atac_counts.index]
+            atac_counts = atac_counts.groupby(atac_counts_class).sum()
+            # norm to cpm
+            atac_cpm = atac_counts.div(atac_counts.sum(axis=1), axis=0) * 1e7
+            # transpose back
+            atac_cpm = atac_cpm.transpose()
+            atac_counts = atac_counts.transpose()
+            # assign the obs['class'] to adata
+            self.adata.obs['region'] = allen_cell_type_nomination['neighborhood'].groupby(allen_cell_type_nomination['subclass_label']).first().loc[self.adata.obs['subclass']].values
+            # to be safe, change subclass to class as well
+            self.adata.obs['subclass_orig'] = self.adata.obs['subclass'].copy()
+            self.adata.obs['subclass'] = self.adata.obs['region']
+            # change the cre info
+            best_class = self.get_creinfo()['best_subclass'].copy()
+            best_class[best_class.isin(allen_cell_type_nomination['subclass_label'])] = allen_cell_type_nomination['neighborhood'].groupby(allen_cell_type_nomination['subclass_label']).first().loc[best_class[best_class.isin(allen_cell_type_nomination['subclass_label'])]].values
             self.adata.uns['CRE_info']['best_class'] = best_class
             # just in case, change the subclass to class
             self.adata.uns['CRE_info']['best_subclass_orig'] = self.adata.uns['CRE_info']['best_subclass'].copy()
@@ -1932,6 +1959,20 @@ class STARRFISH:
             cre_atac_peaks = cre_atac_peaks.loc[cell_type]
             cres = cre_atac_peaks[cre_atac_peaks > 0.5].index
             return cres
+        elif use == 'h3k27ac-peak':
+            cre_h3k27ac_peaks = pd.read_csv('Data/cre_h3k27ac_peaks.csv', index_col=0)
+            if cell_type not in cre_h3k27ac_peaks.index:
+                return None
+            cre_h3k27ac_peaks = cre_h3k27ac_peaks.loc[cell_type]
+            cres = cre_h3k27ac_peaks[cre_h3k27ac_peaks > 0.5].index
+            return cres
+        elif use == 'h3k4me1-peak':
+            cre_h3k4me1_peaks = pd.read_csv('Data/cre_h3k4me1_peaks.csv', index_col=0)
+            if cell_type not in cre_h3k4me1_peaks.index:
+                return None
+            cre_h3k4me1_peaks = cre_h3k4me1_peaks.loc[cell_type]
+            cres = cre_h3k4me1_peaks[cre_h3k4me1_peaks > 0.5].index
+            return cres
         elif use == 'chromatin-a':
             chromatin_a = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
             # get the chromatin-a cres for the cell type
@@ -1963,6 +2004,20 @@ class STARRFISH:
                 return None
             cre_atac_peaks = cre_atac_peaks[cre]
             cell_types = cre_atac_peaks[cre_atac_peaks > 0.5].index
+            return cell_types
+        elif use == 'h3k27ac-peak':
+            cre_h3k27ac_peaks = pd.read_csv('Data/cre_h3k27ac_peaks.csv', index_col=0)
+            if cre not in cre_h3k27ac_peaks.columns:
+                return None
+            cre_h3k27ac_peaks = cre_h3k27ac_peaks[cre]
+            cell_types = cre_h3k27ac_peaks[cre_h3k27ac_peaks > 0.5].index
+            return cell_types
+        elif use == 'h3k4me1-peak':
+            cre_h3k4me1_peaks = pd.read_csv('Data/cre_h3k4me1_peaks.csv', index_col=0)
+            if cre not in cre_h3k4me1_peaks.columns:
+                return None
+            cre_h3k4me1_peaks = cre_h3k4me1_peaks[cre]
+            cell_types = cre_h3k4me1_peaks[cre_h3k4me1_peaks > 0.5].index
             return cell_types
         elif use == 'chromatin-a':
             chromatin_a = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)

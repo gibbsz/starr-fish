@@ -93,21 +93,23 @@ def preprocess(adata_path):
 # adata3_sec1 = adata3[adata3.obs['section'] == 0].copy()
 # adata3_sec2 = adata3[adata3.obs['section'] == 1].copy()
 # # make two STARRFISH objects
-# starrfish3_sec1 = STARRFISH(adata3_sec1)
-# starrfish3_sec2 = STARRFISH(adata3_sec2)
-starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.pkl')
-# get subclass name and subclass transform
-subclass_annotation = pd.read_excel(f'Data/abc_atlas/allen_institute_nominature.xlsx')
-subclass_annotation['subclass'] = subclass_annotation['subclass_id_label'].str.replace('^[0-9]+ ', '', regex=True)
-subclass_annotation['subclass'] = subclass_annotation['subclass'].str.replace('/', '-', regex=True)
-subclass_to_subclass_name = subclass_annotation['subclass_id_label'].groupby(subclass_annotation['subclass']).first().to_dict()
-subclass_name_to_subclass = subclass_annotation['subclass'].groupby(subclass_annotation['subclass_id_label']).first().to_dict()
+# starrfish3_sec1 = STARRFISH(adata3_sec1, celltype_tag='obs:class')
+# starrfish3_sec2 = STARRFISH(adata3_sec2, celltype_tag='obs:class')
+# starrfish3 = STARRFISH(adata3, celltype_tag='obs:class')
+# del adata3_sec1, adata3_sec2, adata3
+starrfish3 = STARRFISH.load('results/starrfish3.bak.class.pkl')
+starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.bak.class.pkl')
+starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.bak.class.pkl')
+
+# %%
 cre_blacklist = ['CRE061', 'CRE143', 'CRE001']
 cre_whitelist = starrfish3_sec1.get_creinfo().index[~starrfish3_sec1.get_creinfo().index.isin(cre_blacklist)]
 # read in the mismatching barcode CREs
 mismatching_cres = pd.read_csv('Data/AAV_ONT_Barcode_Counts_vs_Mismatch_Percentage.csv', index_col=0)
 cre_whitelist = cre_whitelist[~cre_whitelist.isin(mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20])]
 cre_blacklist = np.unique(cre_blacklist + mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20].tolist()).tolist()
+
+
 # %%
 average_bootstrap_test_config = {
     'cell_types_to_use': None,
@@ -125,34 +127,36 @@ average_bootstrap_test_config = {
     'bootstrap_to_fixed_pct': 1,
     'bootstrap_to_fixed_sample_size': None,
     'load_stored': True,
-    'n_jobs': 62,
+    'n_jobs': 36,
 }
 infected_cells_threshold = 5
 threshold = 'neg_control_mean'
-starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.bak.pkl')
 res1 = starrfish3_sec1.average_bootstrap_test(**average_bootstrap_test_config)
-del starrfish3_sec1
-starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.pkl')
+# starrfish3_sec1.save('results/starrfish3_sec1.bak.class.pkl')
+# del starrfish3_sec1
+
+res2 = starrfish3_sec2.average_bootstrap_test(**average_bootstrap_test_config)
+# starrfish3_sec2.save('results/starrfish3_sec2.bak.class.pkl')
+# del starrfish3_sec2
+
+res = starrfish3.average_bootstrap_test(**average_bootstrap_test_config)
+# starrfish3.save('results/starrfish3.bak.class.pkl')
+# del starrfish3
+
+# %% get p-value
 to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
 to_filter_sec1[cre_blacklist] = True
-res_q1, res_df1, _ = starrfish3_sec1.average_bootstrap_test_q(res1, threshold=threshold, norm='T7', tail='both', to_filter=to_filter_sec1, calibrate=None)
+res_q1, res_q1_right, res_q1_left, res_df1, res_df1_fdc = starrfish3.average_bootstrap_test_q(res1, threshold=threshold, norm='T7', tail='all',
+                                                                                              to_filter=to_filter_sec1, calibrate='self-CRE')
 
-starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.bak.pkl')
-res2 = starrfish3_sec2.average_bootstrap_test(**average_bootstrap_test_config)
-del starrfish3_sec2
-starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.pkl')
 to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < infected_cells_threshold
 to_filter_sec2[cre_blacklist] = True
-res_q2, res_df2, _ = starrfish3_sec2.average_bootstrap_test_q(res2, threshold=threshold, norm='T7', tail='both', to_filter=to_filter_sec2, calibrate=None)
+res_q2, res_q2_right, res_q2_left, res_df2, res_df2_fdc = starrfish3.average_bootstrap_test_q(res2, threshold=threshold, norm='T7', tail='all',
+                                                                                              to_filter=to_filter_sec2, calibrate='self-CRE')
 
-starrfish3 = STARRFISH.load('results/starrfish3.bak.pkl')
-res = starrfish3.average_bootstrap_test(**average_bootstrap_test_config)
-del starrfish3
-starrfish3 = STARRFISH.load('results/starrfish3.pkl')
 to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
 to_filter[cre_blacklist] = True
-res_q, res_df, _ = starrfish3.average_bootstrap_test_q(res, threshold=threshold, norm='T7', tail='both', to_filter=to_filter, calibrate=None)
-
+res_q, res_q_right, res_q_left, res_df, res_df_fdc = starrfish3.average_bootstrap_test_q(res, threshold=threshold, norm='T7', tail='all', to_filter=to_filter, calibrate='self-CRE')
 
 # %%
 # regress on the total T7 counts ~ log fold change of each CRE/Cell Type pair
@@ -178,32 +182,6 @@ ax.set_xlabel('Total T7 counts (per Cell Type)')
 ax.set_ylabel('Activity per CRE/Cell Type pair')
 
 
-
-# %%
-# heatmap after correction
-from plots import plot_grouped_clustermap
-cre_info = starrfish3.get_creinfo().copy()
-cre_info['best_subclass'] = 'CRE'
-cre_info.loc[starrfish3.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
-
-_, final_order = plot_grouped_clustermap(res_df.loc[pd.isna(res_df).any(axis=1), pd.isna(res_df).any(axis=0)], cre_info, 'All', figsize=(15, 8))
-# %% dot plot after correction
-threshold = 'neg_control_mean'
-to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < 0
-to_filter[cre_blacklist] = True
-res_q, res_q_right, res_q_left, res_df, res_df_fdc = starrfish3.average_bootstrap_test_q(res, threshold=threshold, norm='T7', tail='all', 
-                                                                                         to_filter=to_filter, calibrate='self-CRE')
-# %%
-to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < 0
-to_filter_sec1[cre_blacklist] = True
-res_q1, res_q1_right, res_q1_left, res_df1, res_df1_fdc = starrfish3.average_bootstrap_test_q(res1, threshold=threshold, norm='T7', tail='all',
-                                                                                              to_filter=to_filter_sec1, calibrate='self-CRE')
-# %%
-to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < 0
-to_filter_sec2[cre_blacklist] = True
-res_q2, res_q2_right, res_q2_left, res_df2, res_df2_fdc = starrfish3.average_bootstrap_test_q(res2, threshold=threshold, norm='T7', tail='all',
-                                                                                              to_filter=to_filter_sec2, calibrate='self-CRE')
-
 # %% reproducibility
 cre_corr, celltype_corr = starrfish3.corr_starrfish(res_df1, res_df2)
 cre_corr['libsize'] = starrfish3.lib_size['counts'].loc[cre_corr.index]
@@ -218,7 +196,7 @@ fig, ax = plt.subplots(figsize=(4, 4))
 sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] > 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='blue', ax=ax)
 sns.scatterplot(data=celltype_corr[(celltype_corr['pearson_p'] <= 0.05) & (celltype_corr['effect_n'] >= n_cre_threshold)], x='celltype_n', y='pearson', color='red', ax=ax)
 ax.set_xscale('log')
-fig.savefig('results/expr3/reproducibility_by_celltype_pearson_sec1_sec2.pdf')
+fig.savefig('results/expr3/class/reproducibility_by_celltype_pearson_sec1_sec2.pdf')
 fig, ax = plt.subplots(figsize=(4, 4))
 sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
 sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
@@ -227,9 +205,8 @@ ax.set_xscale('log')
 # %% plot pearson R in violin
 fig, ax = plt.subplots(figsize=(2, 4))
 sns.violinplot(data=celltype_corr[(celltype_corr['effect_n'] >= n_cre_threshold) & (celltype_corr['celltype_n'] >= 1000)], y='pearson', ax=ax)
-reproducible_celltypes = celltype_corr.index[(celltype_corr['effect_n'] >= n_cre_threshold) & (celltype_corr['celltype_n'] >= 1000)]
-fig.savefig('results/expr3/reproducibility_by_celltype_pearson_violin_sec1_sec2.pdf')
-
+reproducible_celltypes = celltype_corr.index[(celltype_corr['effect_n'] >= n_cre_threshold) & (celltype_corr['celltype_n'] >= 1000) & (celltype_corr['pearson_p'] <= 0.05)]
+fig.savefig('results/expr3/class/reproducibility_by_celltype_pearson_violin_sec1_sec2.pdf')
 
 
 # %% check overlap of significant CREs between sections
@@ -257,8 +234,8 @@ def plot_reproducibility(overlap_df, celltypes_to_use, percentage_col, bar1_col,
     # get cell type orders
     # order by allen institute's nominature
     cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
-    cluster_annotation_term['subclass'] = cluster_annotation_term['subclass'].str.replace('/', '-')
-    overlap_df['cell_type_rank'] = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[overlap_df.index].values
+    cluster_annotation_term['class'] = cluster_annotation_term['class'].str.replace('/', '-')
+    overlap_df['cell_type_rank'] = cluster_annotation_term['class_number'].groupby(cluster_annotation_term['class']).first().loc[overlap_df.index].values
     overlap_df = overlap_df.sort_values(['cell_type_rank'], ascending=[True])
     # Filter for cell types with celltype_n >= 1000
     overlap_df_filtered = overlap_df[overlap_df['celltype_n'] >= 1000]
@@ -296,14 +273,15 @@ def plot_reproducibility(overlap_df, celltypes_to_use, percentage_col, bar1_col,
 
 # Plot sec1-sec2
 fig = plot_reproducibility(overlap_df, reproducible_celltypes, 'percentage_sec1_sec2', 'sec1', 'sec2', 'sec1', 'sec2')
-fig.savefig('results/expr3/reproducibility_by_celltype_sec1_sec2.pdf')
+fig.savefig('results/expr3/class/reproducibility_by_celltype_sec1_sec2.pdf')
 # Plot sec1-all
 fig = plot_reproducibility(overlap_df, reproducible_celltypes, 'percentage_sec1_all', 'sec1', 'all', 'sec1', 'all')
-fig.savefig('results/expr3/reproducibility_by_celltype_sec1_all.pdf')
+fig.savefig('results/expr3/class/reproducibility_by_celltype_sec1_all.pdf')
 
 # Plot sec2-all
 fig = plot_reproducibility(overlap_df, reproducible_celltypes, 'percentage_sec2_all', 'sec2', 'all', 'sec2', 'all')
-fig.savefig('results/expr3/reproducibility_by_celltype_sec2_all.pdf')
+fig.savefig('results/expr3/class/reproducibility_by_celltype_sec2_all.pdf')
+
 
 # %% calculate overlap statistics for each CRE
 def calculate_overlap_cre_df(q_values_df1, q_values_df2, comparison_name1='group1', comparison_name2='group2', cre_blacklist=None):
@@ -391,30 +369,35 @@ ax.set_xlabel('Comparison')
 ax.set_ylabel('Count')
 ax.legend(title='Reproducibility Category', bbox_to_anchor=(1.05, 1), loc='upper left')
 fig.tight_layout()
-fig.savefig('results/expr3/reproducibility_comparison_barplot.pdf')
+fig.savefig('results/expr3/class/reproducibility_comparison_barplot.pdf')
 fig.show()
 
 
 # %%
 from plots import celltype_pval_dotplot
+
+cre_info = starrfish3.get_creinfo().copy()
+cre_info['best_subclass'] = 'CRE'
+cre_info.loc[starrfish3.get_negative_control_cres(), 'best_subclass'] = 'Negative Control'
+
 # cell_types_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
 cell_types_to_use = reproducible_celltypes
 cres_to_use = res_q_right.columns[np.nanmin(res_q_right.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
 cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
 fig, final_order = celltype_pval_dotplot(res_q_right, res_df_fdc, cres_to_use, cell_types_to_use,
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(12, 30))
-fig.savefig('results/expr3/celltype_pval_dotplot_all.pdf')
+                                         figsize=(12, 20))
+fig.savefig('results/expr3/class/celltype_pval_dotplot_all.pdf')
 # %%
 fig, final_order = celltype_pval_dotplot(res_q1_right, res_df1_fdc, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(12, 30))
-fig.savefig('results/expr3/celltype_pval_dotplot_sec1.pdf')
+                                         figsize=(12, 20))
+fig.savefig('results/expr3/class/celltype_pval_dotplot_sec1.pdf')
 # %%
 fig, final_order = celltype_pval_dotplot(res_q2_right, res_df2_fdc, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(12, 30))
-fig.savefig('results/expr3/celltype_pval_dotplot_sec2.pdf')
+                                         figsize=(12, 20))
+fig.savefig('results/expr3/class/celltype_pval_dotplot_sec2.pdf')
 
 
 
@@ -441,14 +424,14 @@ for celltype in reproducible_celltypes:
     # order by rank
     cre_right = cre_activity.loc[cre_q_values_right.index].sort_values(ascending=False).index
     cre_left = cre_activity.loc[cre_q_values_left.index].sort_values(ascending=True).index
-    # get nmax
-    nmax = starrfish3.get_cre_expression().loc[starrfish3.get_celltypes() == celltype, cre_right[0]].max()
-    t7_nmax = starrfish3.get_t7_expression().loc[starrfish3.get_celltypes() == celltype, cre_right[0]].mean()
-    nmax = np.log1p(nmax / t7_nmax) - cre_mean[res_df_fdc.columns==cre_right[0]][0]
-    # round up nmax to nearest integer
-    nmax = int(np.ceil(nmax))
     # only plot top 1 of each tail
     if len(cre_right) > 0:
+        # get nmax
+        nmax = starrfish3.get_cre_expression().loc[starrfish3.get_celltypes() == celltype, cre_right[0]].max()
+        t7_nmax = starrfish3.get_t7_expression().loc[starrfish3.get_celltypes() == celltype, cre_right[0]].mean()
+        nmax = np.log1p(nmax / t7_nmax) - cre_mean[res_df_fdc.columns==cre_right[0]][0]
+        # round up nmax to nearest integer
+        nmax = int(np.ceil(nmax))
         cre = cre_right[0]
         print(f'Plotting {cre} in {celltype} (right tail)')
         cell_types_to_visualize = [celltype]
@@ -459,7 +442,7 @@ for celltype in reproducible_celltypes:
             log=True, calibrate=cre_mean[res_df_fdc.columns==cre][0], nmax=nmax,
             transpose=-1, flipx=-1, sz_max=50,
             cell_types_to_use=cell_types_to_visualize)
-        fig.savefig(f'results/expr3/celltype_significant_cres/{celltype}_{cre}_right_tail.pdf')
+        fig.savefig(f'results/expr3/class/celltype_significant_cres/{celltype}_{cre}_right_tail.pdf')
     if len(cre_left) > 0:
         cre = cre_left[0]
         print(f'Plotting {cre} in {celltype} (left tail)')
@@ -471,174 +454,7 @@ for celltype in reproducible_celltypes:
             log=True, calibrate=cre_mean[res_df_fdc.columns==cre][0], nmax=nmax,
             transpose=-1, flipx=-1, sz_max=50,
             cell_types_to_use=cell_types_to_visualize)
-        fig.savefig(f'results/expr3/celltype_significant_cres/{celltype}_{cre}_left_tail.pdf')
+        fig.savefig(f'results/expr3/class/celltype_significant_cres/{celltype}_{cre}_left_tail.pdf')
 
 
-
-
-
-# %% show consistency with ATAC
-def get_precision_df(res_q_df, starrfish, use='atac-peak'):
-    precision_df = pd.DataFrame(index=res_q_df.index, columns=['TP', 'Total', 'ATAC', 'precision', 'recall'])
-    for celltype in precision_df.index:
-        atac_peaks = starrfish.get_positive_control_cres(cell_type=celltype, use=use)
-        sig_cres = res_q_df.columns[res_q_df.loc[celltype] <= 0.05]
-        nan_cres = res_q_df.columns[pd.isna(res_q_df.loc[celltype])]
-        atac_peaks = atac_peaks[~atac_peaks.isin(nan_cres)] if atac_peaks is not None else None
-        if atac_peaks is not None and len(sig_cres) > 0:
-            precision_df.loc[celltype, 'TP'] = sig_cres.isin(atac_peaks).sum()
-        precision_df.loc[celltype, 'Total'] = sum(~pd.isna(res_q_df.loc[celltype]))
-        precision_df.loc[celltype, use] = len(atac_peaks) if atac_peaks is not None else 0
-        if precision_df.loc[celltype, 'Total'] != 0:
-            precision_df.loc[celltype, 'recall'] = precision_df.loc[celltype, 'TP'] / precision_df.loc[celltype, 'Total']
-        if precision_df.loc[celltype, use] != 0:
-            precision_df.loc[celltype, 'precision'] = precision_df.loc[celltype, 'TP'] / precision_df.loc[celltype, use]
-    precision_df = precision_df.sort_values('precision', ascending=False)
-    return precision_df
-
-# Plot ATAC precision using the same strategy as plot_reproducibility
-def plot_atac_precision(atac_precision_df, celltypes_to_use, use='atac-peak'):
-    # get cell type orders
-    # order by allen institute's nominature
-    cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
-    cluster_annotation_term['subclass'] = cluster_annotation_term['subclass'].str.replace('/', '-')
-    atac_precision_df['cell_type_rank'] = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[atac_precision_df.index].values
-    atac_precision_df = atac_precision_df.sort_values(['cell_type_rank'], ascending=[True])
-    # Filter for cell types with celltype_n >= 1000
-    atac_precision_df_filtered = atac_precision_df.loc[celltypes_to_use.intersection(atac_precision_df.index)]
-    atac_precision_df_filtered = atac_precision_df_filtered.sort_values(['cell_type_rank'], ascending=[True])
-    # Create x positions
-    x = np.arange(len(atac_precision_df_filtered))
-    cell_types = atac_precision_df_filtered.index
-
-    fig, ax1 = plt.subplots(figsize=(14, 6))
-
-    # Left y-axis for precision
-    sns.barplot(x=cell_types, y=atac_precision_df_filtered['precision'], ax=ax1, alpha=0.8)
-    ax1.set_xlabel('Cell Types')
-    ax1.set_ylabel('ATAC Precision', color='black')
-    ax1.tick_params(axis='y', labelcolor='black')
-    plt.setp(ax1.get_xticklabels(), rotation=45, ha='right')
-
-    # Add horizontal dashed line for overall precision
-    overall_precision = atac_precision_df_filtered['TP'].sum() / atac_precision_df_filtered[use].sum()
-    ax1.axhline(y=overall_precision, color='black', linestyle='--', alpha=0.7, label=f'Overall precision: {overall_precision:.3f}')
-    ax1.legend(loc='upper left')
-
-    # Right y-axis for bar values
-    ax2 = ax1.twinx()
-    x_pos = np.arange(len(atac_precision_df_filtered))
-
-    ax2.bar(x_pos - 0.2, atac_precision_df_filtered['TP'], 0.4, label=f'Significant CREs in {use}', alpha=0.8, color='orange')
-    ax2.bar(x_pos + 0.2, atac_precision_df_filtered[use], 0.4, label=f'Total {use}', alpha=0.8, color='green')
-    ax2.set_ylabel('Count', color='black')
-    ax2.tick_params(axis='y', labelcolor='black')
-    ax2.legend(loc='upper right')
-
-    plt.tight_layout()
-    return fig
-
-# Plot ATAC precision
-overall_tp = {}
-overall_total = {}
-for use in ['atac-peak', 'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a']:
-    precision_df = get_precision_df(res_q_right, starrfish3, use=use)
-    fig = plot_atac_precision(precision_df, reproducible_celltypes, use=use)
-    fig.savefig(f'results/expr3/{use.replace("-", "_")}_precision_by_celltype.pdf')
-    overall_tp[use] = precision_df.loc[reproducible_celltypes, 'TP'].sum()
-    overall_total[use] = precision_df.loc[reproducible_celltypes, use].sum()
-# %% plot bar of overall precision
-cre_precision_data = pd.DataFrame({
-    'Assay': list(overall_tp.keys()),
-    'TP': list(overall_tp.values()),
-    'Total': list(overall_total.values()),
-    'Precision': [tp / total if total > 0 else 0 for tp, total in zip(overall_tp.values(), overall_total.values())]
-})
-fig, ax = plt.subplots(figsize=(6, 4))
-sns.barplot(data=cre_precision_data, x='Assay', y='Precision', ax=ax, alpha=0.8)
-ax.set_xlabel('Assay')
-ax.set_ylabel('Overall Precision')
-ax.set_ylim(0, 0.3)
-for i, row in cre_precision_data.iterrows():
-    ax.text(i, row['Precision'] + 0.02, f"{row['TP']}/{row['Total']}", ha='center', va='bottom')
-fig.savefig('results/expr3/overall_precision_barplot.pdf')
-fig.show()
-
-# %% number of on-target CREs
-def get_cre_precision_df(res_q_df, starrfish, celltypes_to_use=None, use='atac-peak'):
-    precision_df = pd.DataFrame(index=res_q_df.columns, columns=['TP', 'Total', 'precision', 'recall'])
-    for cre in precision_df.index:
-        atac_peaks = starrfish.get_positive_control_celltypes(cre=cre, use=use)
-        sig_celltypes = res_q_df.index[res_q_df[cre] <= 0.05]
-        nan_celltypes = res_q_df.index[pd.isna(res_q_df[cre])]
-        if celltypes_to_use is not None:
-            sig_celltypes = sig_celltypes[sig_celltypes.isin(celltypes_to_use)]
-            nan_celltypes = nan_celltypes[nan_celltypes.isin(celltypes_to_use)]
-        atac_peaks = atac_peaks[~atac_peaks.isin(nan_celltypes)] if atac_peaks is not None else None
-        if atac_peaks is not None and len(sig_celltypes) > 0:
-            precision_df.loc[cre, 'TP'] = sig_celltypes.isin(atac_peaks).sum()
-        precision_df.loc[cre, 'Total'] = sum(~pd.isna(res_q_df[cre]))
-        precision_df.loc[cre, use] = len(atac_peaks) if atac_peaks is not None else 0
-        if precision_df.loc[cre, 'Total'] != 0:
-            precision_df.loc[cre, 'recall'] = precision_df.loc[cre, 'TP'] / precision_df.loc[cre, 'Total']
-        if precision_df.loc[cre, use] != 0:
-            precision_df.loc[cre, 'precision'] = precision_df.loc[cre, 'TP'] / precision_df.loc[cre, use]
-    precision_df = precision_df.sort_values('precision', ascending=False)
-    return precision_df
-reproducible_cres = overlap_cre_df.index[overlap_cre_df['reproducibility'].isin(['All Reproducible', 'Partially Reproducible'])]
-cre_precision_df_repro = get_cre_precision_df(res_q_right[reproducible_cres].copy(), starrfish3, use='atac-peak')
-repro_percentage = sum(cre_precision_df_repro['TP'] > 0) / len(cre_precision_df_repro)
-print(f'Reproducible CREs with TP > 0: {repro_percentage:.3f}')
-
-cre_precision_df_all = get_cre_precision_df(res_q_right, starrfish3, use='atac-peak')
-all_percentage = sum(cre_precision_df_all['TP'] > 0) / len(cre_precision_df_all)
-print(f'All CREs with TP > 0: {all_percentage:.3f}')
-
-# Plot CRE precision as two separate side-by-side bar plots
-repro_tp_count = sum(cre_precision_df_repro['TP'] > 0)
-repro_total_count = len(cre_precision_df_repro)
-all_tp_count = sum(cre_precision_df_all['TP'] > 0)
-all_total_count = len(cre_precision_df_all)
-
-cre_precision_data = pd.DataFrame({
-    'CRE_type': ['Sec1-Sec2\nReproducible CREs', 'All CREs'],
-    'Percentage': [repro_percentage, all_percentage],
-    'TP_count': [repro_tp_count, all_tp_count]
-})
-
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6, 4))
-
-# Left plot: Percentage
-sns.barplot(data=cre_precision_data, x='CRE_type', y='Percentage', ax=ax1, alpha=0.8)
-ax1.set_xlabel('CRE Categories')
-ax1.set_ylabel('Percentage')
-ax1.set_ylim(0, 1)
-ax1.set_title('Percentage of CREs on-target')
-
-# Right plot: Count
-sns.barplot(data=cre_precision_data, x='CRE_type', y='TP_count', ax=ax2, alpha=0.8, color='orange')
-ax2.set_xlabel('CRE Categories')
-ax2.set_ylabel('Number')
-ax2.set_title('Count of CREs on-target')
-
-plt.tight_layout()
-fig.savefig('results/expr3/cre_precision_percentage_barplot.pdf')
-plt.show()
-
-
-
-# %% do upset plot of ATAC, H3K4me1, H3K27ac, Chromatin A
-on_target_cres = {}
-for use in ['atac-peak', 'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a']:
-    cre_precision_df_all = get_cre_precision_df(res_q_right.copy(), starrfish3, reproducible_celltypes, use=use)
-    on_target_cres[use] = cre_precision_df_all.index[cre_precision_df_all['TP'] > 0]
-    overall_tp[use] = cre_precision_df_all['TP'].sum()
-    overall_total[use] = len(cre_precision_df_all)
-# do upset plot
-from upsetplot import UpSet, from_contents
-upset_data = from_contents(on_target_cres)
-fig = plt.figure(figsize=(6, 4))
-upset = UpSet(upset_data, subset_size='count', show_counts='%d', sort_by='degree', sort_categories_by=None)
-upset.plot(fig=fig)
-fig.savefig('results/expr3/cre_ontarget_upsetplot.pdf')
 # %%

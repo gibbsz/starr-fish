@@ -13,6 +13,10 @@ from scipy.spatial.distance import pdist
 from scipy.cluster.hierarchy import linkage, dendrogram, leaves_list, optimal_leaf_ordering
 from scipy.spatial.distance import squareform
 from adjustText import adjust_text
+from concurrent.futures import ProcessPoolExecutor
+import multiprocessing
+from joblib import Parallel, delayed
+from scipy.stats import mannwhitneyu
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=RuntimeWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -1606,7 +1610,14 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
     # order cell types to use by subcluster number
     cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
     cluster_annotation_term['subclass'] = cluster_annotation_term['subclass'].str.replace('/', '-')
-    cell_types_to_use_cluster_number = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[cell_types_to_use].values
+    try:
+        cell_types_to_use_cluster_number = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[cell_types_to_use].values
+    except KeyError:
+        try:
+            cell_types_to_use_cluster_number = cluster_annotation_term['class_number'].groupby(cluster_annotation_term['class']).first().loc[cell_types_to_use].values
+        except KeyError:
+            # just order by alphabet
+            cell_types_to_use_cluster_number = cell_types_to_use.to_series().rank().values
     # reorder cell types to use by subcluster number
     cell_types_to_use = pd.Index(cell_types_to_use[np.argsort(cell_types_to_use_cluster_number)])
     # reorder test result and atac cpm
@@ -1957,7 +1968,16 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
     # order cell types to use by subcluster number
     cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
     cluster_annotation_term['subclass'] = cluster_annotation_term['subclass'].str.replace('/', '-')
-    cell_types_to_use_cluster_number = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[cell_types_to_use].values
+    cluster_annotation_term['class'] = cluster_annotation_term['class'].str.replace('/', '-')
+    try:
+        cell_types_to_use_cluster_number = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[cell_types_to_use].values
+    except KeyError:
+        cell_types_to_use_cluster_number = cluster_annotation_term['class_number'].groupby(cluster_annotation_term['class']).first().loc[cell_types_to_use].values
+        try:
+            cell_types_to_use_cluster_number = cluster_annotation_term['class_number'].groupby(cluster_annotation_term['class']).first().loc[cell_types_to_use].values
+        except KeyError:
+            # just order by alphabet
+            cell_types_to_use_cluster_number = cell_types_to_use.to_series().rank().values
     # reorder cell types to use by subcluster number
     cell_types_to_use = pd.Index(cell_types_to_use[np.argsort(cell_types_to_use_cluster_number)])
     # reorder test result and atac cpm
@@ -2303,7 +2323,7 @@ def plot_q_value_celltype_reproducibility(res_q1, res_q2, res_q, cell_counts1, c
     sns.violinplot(y=res_compare['Percentage'], ax=ax[2])
     return res_compare
 
-def plot_q_value_cre_reproducibility(res_q1, res_q2, res_q, q_cutoff=0.05, plot=True):
+def plot_q_value_cre_reproducibility(res_q1, res_q2, res_q, lib_size, q_cutoff=0.05, plot=True):
     common_cres = res_q1.columns.intersection(res_q2.columns)
     res_compare = pd.DataFrame(index=common_cres, columns=['Sec1', 'Sec2', 'All', 
                                                            'Common', 'Percentage',
@@ -2320,7 +2340,7 @@ def plot_q_value_cre_reproducibility(res_q1, res_q2, res_q, q_cutoff=0.05, plot=
         res_compare.loc[cre, 'Common_sec2'] = res_q2[cre].index[res_q2[cre] <= q_cutoff].intersection(res_q[cre].index[res_q[cre] <= q_cutoff]).shape[0]
         res_compare.loc[cre, 'Percentage_sec2'] = res_compare.loc[cre, 'Common_sec2'] / np.minimum(res_compare.loc[cre, 'Sec2'], res_compare.loc[cre, 'All'])
     # plot the percentage vs number of cells
-    res_compare['lib_size'] = starrfish3.lib_size.loc[common_cres, 'counts'].values
+    res_compare['lib_size'] = lib_size.loc[common_cres, 'counts'].values
     if not plot:
         return res_compare
     fig, ax = plt.subplots(ncols=4, figsize=(16, 4))
@@ -2557,3 +2577,80 @@ def plot_grouped_clustermap(data_df, cre_info, title=None, final_order=None, fig
         g.figure.suptitle(title)
     return g, final_order
 
+def _process_average_foldchange_specificity_test(args):
+    """Worker function for parallel processing of CRE-celltype combinations"""
+
+    celltype, cre, res_avg_data, bkg_data, orig_celltype, orig_activity = args
+
+    # Filter log-transformed data using vectorized operations
+    finite_avg = np.isfinite(res_avg_data)
+    finite_bkg = np.isfinite(bkg_data)
+
+    res_avg_clean = res_avg_data[finite_avg]
+    bkg_clean = bkg_data[finite_bkg]
+
+    # Frequentist test
+    if len(res_avg_clean) == 0 or len(bkg_clean) <= 0.01*len(bkg_data):
+        p_frequentist = np.nan
+    else:
+        # Vectorized comparison
+        mean_avg = np.mean(res_avg_clean)
+        p_frequentist = np.mean(mean_avg <= bkg_clean)
+
+    # Mann-Whitney test with original data
+    finite_orig_cell = np.isfinite(orig_celltype)
+    finite_orig_act = np.isfinite(orig_activity)
+
+    if not np.any(finite_orig_cell) or not np.any(finite_orig_act):
+        p_rank_test = np.nan
+    else:
+        try:
+            p_rank_test = mannwhitneyu(
+                orig_celltype[finite_orig_cell],
+                orig_activity[finite_orig_act],
+                alternative='greater'
+            ).pvalue
+        except ValueError:
+            # Handle edge cases where all values are identical
+            p_rank_test = np.nan
+
+    return (celltype, cre, p_frequentist, p_rank_test)
+
+def average_foldchange_specificity_test(res_avg, res):
+
+    p_mat_frequentist = res['pvalue_activity'].copy()
+    p_mat_rank_test = res['pvalue_activity'].copy()
+
+    # Pre-compute log transformations
+    log_celltype_activity = np.log(res_avg['celltype_activity_array'])
+    log_activity = np.log(res['activity_array'])
+
+    # Prepare arguments for parallel processing with pre-extracted data slices
+    args_list = [(celltype, cre,
+                  log_celltype_activity[:, j, i],  # res_avg_data
+                  log_activity[:, j, i],           # bkg_data
+                  res_avg['celltype_activity_array'][:, j, i],  # orig_celltype
+                  res['activity_array'][:, j, i])   # orig_activity
+                 for i, cre in enumerate(p_mat_rank_test.columns)
+                 for j, celltype in enumerate(p_mat_rank_test.index)]
+
+    # Use joblib for better NumPy array handling
+    n_cores = min(multiprocessing.cpu_count(), 20)  # Use more cores
+    print(f"Processing {len(p_mat_rank_test.columns)} CREs x {len(p_mat_rank_test.index)} celltypes with {n_cores} cores...")
+
+    results = Parallel(n_jobs=n_cores, backend='threading', verbose=1)(
+        delayed(_process_average_foldchange_specificity_test)(args) for args in args_list
+    )
+
+    # Fill results back into matrices
+    for celltype, cre, p_freq, p_rank in results:
+        p_mat_frequentist.loc[celltype, cre] = p_freq
+        p_mat_rank_test.loc[celltype, cre] = p_rank
+
+    return p_mat_rank_test, p_mat_frequentist
+
+def q_value_correction(p_mat):
+    q_mat = p_mat.values.flatten().copy().astype(float)
+    q_mat[~np.isnan(q_mat)] = multitest.multipletests(q_mat[~np.isnan(q_mat)], method='fdr_bh')[1]
+    q_mat = pd.DataFrame(q_mat.reshape(p_mat.shape), index=p_mat.index, columns=p_mat.columns)
+    return q_mat
