@@ -71,9 +71,6 @@ def preprocess(adata_path):
     adata.obs['class'] = adata.obs['class_name'].str.replace('^[0-9]+ ', '', regex=True)
     # change '' best_subclass to its label
     adata.uns['CRE_info']['best_subclass'][adata.uns['CRE_info']['best_subclass'] == ''] = adata.uns['CRE_info']['label'][adata.uns['CRE_info']['best_subclass'] == ''].copy()
-    # add region label
-    cluster_annotation_term = pd.read_excel('Data/abc_atlas/allen_institute_nominature.xlsx')
-    adata.obs['region'] = cluster_annotation_term['neighborhood'].groupby(cluster_annotation_term['subclass_label']).first().reindex(adata.obs['subclass']).values
     # process enh
     chrom = []
     start = []
@@ -110,12 +107,27 @@ def preprocess(adata_path):
 # adata3_sec1 = adata3[adata3.obs['section'] == 0].copy()
 # adata3_sec2 = adata3[adata3.obs['section'] == 1].copy()
 # # make two STARRFISH objects
-# starrfish3_sec1 = STARRFISH(adata3_sec1, celltype_tag='obs:region')
-# starrfish3_sec2 = STARRFISH(adata3_sec2, celltype_tag='obs:region')
-# starrfish3 = STARRFISH(adata3, celltype_tag='obs:region')
-starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.region.pkl')
-starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.region.pkl')
-starrfish3 = STARRFISH.load('results/starrfish3.region.pkl')
+# starrfish3_sec1 = STARRFISH(adata3_sec1)
+# starrfish3_sec2 = STARRFISH(adata3_sec2)
+starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.pkl')
+starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.pkl')
+starrfish3 = STARRFISH.load('results/starrfish3.gauss.pkl')
+# %% get subclass name and subclass transform
+subclass_annotation = pd.read_excel(f'Data/abc_atlas/allen_institute_nominature.xlsx')
+subclass_annotation['subclass'] = subclass_annotation['subclass_id_label'].str.replace('^[0-9]+ ', '', regex=True)
+subclass_annotation['subclass'] = subclass_annotation['subclass'].str.replace('/', '-', regex=True)
+subclass_to_subclass_name = subclass_annotation['subclass_id_label'].groupby(subclass_annotation['subclass']).first().to_dict()
+subclass_name_to_subclass = subclass_annotation['subclass'].groupby(subclass_annotation['subclass_id_label']).first().to_dict()
+cre_blacklist = ['CRE061', 'CRE143', 'CRE001']
+cre_whitelist = starrfish3_sec1.get_creinfo().index[~starrfish3_sec1.get_creinfo().index.isin(cre_blacklist)]
+# read in the mismatching barcode CREs
+mismatching_cres = pd.read_csv('Data/AAV_ONT_Barcode_Counts_vs_Mismatch_Percentage.csv', index_col=0)
+cre_whitelist = cre_whitelist[~cre_whitelist.isin(mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20])]
+cre_blacklist = np.unique(cre_blacklist + mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20].tolist()).tolist()
+# assign to starrfish3
+starrfish3_sec1.blacklist_cre = cre_blacklist
+starrfish3_sec2.blacklist_cre = cre_blacklist
+starrfish3.blacklist_cre = cre_blacklist
 
 
 # %% define the CREs and Cell Type matric to keep
@@ -123,12 +135,6 @@ infected_cells_threshold = 5
 to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
 to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
 to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < infected_cells_threshold
-cre_blacklist = ['CRE061', 'CRE143', 'CRE001']
-cre_whitelist = starrfish3_sec1.get_creinfo().index[~starrfish3_sec1.get_creinfo().index.isin(cre_blacklist)]
-# read in the mismatching barcode CREs
-mismatching_cres = pd.read_csv('Data/AAV_ONT_Barcode_Counts_vs_Mismatch_Percentage.csv', index_col=0)
-cre_whitelist = cre_whitelist[~cre_whitelist.isin(mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20])]
-cre_blacklist = np.unique(cre_blacklist + mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20].tolist()).tolist()
 to_filter[cre_blacklist] = True
 to_filter_sec1[cre_blacklist] = True
 to_filter_sec2[cre_blacklist] = True
@@ -151,42 +157,23 @@ fold_change_test_config = {"cell_types_to_use": None,
                            "log_transform": False,
                            "filter_zero_counts": False,
                            "bootstrap_number": 10000,
-                           "n_jobs": 32,
-                           'load_stored': True,}
+                           "n_jobs": 72,
+                           'load_stored': True}
 res1 = starrfish3_sec1.fold_change_test(**fold_change_test_config)
-# starrfish3_sec1.save('results/starrfish3_sec1.region.pkl')
+# starrfish3_sec1.save('results/starrfish3_sec1.pkl')
 res2 = starrfish3_sec2.fold_change_test(**fold_change_test_config)
-# starrfish3_sec2.save('results/starrfish3_sec2.region.pkl')
+# starrfish3_sec2.save('results/starrfish3_sec2.pkl')
 res = starrfish3.fold_change_test(**fold_change_test_config)
-# starrfish3.save('results/starrfish3.region.pkl')
+# starrfish3.save('results/starrfish3.gauss.pkl')
 
 
 # %% get activity from average_bootstrap method
-average_bootstrap_test_config = {
-    'cell_types_to_use': None,
-    'normalize_by_cell_rna': False,
-    'normalize_by_cell_volume': False,
-    'normalize_by_cell_t7': False,  # normalize by T7, filter cells with T7 < 4
-    'normalize_by_celltype_rna': False,
-    'normalize_by_celltype_volume': False,
-    'normalize_by_celltype_t7': True,  # normalize by T7
-    'filter_by_cell_t7': None,
-    'normalize_by_negative_control': False,  # normalize by negative control
-    'normalize_by_libsize': False,
-    'log_transform': False,
-    'bootstrap_number': 10000,
-    'bootstrap_to_fixed_pct': 1,
-    'bootstrap_to_fixed_sample_size': None,
-    'load_stored': True,
-    'n_jobs': 36,
-}
-starrfish3_sec1_avg = STARRFISH.load(f'{PWD}/results/starrfish3_sec1.bak.region.pkl')
-starrfish3_sec2_avg = STARRFISH.load(f'{PWD}/results/starrfish3_sec2.bak.region.pkl')
-starrfish3_avg = STARRFISH.load(f'{PWD}/results/starrfish3.bak.region.pkl')
-res1_avg = starrfish3_sec1_avg.average_bootstrap_test(**average_bootstrap_test_config)
-res2_avg = starrfish3_sec2_avg.average_bootstrap_test(**average_bootstrap_test_config)
-res_avg = starrfish3_avg.average_bootstrap_test(**average_bootstrap_test_config)
-del starrfish3_sec1_avg, starrfish3_sec2_avg, starrfish3_avg
+with open('results/starrfish3.average_bootstrap.pkl', 'rb') as f:
+    res_avg = pickle.load(f)
+with open('results/starrfish3_sec1.average_bootstrap.pkl', 'rb') as f:
+    res1_avg = pickle.load(f)
+with open('results/starrfish3_sec2.average_bootstrap.pkl', 'rb') as f:
+    res2_avg = pickle.load(f)
 # %% compare the two methods
 from plots import average_foldchange_specificity_test, q_value_correction
 p_mat_rank_test, p_mat_frequentist = average_foldchange_specificity_test(res_avg, res)
@@ -220,6 +207,41 @@ p_mat_frequentist2_filter[to_filter_sec2] = np.nan
 q_mat_frequentist2 = q_value_correction(p_mat_frequentist2_filter)
 
 
+# %% check reproducibility of cell type specificity
+# activity_res1 = res1['celltype_activity'].copy()
+# activity_res2 = res2['celltype_activity'].copy()
+# activity_res = res['celltype_activity'].copy()
+# # filter out to filter
+# infected_cells_threshold = 5
+# to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
+# to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
+# to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < infected_cells_threshold
+# to_filter[cre_blacklist] = True
+# to_filter_sec1[cre_blacklist] = True
+# to_filter_sec2[cre_blacklist] = True
+# # recalculate q-values
+# q_res = res['pvalue_activity'].copy()
+# q_res[to_filter] = np.nan
+# activity_res[to_filter] = np.nan
+# q_res = q_res.values.flatten().copy().astype(float)
+# q_res[~np.isnan(q_res)] = multitest.multipletests(q_res[~np.isnan(q_res)], method='fdr_bh')[1]
+# q_res = pd.DataFrame(q_res.reshape(activity_res.shape), index=activity_res.index, columns=activity_res.columns)
+
+# q_res1 = res1['pvalue_activity'].copy()
+# q_res1[to_filter_sec1] = np.nan
+# activity_res1[to_filter_sec1] = np.nan
+# q_res1 = q_res1.values.flatten().copy().astype(float)
+# q_res1[~np.isnan(q_res1)] = multitest.multipletests(q_res1[~np.isnan(q_res1)], method='fdr_bh')[1]
+# q_res1 = pd.DataFrame(q_res1.reshape(activity_res1.shape), index=activity_res1.index, columns=activity_res1.columns)
+
+# q_res2 = res2['pvalue_activity'].copy()
+# q_res2[to_filter_sec2] = np.nan
+# activity_res2[to_filter_sec2] = np.nan
+# q_res2 = q_res2.values.flatten().copy().astype(float)
+# q_res2[~np.isnan(q_res2)] = multitest.multipletests(q_res2[~np.isnan(q_res2)], method='fdr_bh')[1]
+# q_res2 = pd.DataFrame(q_res2.reshape(activity_res2.shape), index=activity_res2.index, columns=activity_res2.columns)
+
+
 # %% 
 q_res1 = q_mat_frequentist1.copy()
 q_res2 = q_mat_frequentist2.copy()
@@ -232,6 +254,7 @@ activity_res = res_avg['celltype_activity'].copy()
 activity_res[to_filter] = np.nan
 
 
+
 # %% define reproducible cell types
 reproducible_celltypes = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000].intersection(
     starrfish3_sec1.get_celltypes().value_counts().index[starrfish3_sec1.get_celltypes().value_counts()>=1000]).intersection(
@@ -239,6 +262,30 @@ reproducible_celltypes = starrfish3.get_celltypes().value_counts().index[starrfi
 )
 # remove one of them based on figure 4 results
 reproducible_celltypes = reproducible_celltypes[~reproducible_celltypes.isin(['Ependymal NN'])]
+
+
+
+# %% pearson correlation of between the two sections
+cre_corr, celltype_corr = starrfish3.corr_starrfish(activity_res1, activity_res)
+cre_corr['libsize'] = starrfish3.lib_size['counts'].loc[cre_corr.index]
+celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_full'] = starrfish3.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
+# %% plot
+n_cre_threshold = 10
+n_celltype_threshold = 10
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
+ax.set_xscale('log')
+fig.savefig('results/expr3/reproducibility_by_cre_pearson_sec1_sec2.pdf')
+# %% plot pearson R in violin
+fig, ax = plt.subplots(figsize=(2, 4))
+sns.violinplot(data=cre_corr[(cre_corr['effect_n'] >= n_celltype_threshold)], y='pearson', ax=ax)
+fig.savefig('results/expr3/reproducibility_by_cre_pearson_violin_sec1_sec2.pdf')
+
+
 
 
 # %%
@@ -271,63 +318,7 @@ legend.set_title('')
 for text in legend.get_texts():
     if text.get_text() in [str(i) for i in range(10)]:  # size legend items
         legend.get_texts()[legend.get_texts().index(text)].set_text('')
-fig.savefig('results/expr3/region/reproducibility_by_cre_percentage_all.pdf', bbox_inches='tight')
-
-
-# %% define reproducible cres
-for cre in res_compare.index:
-    # sec1-sec2
-    res_compare.loc[cre, 'sec1-sec2'] = 'Non-reproducible'
-    if res_compare.loc[cre, 'Common'] > 0:
-        res_compare.loc[cre, 'sec1-sec2'] = 'Partially Reproducible'
-    if res_compare.loc[cre, 'Sec1'] == 0 and res_compare.loc[cre, 'Sec2'] == 0:
-        res_compare.loc[cre, 'sec1-sec2'] = 'All Reproducible'
-    else:
-        if res_compare.loc[cre, 'Common'] / np.minimum(res_compare.loc[cre, 'Sec1'], res_compare.loc[cre, 'Sec2']) == 1:
-            res_compare.loc[cre, 'sec1-sec2'] = 'All Reproducible'
-    if cre in cre_blacklist:
-        res_compare.loc[cre, 'sec1-sec2'] = 'Blacklisted'
-    # sec1-all
-    res_compare.loc[cre, 'sec1-all'] = 'Non-reproducible'
-    if res_compare.loc[cre, 'Common_sec1'] > 0:
-        res_compare.loc[cre, 'sec1-all'] = 'Partially Reproducible'
-    if res_compare.loc[cre, 'Sec1'] == 0 and res_compare.loc[cre, 'All'] == 0:
-        res_compare.loc[cre, 'sec1-all'] = 'All Reproducible'
-    else:
-        if res_compare.loc[cre, 'Common_sec1'] / np.minimum(res_compare.loc[cre, 'Sec1'], res_compare.loc[cre, 'All']) == 1:
-            res_compare.loc[cre, 'sec1-all'] = 'All Reproducible'
-    if cre in cre_blacklist:
-        res_compare.loc[cre, 'sec1-all'] = 'Blacklisted'
-    # sec2-all
-    res_compare.loc[cre, 'sec2-all'] = 'Non-reproducible'
-    if res_compare.loc[cre, 'Common_sec2'] > 0:
-        res_compare.loc[cre, 'sec2-all'] = 'Partially Reproducible'
-    if res_compare.loc[cre, 'Sec2'] == 0 and res_compare.loc[cre, 'All'] == 0:
-        res_compare.loc[cre, 'sec2-all'] = 'All Reproducible'
-    else:
-        if res_compare.loc[cre, 'Common_sec2'] / np.minimum(res_compare.loc[cre, 'Sec2'], res_compare.loc[cre, 'All']) == 1:
-            res_compare.loc[cre, 'sec2-all'] = 'All Reproducible'
-    if cre in cre_blacklist:
-        res_compare.loc[cre, 'sec2-all'] = 'Blacklisted'
-# Reshape data for plotting
-toplot = pd.concat((res_compare['sec1-sec2'].value_counts().rename('sec1_sec2'),
-                    res_compare['sec1-all'].value_counts().rename('sec1_all'),
-                    res_compare['sec2-all'].value_counts().rename('sec2_all')), axis=1)
-# Reshape data for plotting
-toplot_reset = toplot.reset_index()
-index_col_name = toplot_reset.columns[0]  # Get the actual name of the index column
-toplot_melted = toplot_reset.melt(id_vars=index_col_name, var_name='comparison', value_name='count')
-toplot_melted = toplot_melted.rename(columns={index_col_name: 'reproducibility'})
-
-fig, ax = plt.subplots(figsize=(10, 4))
-sns.barplot(data=toplot_melted[toplot_melted['reproducibility'] != 'Non-reproducible'], x='comparison', y='count', hue='reproducibility', ax=ax)
-ax.set_title('CRE Reproducibility Across Comparisons')
-ax.set_xlabel('Comparison')
-ax.set_ylabel('Count')
-ax.legend(title='Reproducibility Category', bbox_to_anchor=(1.05, 1), loc='upper left')
-fig.tight_layout()
-fig.savefig('results/expr3/region/reproducibility_comparison_barplot.pdf')
-fig.show()
+fig.savefig('results/expr3/reproducibility_by_cre_percentage_all.pdf', bbox_inches='tight')
 
 
 # %% plot number of reproducible CREs
@@ -340,7 +331,58 @@ venn_labels = {'Sec1-Sec2': set(reproducible_cres_sec1_sec2),
                'Sec1-All': set(reproducible_cres_sec2_all)}
 from matplotlib_venn import venn3
 venn3(subsets=venn_labels.values(), set_labels=venn_labels.keys(), ax=ax)
-fig.savefig('results/expr3/region/cre_venn.pdf', bbox_inches='tight')
+
+
+# %% filter based on cell types
+cell_type_counts_df = pd.DataFrame(index=starrfish3.get_celltypes().unique(), columns=['Sec1', 'Sec2', 'All'])
+cell_type_counts_df['Sec1'] = starrfish3_sec1.get_celltypes().value_counts().reindex(cell_type_counts_df.index, fill_value=0)
+cell_type_counts_df['Sec2'] = starrfish3_sec2.get_celltypes().value_counts().reindex(cell_type_counts_df.index, fill_value=0)
+cell_type_counts_df['All'] = starrfish3.get_celltypes().value_counts().reindex(cell_type_counts_df.index, fill_value=0)
+cell_type_size_thresholds = np.concatenate((np.linspace(0, 90, 10), np.linspace(100, 900, 9), np.linspace(1000, 8000, 8)))
+cell_type_size_reproducity = pd.DataFrame(index=cell_type_size_thresholds, columns=['Sec1-All', 'Sec2-All', 'Sec1-Sec2', '#Sec1-All', '#Sec2-All', '#Sec1-Sec2'])
+for threshold in cell_type_size_thresholds:
+    cell_types_to_use = cell_type_counts_df.index[(cell_type_counts_df > threshold).all(axis=1)]
+    res_compare = plot_q_value_cre_reproducibility(q_res1.loc[cell_types_to_use], q_res2.loc[cell_types_to_use], q_res.loc[cell_types_to_use], starrfish3.lib_size, 0.05, plot=False)
+    to_compare = res_compare[(res_compare[['Sec1', 'All']] > 0).all(axis=1)]
+    cell_type_size_reproducity.loc[threshold, 'Sec1-All'] = to_compare['Common_sec1'].sum() / np.minimum(to_compare['Sec1'].sum(), to_compare['All'].sum())
+    cell_type_size_reproducity.loc[threshold, '#Sec1-All'] = to_compare['Common_sec1'].sum()
+    to_compare = res_compare[(res_compare[['Sec2', 'All']] > 0).all(axis=1)]
+    cell_type_size_reproducity.loc[threshold, 'Sec2-All'] = to_compare['Common_sec2'].sum() / np.minimum(to_compare['Sec2'].sum(), to_compare['All'].sum())
+    cell_type_size_reproducity.loc[threshold, '#Sec2-All'] = to_compare['Common_sec2'].sum()
+    to_compare = res_compare[(res_compare[['Sec1', 'Sec2']] > 0).all(axis=1)]
+    cell_type_size_reproducity.loc[threshold, 'Sec1-Sec2'] = to_compare['Common'].sum() / np.minimum(to_compare['Sec1'].sum(), to_compare['Sec2'].sum())
+    cell_type_size_reproducity.loc[threshold, '#Sec1-Sec2'] = to_compare['Common'].sum()
+# plot
+fig, ax = plt.subplots(figsize=(8, 6))
+sns.lineplot(x=cell_type_size_reproducity.index, y=cell_type_size_reproducity['Sec1-All'], ax=ax, label='Sec1-All', alpha=0.7)
+sns.lineplot(x=cell_type_size_reproducity.index, y=cell_type_size_reproducity['Sec2-All'], ax=ax, label='Sec2-All', alpha=0.7)
+sns.lineplot(x=cell_type_size_reproducity.index, y=cell_type_size_reproducity['Sec1-Sec2'], ax=ax, label='Sec1-Sec2', alpha=0.7)
+# Determine consistent hue range for all scatter plots
+hue_min = min(cell_type_size_reproducity['#Sec1-All'].min(), 
+              cell_type_size_reproducity['#Sec2-All'].min(),
+              cell_type_size_reproducity['#Sec1-Sec2'].min())
+hue_max = max(cell_type_size_reproducity['#Sec1-All'].max(), 
+              cell_type_size_reproducity['#Sec2-All'].max(),
+              cell_type_size_reproducity['#Sec1-Sec2'].max())
+# Create scatter plots with coolwarm colormap
+scatter1 = ax.scatter(cell_type_size_reproducity.index, cell_type_size_reproducity['Sec1-All'], 
+                     c=cell_type_size_reproducity['#Sec1-All'], cmap='coolwarm', 
+                     vmin=hue_min, vmax=hue_max, alpha=0.7, s=50)
+scatter2 = ax.scatter(cell_type_size_reproducity.index, cell_type_size_reproducity['Sec2-All'], 
+                     c=cell_type_size_reproducity['#Sec2-All'], cmap='coolwarm', 
+                     vmin=hue_min, vmax=hue_max, alpha=0.7, s=50)
+scatter3 = ax.scatter(cell_type_size_reproducity.index, cell_type_size_reproducity['Sec1-Sec2'], 
+                     c=cell_type_size_reproducity['#Sec1-Sec2'], cmap='coolwarm', 
+                     vmin=hue_min, vmax=hue_max, alpha=0.7, s=50)
+# Add colorbar
+cbar = plt.colorbar(scatter1, ax=ax)
+cbar.set_label('Count of Reproducible CRE-Cell Type pairs')
+ax.set_title('Cell Type Size ~ Reproducibility')
+ax.set_xlabel('Cell Type Size Threshold')
+ax.set_ylabel('Reproducibility')
+ax.set_xscale('log')
+ax.legend()
+fig.savefig('results/expr3/reproducibility_by_cre_threshold_celltype.pdf')
 
 
 # %% dot plot of some biology
@@ -353,16 +395,16 @@ cre_info.loc[negative_control_cres, 'best_subclass'] = 'Negative Control'
 celltypes_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
 cres_to_use = q_res.columns[np.nanmin(q_res.loc[celltypes_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
 cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
-fig, cre_orders = cre_pval_dotplot(q_res, activity_res, cres_to_use, celltypes_to_use, cre_info, reorder_cres=True, figsize=(15, 30))
-fig.savefig('results/expr3/region/cre_pval_dotplot_all.pdf')
+fig, cre_orders = cre_pval_dotplot(q_res, activity_res, cres_to_use, celltypes_to_use, cre_info, reorder_cres=True, figsize=(15, 15))
+fig.savefig('results/expr3/cre_pval_dotplot_all.pdf')
 fig
 # %%
-fig, cre_orders = cre_pval_dotplot(q_res1, activity_res1, pd.Index(cre_orders), celltypes_to_use, cre_info, reorder_cres=False, figsize=(15, 30))
-fig.savefig('results/expr3/region/cre_pval_dotplot_1.pdf')
+fig, cre_orders = cre_pval_dotplot(q_res1, activity_res1, pd.Index(cre_orders), celltypes_to_use, cre_info, reorder_cres=False, figsize=(15, 15))
+fig.savefig('results/expr3/cre_pval_dotplot_1.pdf')
 fig
 # %%
-fig, cre_orders = cre_pval_dotplot(q_res2, activity_res2, pd.Index(cre_orders), celltypes_to_use, cre_info, reorder_cres=False, figsize=(15, 30))
-fig.savefig('results/expr3/region/cre_pval_dotplot_2.pdf')
+fig, cre_orders = cre_pval_dotplot(q_res2, activity_res2, pd.Index(cre_orders), celltypes_to_use, cre_info, reorder_cres=False, figsize=(15, 15))
+fig.savefig('results/expr3/cre_pval_dotplot_2.pdf')
 fig
 
 
@@ -370,11 +412,10 @@ fig
 # %% visualize some example
 have_target_cres = q_res.columns[np.nanmin(q_res.loc[celltypes_to_use], axis=0) < 0.05]
 for cre in have_target_cres:
-    if os.path.exists(f'results/expr3/region/cre_significant_celltypes/{cre}.pdf'):
-        continue
+    # %%
     # rank by q-value
     cre_q_values = q_res.loc[celltypes_to_use, cre]
-    cre_q_values = cre_q_values[cre_q_values <= 0.05] 
+    cre_q_values = cre_q_values[cre_q_values <= 0.05]
     # order by rank
     cre_q_values = cre_q_values.sort_values(ascending=True)
     cell_types_to_visualize = cre_q_values.index
@@ -383,59 +424,45 @@ for cre in have_target_cres:
         cell_types_to_visualize=cell_types_to_visualize, # only visualize some cell types
         scale_size_by='counts', # scale size by "counts": normalized counts; or "celltype_number": number of cells in the cell type
         log=True, transpose=-1, flipx=-1, sz_max=50,
-        cell_types_to_use=celltypes_to_use)
-    fig.savefig(f'results/expr3/region/cre_significant_celltypes/{cre}.pdf')
+        cell_types_to_use=None)
+    fig.savefig(f'results/expr3/cre_significant_celltypes_average_by_celltype/{cre}.pdf')
+    fig
 
 
-# %% return a data frame of cres with significant regions
-q_res_df = pd.DataFrame(index=q_res.columns, columns=['significant_regions', 'num_significant_regions', 'max_activity_region'])
-for cre in q_res.columns:
-    sig_regions = q_res.index[q_res[cre] < 0.05].tolist()
-    q_res_df.loc[cre, 'significant_regions'] = ' | '.join(sig_regions)
-    q_res_df.loc[cre, 'num_significant_regions'] = len(sig_regions)
-    if len(sig_regions) > 0:
-        max_activity_region = activity_res.loc[sig_regions, cre].idxmax()
-        q_res_df.loc[cre, 'max_activity_region'] = max_activity_region
-    else:
-        q_res_df.loc[cre, 'max_activity_region'] = ''
-q_res_df.to_csv('results/expr3/region/cre_significant_regions.csv')
+# %% plot correlation with three modalities
+cell_types_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
+cre_corr, celltype_corr = starrfish3.corr_atac_cpm(cell_types_to_use=reproducible_celltypes, cres_to_use=None, acvitity_df = activity_res)
+cre_corr['libsize'] = starrfish3.lib_size['counts'].loc[cre_corr.index]
+celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_full'] = starrfish3.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
+# plot cre_corr scatter
+n_cre_threshold = 10
+n_celltype_threshold = 10
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
+fig, ax = plt.subplots(figsize=(2, 4))
+sns.violinplot(data=cre_corr[(cre_corr['effect_n'] >= n_celltype_threshold)], y='pearson', ax=ax)
 
-# %% check on target rates
-def aggregate_cpm_by_region(cpm_path, region_subclass, region_cpm_path=None, transpose=False, aggregate_func='mean'):
-    # cpm_df: dataframe with index as subclasses and columns as CREs
-    # region_subclass: series with index as subclass and values as region
-    cpm_df = pd.read_csv(cpm_path, index_col=0)
-    if transpose:
-        cpm_df = cpm_df.T
-    region_cpm = cpm_df.groupby(region_subclass, axis=1).agg(aggregate_func)
-    if region_cpm_path is not None:
-        region_cpm.to_csv(region_cpm_path)
-    return region_cpm
-# load subclass to class mapping
-allen_cell_type_nomination = pd.read_excel('Data/abc_atlas/allen_institute_nominature.xlsx', sheet_name='subclass_annotation')
-subclass_to_region = allen_cell_type_nomination[['subclass_label', 'neighborhood']].set_index('subclass_label')['neighborhood']
-# convert cpm to class level
-aggregate_cpm_by_region('Data/ATAC_cpm_peakBysubclass.csv', subclass_to_region, 'Data/ATAC_cpm_peakByregion.csv')
-aggregate_cpm_by_region('Data/H3K4me1_cpm_peak_pad_500_Bysubclass.csv', subclass_to_region, 'Data/H3K4me1_cpm_peak_pad_500_Byregion.csv')
-aggregate_cpm_by_region('Data/H3K9me3_cpm_peak_pad_500_Bysubclass.csv', subclass_to_region, 'Data/H3K9me3_cpm_peak_pad_500_Byregion.csv')
-aggregate_cpm_by_region('Data/H3K27ac_cpm_peak_pad_500_Bysubclass.csv', subclass_to_region, 'Data/H3K27ac_cpm_peak_pad_500_Byregion.csv')
-aggregate_cpm_by_region('Data/H3K27me3_cpm_peak_pad_500_Bysubclass.csv', subclass_to_region, 'Data/H3K27me3_cpm_peak_pad_500_Byregion.csv')
-# aggregate chromatin state data
-chromatin_o = aggregate_cpm_by_region('Data/cre_chromatin_state_o.csv', subclass_to_region, None, transpose=True, aggregate_func='sum')
-chromatin_a = aggregate_cpm_by_region('Data/cre_chromatin_state_a.csv', subclass_to_region, None, transpose=True, aggregate_func='sum')
-# load cpm data
-starrfish3.load_cpm('Data/ATAC_cpm_peakByregion.csv', attr_to_add='atac_cpm')
-starrfish3.load_cpm('Data/H3K4me1_cpm_peak_pad_500_Byregion.csv', attr_to_add='h3k4me1_cpm')
-starrfish3.load_cpm('Data/H3K9me3_cpm_peak_pad_500_Byregion.csv', attr_to_add='h3k9me3_cpm')
-starrfish3.load_cpm('Data/H3K27ac_cpm_peak_pad_500_Byregion.csv', attr_to_add='h3k27ac_cpm')
-starrfish3.load_cpm('Data/H3K27me3_cpm_peak_pad_500_Byregion.csv', attr_to_add='h3k27me3_cpm')
+
+
+# %% Next chapter, do precision analysis
+from plots import get_pr_df, plot_bar
+# %% get precision for ATAC and histone modifications
+starrfish3.load_cpm('Data/ATAC_cpm_peakBysubclass.csv', attr_to_add='atac_cpm')
+starrfish3.load_cpm('Data/H3K4me1_cpm_peak_pad_500_Bysubclass.csv', attr_to_add='h3k4me1_cpm')
+starrfish3.load_cpm('Data/H3K9me3_cpm_peak_pad_500_Bysubclass.csv', attr_to_add='h3k9me3_cpm')
+starrfish3.load_cpm('Data/H3K27ac_cpm_peak_pad_500_Bysubclass.csv', attr_to_add='h3k27ac_cpm')
+starrfish3.load_cpm('Data/H3K27me3_cpm_peak_pad_500_Bysubclass.csv', attr_to_add='h3k27me3_cpm')
 # add chromatin state data
-starrfish3.chromatin_o = (chromatin_o.T.copy() + chromatin_a.T.copy()) / 2
-starrfish3.chromatin_a = chromatin_a.T.copy()
-
+chromatin_o = pd.read_csv('Data/cre_chromatin_state_o.csv', index_col=0)
+chromatin_a = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
+starrfish3.chromatin_o = (chromatin_o.copy() + chromatin_a.copy()) / 2
+starrfish3.chromatin_a = chromatin_a.copy()
 
 # %% get precision recall
-from plots import get_pr_df, plot_bar
 pr_df1 = get_pr_df(qvalue_df=q_res.loc[reproducible_celltypes, reproducible_cres].copy(), cell_types_to_use=reproducible_celltypes,
                    starrfish_obj=starrfish3, metric = ['atac_cpm', 'h3k4me1_cpm', 'h3k27ac_cpm'], z_cutoffs=[2.0])
 pr_df2 = get_pr_df(qvalue_df=q_res.loc[reproducible_celltypes, reproducible_cres].copy(), cell_types_to_use=reproducible_celltypes,
@@ -474,6 +501,6 @@ fig, ax = plot_bar(df_bar, figsize=(6, 6), flip_axis=True, fontsize=6)
 # ALL cell type
 df_bar_all = pd.concat([df_bar_all1, df_bar_all2], axis=0, ignore_index=True)
 fig, ax = plot_bar(df_bar_all, figsize=(6, 6), flip_axis=True, fontsize=6)
-fig.savefig('results/expr3/precision_recall_all_region.pdf')
+fig.savefig('results/expr3/precision_recall_all.pdf')
 
 # %%

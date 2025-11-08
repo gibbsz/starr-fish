@@ -232,7 +232,7 @@ def glm(adata, variate='T7', cell_types_to_use=None, CREs=None, norm_by_volm=Fal
     
     # Run all GLM fits in parallel
     if multiprocess_threads is not None and multiprocess_threads > 1:
-        results = Parallel(n_jobs=min(multiprocess_threads, int(multiprocessing.cpu_count()*0.8)))(
+        results = Parallel(n_jobs=min(multiprocess_threads, int(multiprocessing.cpu_count()*0.8)), verbose=10)(
             delayed(fit_glm)(*args) for args in glm_args)
     else:
         results = [fit_glm(*args) for args in glm_args]
@@ -393,6 +393,7 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
                         ax=None, plot_legend = False, show_title=False, tag='X_spatial', 
                         figsize=(20,10)):
     Xcells = scdata.obsm[tag][:, ::transpose] * [flipx, flipy]
+    cluster_color_map = {}
     if cmap is None:
         cmap = scdata.uns['cmap']
     if ax is None:
@@ -426,6 +427,7 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
                 col = list(cmap.values())[-i % len(cmap)-1]
         else:
             col = cmap[i % len(cmap)]
+        cluster_color_map[cluster_] = col
         if x_region is not None:
             select_region = (x_ > x_region[0]) & (x_ < x_region[1])
             x_ = x_[select_region]
@@ -454,7 +456,9 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
     if toreturn:
         fig.tight_layout()
         plt.close(fig)
-        return fig
+        return fig, cluster_color_map
+    else:
+        return cluster_color_map
 
 
 def _calculate_fold_change_with_bootstrap(cre_cells_expression, cell_types_order, CRE_info, rna_cells_expression, volm, t7_cells_expression, calc_kwargs, bootstrap_args):
@@ -563,8 +567,8 @@ def calculate_fold_change(cre_cells_expression: pd.DataFrame, cell_types_to_use:
         negative_control = CRE_info[CRE_info['labeling_type'] == 'negative control'].index
         # if we already divided by t7 cells expression, we do geometric mean
         if normalize_by_celltype_t7:
-            from scipy.stats import gmean
-            negative_control_mean = celltype_activity_matrix.loc[:, negative_control].apply(lambda x: gmean(x[~np.isnan(x)]), axis=1)
+            # sum all negative control CRE reads and divide by sum of all t7 reads
+            negative_control_mean = celltype_activity_matrix_raw['CRE'].loc[:, negative_control].sum(axis=1) / celltype_activity_matrix_raw['T7'].loc[:, negative_control].sum(axis=1)
         else:
             negative_control_mean = celltype_activity_matrix.loc[:, negative_control].apply(lambda x: np.nanmean(x), axis=1)
         negative_control_proportion_mean = celltype_proportion_matrix.loc[:, negative_control].mean(axis=1)
@@ -1644,7 +1648,8 @@ class STARRFISH:
                  atac_cpm: Union[pd.DataFrame, str] = 'Data/ATAC/cpm_peakBysubclass.csv',
                  atac_counts: Union[pd.DataFrame, str] = 'Data/ATAC/count_peakBysubclass.csv',
                  lib_size: Union[pd.DataFrame, str] = 'Data/SFv8_400CRE_nanopore_counts.csv',
-                 log_lib_size: bool = True):
+                 log_lib_size: bool = True,
+                 blacklist_cre: List[str] = []):
         if isinstance(adata, str):
             self.adata_path = adata
             self.load_adata(adata)
@@ -1766,6 +1771,7 @@ class STARRFISH:
             atac_counts.index = cre_info.index
             # transpose the atac_counts
             self.atac_counts = atac_counts.transpose()
+        self.blacklist_cre = blacklist_cre
         if isinstance(lib_size, str):
             lib_size = pd.read_csv(lib_size, index_col=0)
         if lib_size is not None:
@@ -2052,20 +2058,23 @@ class STARRFISH:
     def plot_gene(self, gene='CRE129', use='CRE', 
                   average_by_celltype=False, 
                   norm_by_negative_control_cell_type_mean=False, norm_by_negative_control_cell_type_sum=False, norm_by_negative_control_single_cell=False,
-                  norm_by_t7_cell_type_mean=True, norm_by_t7_cell_type_sum=False, norm_by_t7_single_cell=False,
-                  log=True, calibrate=None,
+                  binarize_t7=False, norm_by_t7_cell_type_mean=True, norm_by_t7_cell_type_sum=False, norm_by_t7_single_cell=False,
+                  log=True, calibrate=None, aggregate_background_celltypes=False,
                   cell_types_to_use=None, cell_types_to_visualize=None, 
                   nmin=None, nmax=None, sz_background=3, sz_min=5, sz_max=30, 
                   scale_size_by: Literal['counts', 'celltype_number']='counts',  
-                  cmap_name='Reds',
+                  cmap_name='Reds', use_celltype_cmap=False,
                   x_region=None, y_region=None, select_region_by_best_celltype=False, 
                   show_celltypes=True, show_scalebar=True, show_title=True,
                   transpose=1, flipx=1, flipy=1, smooth_k=None, figsize=(30, 10)):
         tag = self.spatial_tag.split(':')[1]
         Xcells = self.adata.obsm[tag][:, ::transpose] * [flipx, flipy]
+        # Track cell types for coloring later
+        celltypes = self.get_celltypes().values.copy()
         # get best cell type
         if use == 'CRE' or use == 'T7CRE':
             if cell_types_to_visualize is None:
+                assert aggregate_background_celltypes == False, "If cell_types_to_visualize is None, aggregate_background_celltypes must be False"
                 best_celltype = [self.adata.uns['CRE_info'].loc[gene, 'best_subclass']]
             else:
                 best_celltype = list(cell_types_to_visualize)
@@ -2079,31 +2088,88 @@ class STARRFISH:
         if average_by_celltype:
             # get the cell types
             cell_type_cts = cts.groupby(self.get_celltypes()).mean()
+            # only assign to non-zero cts
+            zero_cts = cts == 0
             cts = cell_type_cts.loc[self.get_celltypes()].copy()
             # rename the index
             cts.index = self.get_celltypes().index
+            # set the zero counts to 0
+            cts[zero_cts] = 0
+        negative_control_cres = self.get_negative_control_cres()
+        # remove black list cres
+        negative_control_cres = [cre for cre in negative_control_cres if cre not in self.blacklist_cre]   
+        # get t7 expression
+        t7_expression = self.get_t7_expression()
+        if binarize_t7 and t7_expression is not None:
+            t7_expression = (t7_expression > 0).astype(float)
+        # get the background cell types
+        background_celltypes = self.get_celltypes()[~self.get_celltypes().isin(best_celltype)]
+        if cell_types_to_use is not None:
+            background_celltypes = background_celltypes[background_celltypes.isin(cell_types_to_use)]
         # if norm_by_negative_control, then normalize by negative control
         if norm_by_negative_control_cell_type_mean:
-            negative_control_counts = self.get_cre_expression()[self.get_negative_control_cres()].sum(axis=1).groupby(self.get_celltypes()).mean()
+            negative_control_counts = self.get_cre_expression()[negative_control_cres].sum(axis=1).groupby(self.get_celltypes()).mean()
+            if aggregate_background_celltypes:
+                # average the negative control counts for background cell types
+                background_negative_control_counts = self.get_cre_expression().loc[background_celltypes.index][negative_control_cres].sum(axis=1).mean()
+                # assign the background negative control counts to all background cell types
+                negative_control_counts.loc[background_celltypes.unique()] = background_negative_control_counts
+            if norm_by_t7_cell_type_mean or norm_by_t7_cell_type_sum or norm_by_t7_single_cell:
+                negative_control_t7 = t7_expression[negative_control_cres].sum(axis=1).groupby(self.get_celltypes()).mean()
+                if aggregate_background_celltypes:
+                    background_negative_control_t7 = t7_expression.loc[background_celltypes.index][negative_control_cres].sum(axis=1).mean()
+                    # assign the background negative control t7 to all background cell types
+                    negative_control_t7.loc[background_celltypes.unique()] = background_negative_control_t7
+                # fill a 0.5 value to avoid inf results
+                negative_control_t7[negative_control_t7 == 0] = 0.5
+                negative_control_counts = negative_control_counts / negative_control_t7
             norm_factor = negative_control_counts.loc[self.get_celltypes()]
             cts = cts / norm_factor.values
         if norm_by_negative_control_cell_type_sum:
-            negative_control_counts = self.get_cre_expression()[self.get_negative_control_cres()].sum(axis=1).groupby(self.get_celltypes()).sum()
+            negative_control_counts = self.get_cre_expression()[negative_control_cres].sum(axis=1).groupby(self.get_celltypes()).sum()
+            if aggregate_background_celltypes:
+                # get the background cell types
+                background_celltypes = self.get_celltypes()[~self.get_celltypes().isin(best_celltype)]
+                if cell_types_to_use is not None:
+                    background_celltypes = background_celltypes[background_celltypes.isin(cell_types_to_use)]
+                # average the negative control counts for background cell types
+                background_negative_control_counts = self.get_cre_expression().loc[background_celltypes.index][negative_control_cres].sum(axis=1).sum()
+                # assign the background negative control counts to all background cell types
+                negative_control_counts.loc[background_celltypes.unique()] = background_negative_control_counts
+            if norm_by_t7_cell_type_sum or norm_by_t7_cell_type_mean or norm_by_t7_single_cell:
+                negative_control_t7 = t7_expression[negative_control_cres].sum(axis=1).groupby(self.get_celltypes()).sum()
+                if aggregate_background_celltypes:
+                    background_negative_control_t7 = t7_expression.loc[background_celltypes.index][negative_control_cres].sum(axis=1).sum()
+                    # assign the background negative control t7 to all background cell types
+                    negative_control_t7.loc[background_celltypes.unique()] = background_negative_control_t7
+                # fill a 0.5 value to avoid inf results
+                negative_control_t7[negative_control_t7 == 0] = 0.5
+                negative_control_counts = negative_control_counts / negative_control_t7
             norm_factor = negative_control_counts.loc[self.get_celltypes()]
             cts = cts / norm_factor.values
         if norm_by_negative_control_single_cell:
-            negative_control_counts = self.get_cre_expression()[self.get_negative_control_cres()].sum(axis=1)
+            negative_control_counts = self.get_cre_expression()[negative_control_cres].sum(axis=1)
             cts = cts / negative_control_counts.values
-        if norm_by_t7_cell_type_mean and self.get_t7_expression() is not None:
-            t7_counts = self.get_t7_expression()[gene].groupby(self.get_celltypes()).mean()
+        if norm_by_t7_cell_type_mean and t7_expression is not None:
+            t7_counts = t7_expression[gene].groupby(self.get_celltypes()).mean()
             norm_factor = t7_counts.loc[self.get_celltypes()]
+            norm_factor.index = self.get_celltypes().index
+            if aggregate_background_celltypes:
+                background_t7_counts = t7_expression.loc[background_celltypes.index][gene].mean()
+                # assign the background t7 counts to all background cell types
+                norm_factor.loc[background_celltypes.index] = background_t7_counts
             cts = cts / norm_factor.values
-        if norm_by_t7_cell_type_sum and self.get_t7_expression() is not None:
-            t7_counts = self.get_t7_expression()[gene].groupby(self.get_celltypes()).sum()
+        if norm_by_t7_cell_type_sum and t7_expression is not None:
+            t7_counts = t7_expression[gene].groupby(self.get_celltypes()).sum()
             norm_factor = t7_counts.loc[self.get_celltypes()]
+            norm_factor.index = self.get_celltypes().index
+            if aggregate_background_celltypes:
+                background_t7_counts = t7_expression.loc[background_celltypes.index][gene].sum()
+                # assign the background t7 counts to all background cell types
+                norm_factor.loc[background_celltypes.index] = background_t7_counts
             cts = cts / norm_factor.values
-        if norm_by_t7_single_cell and self.get_t7_expression() is not None:
-            t7_counts = self.get_t7_expression()[gene]
+        if norm_by_t7_single_cell and t7_expression is not None:
+            t7_counts = t7_expression[gene]
             cts = cts / t7_counts.values
         if log:
             cts = np.log1p(cts)
@@ -2151,15 +2217,24 @@ class STARRFISH:
             select_region = (Xcells[:, 0] > x_region[0]) & (Xcells[:, 0] < x_region[1])
             Xcells = Xcells[select_region]
             cts = cts[select_region]
+            celltypes = celltypes[select_region]
         if y_region is not None:
             select_region = (Xcells[:, 1] > y_region[0]) & (Xcells[:, 1] < y_region[1])
             Xcells = Xcells[select_region]
             cts = cts[select_region]
+            celltypes = celltypes[select_region]
         # filter out nmin
+        cts_background = cts[self.get_celltypes().isin(background_celltypes)]
+        cts_foreground = cts[self.get_celltypes().isin(best_celltype)]
         if nmin is not None:
-            cts[cts < nmin] = 0
-        nmax = np.nanmax(cts) if nmax is None else nmax
-        ncts = np.clip(cts/nmax, 0, 1)
+            cts[cts < nmin] = nmin
+        else:
+            nmin=cts_background[cts_background > 0].min() if np.any(cts_background > 0) else 0
+        if nmax is not None:
+            cts[cts > nmax] = nmax
+        else:
+            nmax=cts_foreground.max()
+        ncts = np.clip((cts-nmin)/(nmax-nmin), 0, 1)
         if scale_size_by == 'counts':
             size = sz_min + ncts * (sz_max - sz_min)
         elif scale_size_by == 'celltype_number':
@@ -2188,15 +2263,28 @@ class STARRFISH:
                                 borderpad=1
                             )
                 ax_ctypes = fig.add_subplot(gs[2])
-                plot_cluster_scdata(self.adata, clusters=best_celltype, use='subclass', 
-                                    transpose=transpose, flipx=flipx, flipy=flipy, 
-                                    x_region=x_region, y_region=y_region,
-                                    sbig=20, small=3, ax=ax_ctypes, plot_legend=show_title, show_title=show_title)
+                cluster_color_map = plot_cluster_scdata(
+                    self.adata, clusters=best_celltype, use='subclass',
+                    transpose=transpose, flipx=flipx, flipy=flipy,
+                    x_region=x_region, y_region=y_region,
+                    sbig=20, small=3, ax=ax_ctypes, plot_legend=show_title, show_title=show_title)
             else:
                 fig = plt.figure(figsize=figsize, facecolor='k')
                 gs = fig.add_gridspec(1, 2, width_ratios=[0.95, 0.05], wspace=0.05)
                 ax_main = fig.add_subplot(gs[0])
                 ax_cbar = fig.add_subplot(gs[1])
+                # Create cluster_color_map for all cell types in cell_types_to_visualize or best_celltype
+                cluster_color_map = {}
+                celltype_cmap = self.adata.uns['cmap']
+                clusters_to_map = best_celltype if cell_types_to_visualize is None else list(cell_types_to_visualize)
+                for i, cluster in enumerate(clusters_to_map):
+                    if isinstance(celltype_cmap, dict):
+                        if cluster in celltype_cmap.keys():
+                            cluster_color_map[cluster] = celltype_cmap[cluster]
+                        else:
+                            cluster_color_map[cluster] = list(celltype_cmap.values())[i % len(celltype_cmap)]
+                    else:
+                        cluster_color_map[cluster] = celltype_cmap[i % len(celltype_cmap)]
             if show_title:
                 ax_main.set_title(f'{gene}', color='white', fontsize=20)
             ax_main.set_facecolor('black')
@@ -2212,10 +2300,24 @@ class STARRFISH:
             scaled_alpha = scaler.fit_transform(ncts.reshape(-1,1)).flatten()
             # np clip the scaled_alpha to [0, 1]
             scaled_alpha = np.clip(scaled_alpha, 0, 1)
+
+            # Map cell types to colors using the cluster_color_map
+            cell_colors = []
+            for ct in celltypes:
+                if ct in cluster_color_map:
+                    cell_colors.append(cluster_color_map[ct])
+                else:
+                    # Use a harmless color as default if cell type not in cluster_color_map
+                    cell_colors.append('#fabed4')
+            cell_colors = np.array(cell_colors)
+
             # plot the CRE counts
             # ax_main.scatter(Xcells[cell_with_genes, 0], Xcells[cell_with_genes, 1], c='#00FF00', sizes=size[cell_with_genes], alpha=scaled_alpha[cell_with_genes], rasterized=True)
-            ax_main.scatter(Xcells[:, 0], Xcells[:, 1], c='#00FF00', sizes=size, alpha=scaled_alpha, rasterized=True, edgecolors='none')
-
+            if use_celltype_cmap:
+                ax_main.scatter(Xcells[:, 0], Xcells[:, 1], c=cell_colors, sizes=size, alpha=scaled_alpha, rasterized=True, edgecolors='none')
+            else:
+                # use green
+                ax_main.scatter(Xcells[cell_with_genes, 0], Xcells[cell_with_genes, 1], c='#00FF00', s=size[cell_with_genes], alpha=scaled_alpha[cell_with_genes], rasterized=True, edgecolors='none')
             # Format axes
             ax_main.grid(False)
             ax_main.set_xticks([])
@@ -2741,7 +2843,7 @@ class STARRFISH:
                          normalize_by_celltype_rna=False, normalize_by_celltype_volume=False,
                          normalize_by_negative_control=False, normalize_by_infected_cell=False,
                          normalize_by_celltype_t7=False, normalize_by_total_cre=False, normalize_by_libsize=False,
-                         filter_zero_counts=False, log_transform=False, bulk_log_transform=False, rank_transform=None,
+                         filter_zero_counts=False, log_transform=False, binarize_t7=False, bulk_log_transform=False, rank_transform=None,
                          bootstrap_number=None, bootstrap_to_fixed_sample_size=None, apply_bootstrap_in_observation=False,
                          calculate_fdc=False, fill_nan=True, n_jobs=256, load_stored=True, dry_run=False) -> dict:
         config = {
@@ -2759,6 +2861,7 @@ class STARRFISH:
             'normalize_by_libsize': normalize_by_libsize,
             "filter_zero_counts": filter_zero_counts,
             'log_transform': log_transform,
+            'binarize_t7': binarize_t7,
             'rank_transform': rank_transform,
             'bootstrap_number': bootstrap_number,
             'bootstrap_to_fixed_sample_size': bootstrap_to_fixed_sample_size,
@@ -2771,7 +2874,7 @@ class STARRFISH:
             'normalize_by_celltype_rna': False, 'normalize_by_celltype_volume': False, 'normalize_by_celltype_t7': False,
             'normalize_by_negative_control': False, 'normalize_by_infected_cell': False,
             'normalize_by_total_cre': False, 'normalize_by_libsize': False,
-            'filter_zero_counts': False, 'log_transform': False, 'rank_transform': None,
+            'filter_zero_counts': False, 'log_transform': False, 'binarize_t7': False, 'rank_transform': None,
             'bootstrap_number': None, 
             'bootstrap_to_fixed_sample_size': None, 'apply_bootstrap_in_observation': False,
             'calculate_fdc': False, 'fill_nan': True,
@@ -2824,6 +2927,8 @@ class STARRFISH:
         t7_cells_expression = self.get_t7_expression()
         if t7_cells_expression is not None:
             t7_cells_expression = t7_cells_expression.loc[cre_cells_expression.index]
+            if binarize_t7:
+                t7_cells_expression = (t7_cells_expression > 0).astype(float)
         if normalize_by_cell_rna and normalize_by_cell_volume:
             rna_per_volume = rna_cells_expression / volm.values.reshape(-1, 1)
             cre_cells_expression = cre_cells_expression / rna_per_volume.mean(axis=1).values.reshape(-1, 1)
@@ -2850,7 +2955,7 @@ class STARRFISH:
             'cre_cells_expression': cre_cells_expression,
             'cell_types_to_use': cell_types_to_use,
             'cell_types_order': np.unique(cell_types_to_use),
-            'CRE_info': cre_info, 'rna_cells_expression': rna_cells_expression, 'volm': volm,
+            'CRE_info': cre_info[~cre_info.index.isin(self.blacklist_cre)], 'rna_cells_expression': rna_cells_expression, 'volm': volm,
             'normalize_by_celltype_rna': normalize_by_celltype_rna, 'normalize_by_celltype_volume': normalize_by_celltype_volume,
             'normalize_by_negative_control': normalize_by_negative_control, 'normalize_by_total_cre': normalize_by_total_cre, 'normalize_by_infected_cell': normalize_by_infected_cell, 
             'normalize_by_celltype_t7': normalize_by_celltype_t7, 't7_cells_expression': t7_cells_expression,
@@ -2899,9 +3004,9 @@ class STARRFISH:
                 'calculate_fdc': calculate_fdc,
             }
             print('Finished preparing bootstrap args, start calculating bootstrap')
-            bootstrap_results = Parallel(n_jobs=n_jobs, backend='loky', batch_size=1)(
+            bootstrap_results = Parallel(n_jobs=n_jobs, backend='loky', batch_size=1, verbose=10)(
                 delayed(_calculate_fold_change_with_bootstrap)(
-                    cre_cells_expression, np.unique(cell_types_to_use), cre_info, 
+                    cre_cells_expression, np.unique(cell_types_to_use), cre_info,
                     rna_cells_expression, volm, t7_cells_expression, calc_kwargs, args
                 ) for args in bootstrap_prep_args
             )
@@ -3056,9 +3161,9 @@ class STARRFISH:
                 n_jobs = int(multiprocessing.cpu_count()*0.8)
             bootstrap_prep_args = [(i, cell_types_to_use, bootstrap_to_fixed_sample_size, bootstrap_to_fixed_pct) for i in range(bootstrap_number)]
             print('Finished preparing bootstrap args, start calculating bootstrap')
-            bootstrap_results = Parallel(n_jobs=n_jobs, backend='loky', batch_size=1)(
+            bootstrap_results = Parallel(n_jobs=n_jobs, backend='loky', batch_size=1, verbose=10)(
                 delayed(_calculate_average_with_bootstrap)(
-                    cre_cells_expression, np.unique(cell_types_to_use), cre_info, 
+                    cre_cells_expression, np.unique(cell_types_to_use), cre_info,
                     rna_cells_expression, volm, t7_cells_expression, calc_kwargs, args
                 ) for args in bootstrap_prep_args
             )
@@ -3738,7 +3843,7 @@ class STARRFISH:
                             continue
                     combinations.append((pseudo_bulk_idx, cell_type_idx, cre_idx))
         # Run in parallel
-        results = Parallel(n_jobs=min(multiprocess_threads, int(multiprocessing.cpu_count() * 0.8)))(
+        results = Parallel(n_jobs=min(multiprocess_threads, int(multiprocessing.cpu_count() * 0.8)), verbose=10)(
             delayed(sample_single_combination)(combo) for combo in combinations
         )
         # Initialize arrays
@@ -4545,8 +4650,8 @@ file_type = bed""")
                 'iterations': iteration
             }
         print(f"Running background models for {len(cell_types_to_use.unique())} cell types in parallel...")
-        background_results = Parallel(n_jobs=min(n_jobs, len(cell_types_to_use.unique())))(
-            delayed(run_background_model)(cell_type) 
+        background_results = Parallel(n_jobs=min(n_jobs, len(cell_types_to_use.unique())), verbose=10)(
+            delayed(run_background_model)(cell_type)
             for cell_type in cell_types_to_use.unique()
         )
         # Store background results
@@ -4615,8 +4720,8 @@ file_type = bed""")
                 return col_name, summary
             # Run models in parallel
             print(f"Running {len(df_all.columns)} element models in parallel...")
-            parallel_results = Parallel(n_jobs=n_jobs)(
-                delayed(run_single_element)(col_name) 
+            parallel_results = Parallel(n_jobs=n_jobs, verbose=10)(
+                delayed(run_single_element)(col_name)
                 for col_name in df_all.columns
             )
             # Collect results
@@ -4820,7 +4925,7 @@ file_type = bed""")
         n_jobs = min(multiprocessing.cpu_count(), len(tasks))  # Use all available CPUs but not more than tasks
         
         print(f"Running {len(tasks)} optimization tasks across {n_jobs} jobs...")
-        results = Parallel(n_jobs=n_jobs)(
+        results = Parallel(n_jobs=n_jobs, verbose=10)(
             delayed(_optimize_celltype_cre_worker)(task) for task in tasks)
         
         # Store results in dataframes

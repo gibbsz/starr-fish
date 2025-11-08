@@ -113,9 +113,10 @@ def preprocess(adata_path):
 # starrfish3_sec1 = STARRFISH(adata3_sec1)
 # starrfish3_sec2 = STARRFISH(adata3_sec2)
 # starrfish3 = STARRFISH(adata3)
-starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.region_subclass.pkl')
-starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.region_subclass.pkl')
-starrfish3 = STARRFISH.load('results/starrfish3.region_subclass.pkl')
+starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.class_subclass.pkl')
+starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.class_subclass.pkl')
+starrfish3 = STARRFISH.load('results/starrfish3.class_subclass.pkl')
+
 
 # %% define the CREs and Cell Type matric to keep
 infected_cells_threshold = 5
@@ -161,37 +162,57 @@ res2_avg = starrfish3_sec2_avg.average_bootstrap_test(**average_bootstrap_test_c
 res_avg = starrfish3_avg.average_bootstrap_test(**average_bootstrap_test_config)
 
 del starrfish3_sec1_avg, starrfish3_sec2_avg, starrfish3_avg
-# %% define regions for the test
-regions = starrfish3.adata.obs['region'].str.split(';').explode().unique().tolist()
-for region in regions:
-    print(f'Processing region: {region}')
-    cell_types_to_use = starrfish3.get_celltypes()[starrfish3.adata.obs['region'].str.contains(region)].unique().tolist()
+
+# %% define classs for the test
+classes = starrfish3.adata.obs['class'].str.split(';').explode().unique().tolist()
+for class_name in classes:
+    if os.path.exists(f'results/expr3/class_subclass/{class_name}/precision_recall_all.csv'):
+        print(f'Skipping class {class_name} as results already exist.')
+        continue
+    print(f'Processing class: {class_name}')
+    cell_types_to_use = starrfish3.get_celltypes()[starrfish3.adata.obs['class'].str.contains(class_name)].unique().tolist()
     fig = starrfish3.plot_cluster(cell_types_to_use)
-    fig.savefig(f'results/expr3/region_subclass/region_{region}.pdf')
-    # %% run the fold change test for T7
-    fold_change_test_config = {"cell_types_to_use": cell_types_to_use,
-                            "normalize_by_cell_rna": False,
-                            "normalize_by_cell_volume": False,
-                            "normalize_by_cell_t7": False, # normalize by T7
-                            'filter_by_cell_t7': None,
-                            "normalize_by_celltype_rna": False,
-                            "normalize_by_celltype_volume": False,
-                            "normalize_by_celltype_t7": True, # normalize by T7
-                            "normalize_by_negative_control": False, # normalize by negative control
-                            'normalize_by_total_cre': False,
-                            "normalize_by_infected_cell": False,
-                            "normalize_by_libsize": False,
-                            "log_transform": False,
-                            "filter_zero_counts": False,
-                            "bootstrap_number": 10000,
-                            "n_jobs": 48,
-                            'load_stored': True,}
-    res1 = starrfish3_sec1.fold_change_test(**fold_change_test_config)
-    # starrfish3_sec1.save('results/starrfish3_sec1.region_subclass.pkl')
-    res2 = starrfish3_sec2.fold_change_test(**fold_change_test_config)
-    # starrfish3_sec2.save('results/starrfish3_sec2.region_subclass.pkl')
-    res = starrfish3.fold_change_test(**fold_change_test_config)
-    # starrfish3.save('results/starrfish3.region_subclass.pkl')
+    fig.savefig(f'results/expr3/class_subclass/class_{class_name}.pdf')
+    # run the fold change test for T7
+    fold_change_test_config = {
+        "cell_types_to_use": cell_types_to_use,
+        "normalize_by_cell_rna": False,
+        "normalize_by_cell_volume": False,
+        "normalize_by_cell_t7": False, # normalize by T7
+        'filter_by_cell_t7': None,
+        "normalize_by_celltype_rna": False,
+        "normalize_by_celltype_volume": False,
+        "normalize_by_celltype_t7": True, # normalize by T7
+        "normalize_by_negative_control": False, # normalize by negative control
+        'normalize_by_total_cre': False,
+        "normalize_by_infected_cell": False,
+        "normalize_by_libsize": False,
+        "log_transform": False,
+        "filter_zero_counts": False,
+        "bootstrap_number": 10000,
+        "n_jobs": 72,
+        'load_stored': True,
+    }
+    # check if cell number of cell_types_to_use is larger than 0 for each of the cell type
+    if starrfish3_sec1.get_celltypes().value_counts().reindex(cell_types_to_use).fillna(0).min() == 0:
+        print(f'Skipping class {class_name} in section 1 due to insufficient cell numbers.')
+        continue
+    else:
+        res1 = starrfish3_sec1.fold_change_test(**fold_change_test_config)
+        # starrfish3_sec1.save('results/starrfish3_sec1.class_subclass.pkl')
+    if starrfish3_sec2.get_celltypes().value_counts().reindex(cell_types_to_use).fillna(0).min() == 0:
+        print(f'Skipping class {class_name} in section 2 due to insufficient cell numbers.')
+        continue
+    else:
+        res2 = starrfish3_sec2.fold_change_test(**fold_change_test_config)
+        # starrfish3_sec2.save('results/starrfish3_sec2.class_subclass.pkl')
+    if starrfish3.get_celltypes().value_counts().reindex(cell_types_to_use).fillna(0).min() == 0:
+        print(f'Skipping class {class_name} in combined due to insufficient cell numbers in one of the sections.')
+        continue
+    else:
+        res = starrfish3.fold_change_test(**fold_change_test_config)
+        # starrfish3.save('results/starrfish3.class_subclass.pkl')
+
     # %% check reproducibility of cell type specificity
     from plots import average_foldchange_specificity_test, q_value_correction
     p_mat_rank_test, p_mat_frequentist = average_foldchange_specificity_test(res_avg, res)
@@ -273,8 +294,8 @@ for region in regions:
     for text in legend.get_texts():
         if text.get_text() in [str(i) for i in range(10)]:  # size legend items
             legend.get_texts()[legend.get_texts().index(text)].set_text('')
-    os.makedirs(f'results/expr3/region_subclass/{region}/', exist_ok=True)
-    fig.savefig(f'results/expr3/region_subclass/{region}/reproducibility_significant_scatter.pdf', bbox_inches='tight')
+    os.makedirs(f'results/expr3/class_subclass/{class_name}/', exist_ok=True)
+    fig.savefig(f'results/expr3/class_subclass/{class_name}/reproducibility_significant_scatter.pdf', bbox_inches='tight')
     # %% dot plot of some biology
     from plots import cre_pval_dotplot
     negative_control_cres = starrfish3.get_negative_control_cres()
@@ -286,14 +307,14 @@ for region in regions:
     cres_to_use = q_res.columns[np.nanmin(q_res.loc[celltypes_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
     cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
     fig, cre_orders = cre_pval_dotplot(q_res, activity_res, cres_to_use, celltypes_to_use, cre_info, reorder_cres=True, figsize=(15, 15))
-    fig.savefig(f'results/expr3/region_subclass/{region}/dotplot_all_significant.pdf', bbox_inches='tight')
+    fig.savefig(f'results/expr3/class_subclass/{class_name}/dotplot_all_significant.pdf', bbox_inches='tight')
     # %% visualize some example
     have_target_cres = q_res.columns[np.nanmin(q_res.loc[celltypes_to_use], axis=0) < 0.05]
-    os.makedirs(f'results/expr3/region_subclass/{region}/cortex_cre_significant_celltypes/', exist_ok=True)
+    os.makedirs(f'results/expr3/class_subclass/{class_name}/cre_significant_celltypes/', exist_ok=True)
     for cre in have_target_cres:
-        if os.path.exists(f'results/expr3/region_subclass/{region}/cortex_cre_significant_celltypes/{cre}.pdf'):
+        if os.path.exists(f'results/expr3/class_subclass/{class_name}/cre_significant_celltypes/{cre}.pdf'):
             continue
-        print(f'Plotting {cre} ... in {region}')
+        print(f'Plotting {cre} ... in {class_name}')
         # rank by q-value
         cre_q_values = q_res.loc[celltypes_to_use, cre]
         cre_q_values = cre_q_values[cre_q_values <= 0.05] 
@@ -306,23 +327,23 @@ for region in regions:
             scale_size_by='counts', # scale size by "counts": normalized counts; or "celltype_number": number of cells in the cell type
             log=True, transpose=-1, flipx=-1, sz_max=50,
             cell_types_to_use=celltypes_to_use)
-        fig.savefig(f'results/expr3/region_subclass/{region}/cortex_cre_significant_celltypes/{cre}.pdf')
+        fig.savefig(f'results/expr3/class_subclass/{class_name}/cre_significant_celltypes/{cre}.pdf')
     # %% prepare a data frame
-    q_res_df = pd.DataFrame(index=q_res.columns, columns=['significant_regions', 'num_significant_regions', 'max_activity_region'])
+    q_res_df = pd.DataFrame(index=q_res.columns, columns=['significant_classes', 'num_significant_classes', 'max_activity_class'])
     for cre in q_res.columns:
-        sig_regions = q_res.index[q_res[cre] < 0.05].tolist()
-        q_res_df.loc[cre, 'significant_regions'] = ' | '.join(sig_regions)
-        q_res_df.loc[cre, 'num_significant_regions'] = len(sig_regions)
-        if len(sig_regions) > 0:
-            max_activity_region = activity_res.loc[sig_regions, cre].idxmax()
-            q_res_df.loc[cre, 'max_activity_region'] = max_activity_region
+        sig_classes = q_res.index[q_res[cre] < 0.05].tolist()
+        q_res_df.loc[cre, 'significant_classes'] = ' | '.join(sig_classes)
+        q_res_df.loc[cre, 'num_significant_classes'] = len(sig_classes)
+        if len(sig_classes) > 0:
+            max_activity_class = activity_res.loc[sig_classes, cre].idxmax()
+            q_res_df.loc[cre, 'max_activity_class'] = max_activity_class
         else:
-            q_res_df.loc[cre, 'max_activity_region'] = ''
-    q_res_df.to_csv(f'results/expr3/region_subclass/{region}/cre_significant_subclasses.csv')
-    q_res.to_csv(f'results/expr3/region_subclass/{region}/cre_significant_subclasses_qvalues.csv')
-    activity_res.to_csv(f'results/expr3/region_subclass/{region}/cre_significant_subclasses_activities.csv')
+            q_res_df.loc[cre, 'max_activity_class'] = ''
+    q_res_df.to_csv(f'results/expr3/class_subclass/{class_name}/cre_significant_subclasses.csv')
+    q_res.to_csv(f'results/expr3/class_subclass/{class_name}/cre_significant_subclasses_qvalues.csv')
+    activity_res.to_csv(f'results/expr3/class_subclass/{class_name}/cre_significant_subclasses_activities.csv')
     # %% filter to reproducible cres
-    # %% get precision recall in that region
+    # %% get precision recall in that class
     from plots import get_pr_df, plot_bar
     # %% get precision for ATAC and histone modifications
     starrfish3.load_cpm('Data/ATAC_cpm_peakBysubclass.csv', attr_to_add='atac_cpm')
@@ -368,54 +389,58 @@ for region in regions:
     df_bar = df_bar[df_bar['target'] >= 2].copy()
     df_bar_all2['mod'] = df_bar_all2.index
     # fig, ax = plot_bar(df_bar, figsize=(6, 6), flip_axis=True, fontsize=6)
-    # ALL cell type
+    # ALL cell types
     df_bar_all = pd.concat([df_bar_all1, df_bar_all2], axis=0, ignore_index=True)
     fig, ax = plot_bar(df_bar_all, figsize=(6, 6), flip_axis=True, fontsize=6)
-    df_bar_all.to_csv(f'results/expr3/region_subclass/{region}/precision_recall_all.csv')
-    fig.savefig(f'results/expr3/region_subclass/{region}/precision_recall_all.pdf')
+    df_bar_all.to_csv(f'results/expr3/class_subclass/{class_name}/precision_recall_all.csv')
+    fig.savefig(f'results/expr3/class_subclass/{class_name}/precision_recall_all.pdf')
 
-# %% get the list of CREs of interest in each region
-region_df = pd.read_csv('results/expr3/region/cre_significant_regions.csv', index_col=0)
-for region in regions:
-    q_res_df = pd.read_csv(f'results/expr3/region_subclass/{region}/cre_significant_subclasses.csv', index_col=0)
-    # check if the cre is significant in the region
-    cres_of_interest = region_df.loc[q_res_df.index[q_res_df['significant_regions'].notna()]]
-    cres_of_interest = cres_of_interest[cres_of_interest['significant_regions'].notna()]
-    cres_of_interest = cres_of_interest.index[cres_of_interest['significant_regions'].str.contains(region)]
+# %% get the list of CREs of interest in each class
+class_df = pd.read_csv('results/expr3/class/cre_significant_classes.csv', index_col=0)
+for class_name in classes:
+    q_res_df = pd.read_csv(f'results/expr3/class_subclass/{class_name}/cre_significant_subclasses.csv', index_col=0)
+    # check if the cre is significant in the class
+    cres_of_interest = class_df.loc[q_res_df.index[q_res_df['significant_classes'].notna()]]
+    cres_of_interest = cres_of_interest[cres_of_interest['significant_classes'].notna()]
+    cres_of_interest = cres_of_interest.index[cres_of_interest['significant_classes'].str.contains(class_name)]
     cres_of_interest = cres_of_interest[~cres_of_interest.isin(cre_blacklist)]
-    cres_of_interest.to_series().to_csv(f'results/expr3/region_subclass/{region}/{region}_cres_of_interest.csv')
+    cres_of_interest.to_series().to_csv(f'results/expr3/class_subclass/{class_name}/{class_name}_cres_of_interest.csv')
+# %%
 # %% merge different region precision recall df together
-for region in regions:
-    df_bar_all = pd.read_csv(f'results/expr3/region_subclass/{region}/precision_recall_all.csv', index_col=0)
-    df_bar_all['region'] = region
-    if region == regions[0]:
+for class_name in classes:
+    if not os.path.exists(f'results/expr3/class_subclass/{class_name}/precision_recall_all.csv'):
+        print(f'Skipping class {class_name} as results do not exist.')
+        continue
+    df_bar_all = pd.read_csv(f'results/expr3/class_subclass/{class_name}/precision_recall_all.csv', index_col=0)
+    df_bar_all['class'] = class_name
+    if class_name == classes[0]:
         df_bar_all_merged = df_bar_all.copy()
     else:
         df_bar_all_merged = pd.concat([df_bar_all_merged, df_bar_all], axis=0, ignore_index=True)
 fig, ax = plt.subplots(figsize=(8, 6))
 df_bar_all_merged = df_bar_all_merged.fillna(0)
-sns.barplot(data=df_bar_all_merged[df_bar_all_merged['mod'] == 'atac'], x='region', y='precision', hue='mod', ax=ax)
+sns.barplot(data=df_bar_all_merged, x='class', y='precision', hue='mod', ax=ax)
 # Add text annotations showing correct/all_pred on each bar
 # Create a lookup dictionary for the data
 data_lookup = {}
 for _, row in df_bar_all_merged.iterrows():
-    key = (row['region'], row['mod'])
+    key = (row['class'], row['mod'])
     data_lookup[key] = row
 
 # Get the order of x and hue from the plot
-regions_order = [tick.get_text() for tick in ax.get_xticklabels()]
+classes_order = [tick.get_text() for tick in ax.get_xticklabels()]
 mods_order = df_bar_all_merged['mod'].unique()
 
 # Annotate patches
 patch_idx = 0
 for mod in mods_order:
-    for region in regions_order:
+    for class_name in classes:
         if patch_idx < len(ax.patches):
             patch = ax.patches[patch_idx]
             height = patch.get_height()
             x = patch.get_x() + patch.get_width() / 2
-            if (region, mod) in data_lookup:
-                row = data_lookup[(region, mod)]
+            if (class_name, mod) in data_lookup:
+                row = data_lookup[(class_name, mod)]
                 label = f"{int(row['correct'])}/{int(row['all_pred'])}"
                 ax.text(x, height, label, ha='center', va='bottom', fontsize=6)
             patch_idx += 1
@@ -425,5 +450,5 @@ ax.legend(title='Modality', bbox_to_anchor=(1.05, 1), loc='upper left')
 # rotate x labels
 plt.setp(ax.get_xticklabels(), rotation=45, ha='right')
 fig.tight_layout()
-fig.savefig('results/expr3/region_subclass/precision_recall_all_regions.pdf', bbox_inches='tight')
+fig.savefig('results/expr3/class_subclass/precision_recall_all_classes.pdf', bbox_inches='tight')
 # %%

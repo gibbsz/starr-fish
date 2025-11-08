@@ -193,6 +193,7 @@ cython_debug/
 *.bed
 *.html
 *.out
+*.json
 
 # data folder
 Mouse_brain.Guojie/Data/ATAC/wmb_bigwig
@@ -204,3 +205,4 @@ Mouse_brain.Guojie/results/homer_motif
 Mouse_brain.Guojie/results/full_stats
 Mouse_brain.Guojie/archive/
 Mouse_brain.Guojie/runs/
+Mouse_brain.Guojie/Data/abc_atlas

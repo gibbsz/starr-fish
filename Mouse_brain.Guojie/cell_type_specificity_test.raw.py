@@ -27,7 +27,7 @@ import os
 try:
     PWD = os.path.dirname(os.path.abspath(__file__))
 except NameError:
-    PWD = '/share/vault/Users/gz2294/starr-fish/Mouse_brain.Guojie'
+    PWD = '/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/Mouse_brain.Guojie'
 sys.path.append(f'{PWD}/')
 os.chdir(PWD)
 from utils import STARRFISH
@@ -124,7 +124,10 @@ cre_whitelist = starrfish3_sec1.get_creinfo().index[~starrfish3_sec1.get_creinfo
 mismatching_cres = pd.read_csv('Data/AAV_ONT_Barcode_Counts_vs_Mismatch_Percentage.csv', index_col=0)
 cre_whitelist = cre_whitelist[~cre_whitelist.isin(mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20])]
 cre_blacklist = np.unique(cre_blacklist + mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20].tolist()).tolist()
-
+# assign to starrfish3
+starrfish3_sec1.blacklist_cre = cre_blacklist
+starrfish3_sec2.blacklist_cre = cre_blacklist
+starrfish3.blacklist_cre = cre_blacklist
 
 
 # %% define the CREs and Cell Type matric to keep
@@ -146,7 +149,7 @@ fold_change_test_config = {"cell_types_to_use": None,
                            'filter_by_cell_t7': None,
                            "normalize_by_celltype_rna": False,
                            "normalize_by_celltype_volume": False,
-                           "normalize_by_celltype_t7": True, # normalize by T7
+                           "normalize_by_celltype_t7": False, # normalize by T7
                            "normalize_by_negative_control": False, # normalize by negative control
                            'normalize_by_total_cre': False,
                            "normalize_by_infected_cell": False,
@@ -154,98 +157,114 @@ fold_change_test_config = {"cell_types_to_use": None,
                            "log_transform": False,
                            "filter_zero_counts": False,
                            "bootstrap_number": 10000,
-                           "n_jobs": 36,
-                           'load_stored': True,}
+                           "n_jobs": 72,
+                           'load_stored': True,
+                           'fill_nan': False}
 res1 = starrfish3_sec1.fold_change_test(**fold_change_test_config)
+# starrfish3_sec1.save('results/starrfish3_sec1.pkl')
 res2 = starrfish3_sec2.fold_change_test(**fold_change_test_config)
+# starrfish3_sec2.save('results/starrfish3_sec2.pkl')
 res = starrfish3.fold_change_test(**fold_change_test_config)
+# starrfish3.save('results/starrfish3.gauss.pkl')
 
 
-# %% get activity from average_bootstrap method
-with open('results/starrfish3.average_bootstrap.pkl', 'rb') as f:
-    res_avg = pickle.load(f)
-with open('results/starrfish3_sec1.average_bootstrap.pkl', 'rb') as f:
-    res1_avg = pickle.load(f)
-with open('results/starrfish3_sec2.average_bootstrap.pkl', 'rb') as f:
-    res2_avg = pickle.load(f)
-# %% compare the two methods
-from plots import average_foldchange_specificity_test, q_value_correction
-p_mat_rank_test, p_mat_frequentist = average_foldchange_specificity_test(res_avg, res)
-# sec1 
-p_mat_rank_test1, p_mat_frequentist1 = average_foldchange_specificity_test(res1_avg, res1)
-# sec2
-p_mat_rank_test2, p_mat_frequentist2 = average_foldchange_specificity_test(res2_avg, res2)
-# %% q-value correction
-p_mat_rank_test_filter = p_mat_rank_test.copy()
-p_mat_rank_test_filter[to_filter] = np.nan
-q_mat_rank_test = q_value_correction(p_mat_rank_test_filter)
+# # %% get activity from average_bootstrap method
+# with open('results/starrfish3.average_bootstrap.pkl', 'rb') as f:
+#     res_avg = pickle.load(f)
+# with open('results/starrfish3_sec1.average_bootstrap.pkl', 'rb') as f:
+#     res1_avg = pickle.load(f)
+# with open('results/starrfish3_sec2.average_bootstrap.pkl', 'rb') as f:
+#     res2_avg = pickle.load(f)
+# # %% compare the two methods
+# from plots import average_foldchange_specificity_test, q_value_correction
+# p_mat_rank_test, p_mat_frequentist = average_foldchange_specificity_test(res_avg, res)
+# # sec1 
+# p_mat_rank_test1, p_mat_frequentist1 = average_foldchange_specificity_test(res1_avg, res1)
+# # sec2
+# p_mat_rank_test2, p_mat_frequentist2 = average_foldchange_specificity_test(res2_avg, res2)
+# # %% q-value correction
+# p_mat_rank_test_filter = p_mat_rank_test.copy()
+# p_mat_rank_test_filter[to_filter] = np.nan
+# q_mat_rank_test = q_value_correction(p_mat_rank_test_filter)
 
-p_mat_frequentist_filter = p_mat_frequentist.copy()
-p_mat_frequentist_filter[to_filter] = np.nan
-q_mat_frequentist = q_value_correction(p_mat_frequentist_filter)
+# p_mat_frequentist_filter = p_mat_frequentist.copy()
+# p_mat_frequentist_filter[to_filter] = np.nan
+# q_mat_frequentist = q_value_correction(p_mat_frequentist_filter)
 
-p_mat_rank_test1_filter = p_mat_rank_test1.copy()
-p_mat_rank_test1_filter[to_filter_sec1] = np.nan
-q_mat_rank_test1 = q_value_correction(p_mat_rank_test1_filter)
+# p_mat_rank_test1_filter = p_mat_rank_test1.copy()
+# p_mat_rank_test1_filter[to_filter_sec1] = np.nan
+# q_mat_rank_test1 = q_value_correction(p_mat_rank_test1_filter)
 
-p_mat_frequentist1_filter = p_mat_frequentist1.copy()
-p_mat_frequentist1_filter[to_filter_sec1] = np.nan
-q_mat_frequentist1 = q_value_correction(p_mat_frequentist1_filter)
+# p_mat_frequentist1_filter = p_mat_frequentist1.copy()
+# p_mat_frequentist1_filter[to_filter_sec1] = np.nan
+# q_mat_frequentist1 = q_value_correction(p_mat_frequentist1_filter)
 
-p_mat_rank_test2_filter = p_mat_rank_test2.copy()
-p_mat_rank_test2_filter[to_filter_sec2] = np.nan
-q_mat_rank_test2 = q_value_correction(p_mat_rank_test2_filter)
+# p_mat_rank_test2_filter = p_mat_rank_test2.copy()
+# p_mat_rank_test2_filter[to_filter_sec2] = np.nan
+# q_mat_rank_test2 = q_value_correction(p_mat_rank_test2_filter)
 
-p_mat_frequentist2_filter = p_mat_frequentist2.copy()
-p_mat_frequentist2_filter[to_filter_sec2] = np.nan
-q_mat_frequentist2 = q_value_correction(p_mat_frequentist2_filter)
+# p_mat_frequentist2_filter = p_mat_frequentist2.copy()
+# p_mat_frequentist2_filter[to_filter_sec2] = np.nan
+# q_mat_frequentist2 = q_value_correction(p_mat_frequentist2_filter)
 
+# %% recalculate p-value
+def recalculate_activity_pvalue(res, to_filter=None, bootstrap_threshold=0.8):
+    activity_res = res['celltype_activity'].copy()
+    activity_array = res['activity_array'].copy()
+    # apply filter
+    if to_filter is not None:
+        activity_res[to_filter] = np.nan
+    # drop the nan or inf results
+    activity_res[np.isfinite(activity_res) == False] = np.nan
+    # figure out failed nan values
+    p_value_mat = np.ones(activity_res.shape) * np.nan
+    for i, celltype in enumerate(activity_res.index):
+        for j, cre in enumerate(activity_res.columns):
+            if np.isfinite(activity_res.iloc[i, j]):
+                # get bootstrap values
+                boot_values = activity_array[:, i, j]
+                boot_values = boot_values[np.isfinite(boot_values)]
+                if len(boot_values) >= bootstrap_threshold * activity_array.shape[0]:
+                    # perform frequentist p-value calculation
+                    p_value_mat[i, j] = np.sum(activity_res.iloc[i, j] <= boot_values) / len(boot_values)
+    # calibrate p-values
+    q_res = p_value_mat.flatten().copy().astype(float)
+    q_res[~np.isnan(q_res)] = multitest.multipletests(q_res[~np.isnan(q_res)], method='fdr_bh')[1]
+    q_res = pd.DataFrame(q_res.reshape(activity_res.shape), index=activity_res.index, columns=activity_res.columns)
+    return activity_res, q_res
 
 # %% check reproducibility of cell type specificity
-# activity_res1 = res1['celltype_activity'].copy()
-# activity_res2 = res2['celltype_activity'].copy()
-# activity_res = res['celltype_activity'].copy()
-# # filter out to filter
-# infected_cells_threshold = 5
-# to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
-# to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
-# to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < infected_cells_threshold
-# to_filter[cre_blacklist] = True
-# to_filter_sec1[cre_blacklist] = True
-# to_filter_sec2[cre_blacklist] = True
-# # recalculate q-values
-# q_res = res['pvalue_activity'].copy()
-# q_res[to_filter] = np.nan
-# activity_res[to_filter] = np.nan
-# q_res = q_res.values.flatten().copy().astype(float)
-# q_res[~np.isnan(q_res)] = multitest.multipletests(q_res[~np.isnan(q_res)], method='fdr_bh')[1]
-# q_res = pd.DataFrame(q_res.reshape(activity_res.shape), index=activity_res.index, columns=activity_res.columns)
-
-# q_res1 = res1['pvalue_activity'].copy()
-# q_res1[to_filter_sec1] = np.nan
-# activity_res1[to_filter_sec1] = np.nan
-# q_res1 = q_res1.values.flatten().copy().astype(float)
-# q_res1[~np.isnan(q_res1)] = multitest.multipletests(q_res1[~np.isnan(q_res1)], method='fdr_bh')[1]
-# q_res1 = pd.DataFrame(q_res1.reshape(activity_res1.shape), index=activity_res1.index, columns=activity_res1.columns)
-
-# q_res2 = res2['pvalue_activity'].copy()
-# q_res2[to_filter_sec2] = np.nan
-# activity_res2[to_filter_sec2] = np.nan
-# q_res2 = q_res2.values.flatten().copy().astype(float)
-# q_res2[~np.isnan(q_res2)] = multitest.multipletests(q_res2[~np.isnan(q_res2)], method='fdr_bh')[1]
-# q_res2 = pd.DataFrame(q_res2.reshape(activity_res2.shape), index=activity_res2.index, columns=activity_res2.columns)
-
+activity_res1 = res1['celltype_activity'].copy()
+activity_res2 = res2['celltype_activity'].copy()
+activity_res = res['celltype_activity'].copy()
+# filter out to filter
+infected_cells_threshold = 5
+to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
+to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
+to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < infected_cells_threshold
+to_filter[cre_blacklist] = True
+to_filter_sec1[cre_blacklist] = True
+to_filter_sec2[cre_blacklist] = True
+# recalculate q-values
+activity_res1, q_res1 = recalculate_activity_pvalue(res1, to_filter=to_filter_sec1)
+activity_res2, q_res2 = recalculate_activity_pvalue(res2, to_filter=to_filter_sec2)
+# find consistent reproducible q-values
+q_res1_filter = q_res1.reindex(activity_res.index).copy()
+q_res2_filter = q_res2.reindex(activity_res.index).copy()
+q_consistent = ((q_res1_filter <= 0.05) & (q_res2_filter <= 0.05)) | ((q_res1_filter > 0.05) & (q_res2_filter > 0.05))
+activity_res, q_res = recalculate_activity_pvalue(res, to_filter=to_filter)
+# q_res[~q_consistent] = np.nan
 
 # %% 
-q_res1 = q_mat_frequentist1.copy()
-q_res2 = q_mat_frequentist2.copy()
-q_res = q_mat_frequentist.copy()
-activity_res1 = res1_avg['celltype_activity'].copy()
-activity_res1[to_filter_sec1] = np.nan
-activity_res2 = res2_avg['celltype_activity'].copy()
-activity_res2[to_filter_sec2] = np.nan
-activity_res = res_avg['celltype_activity'].copy()
-activity_res[to_filter] = np.nan
+# q_res1 = q_mat_frequentist1.copy()
+# q_res2 = q_mat_frequentist2.copy()
+# q_res = q_mat_frequentist.copy()
+# activity_res1 = res1_avg['celltype_activity'].copy()
+# activity_res1[to_filter_sec1] = np.nan
+# activity_res2 = res2_avg['celltype_activity'].copy()
+# activity_res2[to_filter_sec2] = np.nan
+# activity_res = res_avg['celltype_activity'].copy()
+# activity_res[to_filter] = np.nan
 
 
 
@@ -260,7 +279,7 @@ reproducible_celltypes = reproducible_celltypes[~reproducible_celltypes.isin(['E
 
 
 # %% pearson correlation of between the two sections
-cre_corr, celltype_corr = starrfish3.corr_starrfish(activity_res1, activity_res)
+cre_corr, celltype_corr = starrfish3.corr_starrfish(activity_res1, activity_res2)
 cre_corr['libsize'] = starrfish3.lib_size['counts'].loc[cre_corr.index]
 celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
 celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
@@ -273,11 +292,11 @@ fig, ax = plt.subplots(figsize=(4, 4))
 sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
 sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
 ax.set_xscale('log')
-fig.savefig('results/expr3/reproducibility_by_cre_pearson_sec1_sec2.pdf')
+fig.savefig('results/expr3/specificity_raw/reproducibility_by_cre_pearson_sec1_sec2.pdf')
 # %% plot pearson R in violin
 fig, ax = plt.subplots(figsize=(2, 4))
 sns.violinplot(data=cre_corr[(cre_corr['effect_n'] >= n_celltype_threshold)], y='pearson', ax=ax)
-fig.savefig('results/expr3/reproducibility_by_cre_pearson_violin_sec1_sec2.pdf')
+fig.savefig('results/expr3/specificity_raw/reproducibility_by_cre_pearson_violin_sec1_sec2.pdf')
 
 
 
@@ -312,7 +331,7 @@ legend.set_title('')
 for text in legend.get_texts():
     if text.get_text() in [str(i) for i in range(10)]:  # size legend items
         legend.get_texts()[legend.get_texts().index(text)].set_text('')
-fig.savefig('results/expr3/reproducibility_by_cre_percentage_all.pdf', bbox_inches='tight')
+fig.savefig('results/expr3/specificity_raw/reproducibility_by_cre_percentage_all.pdf', bbox_inches='tight')
 
 
 # %% plot number of reproducible CREs
@@ -376,7 +395,7 @@ ax.set_xlabel('Cell Type Size Threshold')
 ax.set_ylabel('Reproducibility')
 ax.set_xscale('log')
 ax.legend()
-fig.savefig('results/expr3/reproducibility_by_cre_threshold_celltype.pdf')
+fig.savefig('results/expr3/specificity_raw/reproducibility_by_cre_threshold_celltype.pdf')
 
 
 # %% dot plot of some biology
@@ -389,36 +408,39 @@ cre_info.loc[negative_control_cres, 'best_subclass'] = 'Negative Control'
 celltypes_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
 cres_to_use = q_res.columns[np.nanmin(q_res.loc[celltypes_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
 cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
-fig, cre_orders = cre_pval_dotplot(q_res, activity_res, cres_to_use, celltypes_to_use, cre_info, reorder_cres=True, figsize=(15, 15))
-fig.savefig('results/expr3/cre_pval_dotplot_all.pdf')
+# cres_to_use = cres_to_use.intersection(reproducible_cres)
+fig, cre_orders = cre_pval_dotplot(q_res, activity_res, cres_to_use, celltypes_to_use, cre_info, reorder_cres=True, figsize=(15, 30))
+fig.savefig('results/expr3/specificity_raw/cre_pval_dotplot_all.pdf')
 fig
 # %%
 fig, cre_orders = cre_pval_dotplot(q_res1, activity_res1, pd.Index(cre_orders), celltypes_to_use, cre_info, reorder_cres=False, figsize=(15, 15))
-fig.savefig('results/expr3/cre_pval_dotplot_1.pdf')
+fig.savefig('results/expr3/specificity_raw/cre_pval_dotplot_1.pdf')
 fig
 # %%
 fig, cre_orders = cre_pval_dotplot(q_res2, activity_res2, pd.Index(cre_orders), celltypes_to_use, cre_info, reorder_cres=False, figsize=(15, 15))
-fig.savefig('results/expr3/cre_pval_dotplot_2.pdf')
+fig.savefig('results/expr3/specificity_raw/cre_pval_dotplot_2.pdf')
 fig
 
 
 
 # %% visualize some example
-have_target_cres = q_res.columns[np.nanmin(q_res.loc[cell_types_to_use], axis=0) < 0.05]
+have_target_cres = q_res.columns[np.nanmin(q_res.loc[celltypes_to_use], axis=0) < 0.05]
 for cre in have_target_cres:
     # rank by q-value
-    cre_q_values = q_res.loc[cell_types_to_use, cre]
-    cre_q_values = cre_q_values[cre_q_values <= 0.05] 
+    cre_q_values = q_res.loc[celltypes_to_use, cre]
+    cre_q_values = cre_q_values[cre_q_values <= 0.05]
     # order by rank
     cre_q_values = cre_q_values.sort_values(ascending=True)
     cell_types_to_visualize = cre_q_values.index
     fig = starrfish3.plot_gene(
         cre, average_by_celltype=False, # if true, all cells from same cell type will have same value
         cell_types_to_visualize=cell_types_to_visualize, # only visualize some cell types
+        norm_by_negative_control_cell_type_sum=False,
+        norm_by_t7_cell_type_mean=False,
         scale_size_by='counts', # scale size by "counts": normalized counts; or "celltype_number": number of cells in the cell type
         log=True, transpose=-1, flipx=-1, sz_max=50,
-        cell_types_to_use=cell_types_to_use)
-    fig.savefig(f'results/expr3/cre_significant_celltypes/{cre}.pdf')
+        cell_types_to_use=celltypes_to_use)
+    fig.savefig(f'results/expr3/specificity_raw/cre_significant_celltypes/{cre}.pdf')
 
 
 # %% plot correlation with three modalities
@@ -456,7 +478,7 @@ starrfish3.chromatin_a = chromatin_a.copy()
 
 # %% get precision recall
 pr_df1 = get_pr_df(qvalue_df=q_res.loc[reproducible_celltypes, reproducible_cres].copy(), cell_types_to_use=reproducible_celltypes,
-                   starrfish_obj=starrfish3, metric = ['atac_cpm', 'h3k4me1_cpm', 'h3k27ac_cpm'], z_cutoffs=[2.0])
+                   starrfish_obj=starrfish3, metric = ['atac_cpm', 'h3k4me1_cpm', 'h3k27ac_cpm'], z_cutoffs=[0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5])
 pr_df2 = get_pr_df(qvalue_df=q_res.loc[reproducible_celltypes, reproducible_cres].copy(), cell_types_to_use=reproducible_celltypes,
                    starrfish_obj=starrfish3, 
                    metric=['chromatin_o', 'chromatin_a'], z_cutoffs=[0.5])
@@ -493,6 +515,11 @@ fig, ax = plot_bar(df_bar, figsize=(6, 6), flip_axis=True, fontsize=6)
 # ALL cell type
 df_bar_all = pd.concat([df_bar_all1, df_bar_all2], axis=0, ignore_index=True)
 fig, ax = plot_bar(df_bar_all, figsize=(6, 6), flip_axis=True, fontsize=6)
-fig.savefig('results/expr3/precision_recall_all.pdf')
+fig.savefig('results/expr3/specificity_raw/precision_recall_all.pdf')
 
+# %%
+overall_precision = pr_df1.groupby(['mod', 'z_cutoff'])['correct'].sum() / pr_df1.groupby(['mod', 'z_cutoff'])['all_pred'].sum()
+toplot = pd.DataFrame(overall_precision).reset_index()
+toplot.rename(columns={0: 'precision'}, inplace=True)
+sns.lmplot(data=toplot, x='z_cutoff', y='precision', hue='mod', scatter=True, lowess=True)
 # %%

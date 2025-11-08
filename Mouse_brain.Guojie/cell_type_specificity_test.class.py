@@ -292,6 +292,60 @@ for text in legend.get_texts():
     if text.get_text() in [str(i) for i in range(10)]:  # size legend items
         legend.get_texts()[legend.get_texts().index(text)].set_text('')
 fig.savefig('results/expr3/class/reproducibility_by_cre_percentage_all.pdf', bbox_inches='tight')
+# %% define reproducible cres
+for cre in res_compare.index:
+    # sec1-sec2
+    res_compare.loc[cre, 'sec1-sec2'] = 'Non-reproducible'
+    if res_compare.loc[cre, 'Common'] > 0:
+        res_compare.loc[cre, 'sec1-sec2'] = 'Partially Reproducible'
+    if res_compare.loc[cre, 'Sec1'] == 0 and res_compare.loc[cre, 'Sec2'] == 0:
+        res_compare.loc[cre, 'sec1-sec2'] = 'All Reproducible'
+    else:
+        if res_compare.loc[cre, 'Common'] / np.minimum(res_compare.loc[cre, 'Sec1'], res_compare.loc[cre, 'Sec2']) == 1:
+            res_compare.loc[cre, 'sec1-sec2'] = 'All Reproducible'
+    if cre in cre_blacklist:
+        res_compare.loc[cre, 'sec1-sec2'] = 'Blacklisted'
+    # sec1-all
+    res_compare.loc[cre, 'sec1-all'] = 'Non-reproducible'
+    if res_compare.loc[cre, 'Common_sec1'] > 0:
+        res_compare.loc[cre, 'sec1-all'] = 'Partially Reproducible'
+    if res_compare.loc[cre, 'Sec1'] == 0 and res_compare.loc[cre, 'All'] == 0:
+        res_compare.loc[cre, 'sec1-all'] = 'All Reproducible'
+    else:
+        if res_compare.loc[cre, 'Common_sec1'] / np.minimum(res_compare.loc[cre, 'Sec1'], res_compare.loc[cre, 'All']) == 1:
+            res_compare.loc[cre, 'sec1-all'] = 'All Reproducible'
+    if cre in cre_blacklist:
+        res_compare.loc[cre, 'sec1-all'] = 'Blacklisted'
+    # sec2-all
+    res_compare.loc[cre, 'sec2-all'] = 'Non-reproducible'
+    if res_compare.loc[cre, 'Common_sec2'] > 0:
+        res_compare.loc[cre, 'sec2-all'] = 'Partially Reproducible'
+    if res_compare.loc[cre, 'Sec2'] == 0 and res_compare.loc[cre, 'All'] == 0:
+        res_compare.loc[cre, 'sec2-all'] = 'All Reproducible'
+    else:
+        if res_compare.loc[cre, 'Common_sec2'] / np.minimum(res_compare.loc[cre, 'Sec2'], res_compare.loc[cre, 'All']) == 1:
+            res_compare.loc[cre, 'sec2-all'] = 'All Reproducible'
+    if cre in cre_blacklist:
+        res_compare.loc[cre, 'sec2-all'] = 'Blacklisted'
+# Reshape data for plotting
+toplot = pd.concat((res_compare['sec1-sec2'].value_counts().rename('sec1_sec2'),
+                    res_compare['sec1-all'].value_counts().rename('sec1_all'),
+                    res_compare['sec2-all'].value_counts().rename('sec2_all')), axis=1)
+# Reshape data for plotting
+toplot_reset = toplot.reset_index()
+index_col_name = toplot_reset.columns[0]  # Get the actual name of the index column
+toplot_melted = toplot_reset.melt(id_vars=index_col_name, var_name='comparison', value_name='count')
+toplot_melted = toplot_melted.rename(columns={index_col_name: 'reproducibility'})
+
+fig, ax = plt.subplots(figsize=(10, 4))
+sns.barplot(data=toplot_melted[toplot_melted['reproducibility'] != 'Non-reproducible'], x='comparison', y='count', hue='reproducibility', ax=ax)
+ax.set_title('CRE Reproducibility Across Comparisons')
+ax.set_xlabel('Comparison')
+ax.set_ylabel('Count')
+ax.legend(title='Reproducibility Category', bbox_to_anchor=(1.05, 1), loc='upper left')
+fig.tight_layout()
+fig.savefig('results/expr3/class/reproducibility_comparison_barplot.pdf')
+fig.show()
 
 
 # %% plot number of reproducible CREs
@@ -331,6 +385,9 @@ fig.savefig('results/expr3/class/cre_pval_dotplot_2.pdf')
 fig
 
 
+# %% save the results
+q_res.to_csv('results/expr3/class/cre_significant_celltypes_qvalues.csv')
+activity_res.to_csv('results/expr3/class/cre_significant_celltypes_activity.csv')
 
 # %% visualize some example
 have_target_cres = q_res.columns[np.nanmin(q_res.loc[celltypes_to_use], axis=0) < 0.05]
@@ -348,5 +405,82 @@ for cre in have_target_cres:
         log=True, transpose=-1, flipx=-1, sz_max=50,
         cell_types_to_use=celltypes_to_use)
     fig.savefig(f'results/expr3/class/cre_significant_celltypes/{cre}.pdf')
+
+# %% check on target rates
+def aggregate_cpm_by_class(cpm_path, class_subclass, class_cpm_path=None, transpose=False, aggr_func='mean'):
+    # cpm_df: dataframe with index as subclasses and columns as CREs
+    # class_subclass: series with index as subclass and values as class
+    cpm_df = pd.read_csv(cpm_path, index_col=0)
+    if transpose:
+        cpm_df = cpm_df.T
+    class_cpm = cpm_df.groupby(class_subclass, axis=1).agg(aggr_func)
+    if class_cpm_path is not None:
+        class_cpm.to_csv(class_cpm_path)
+    return class_cpm
+# load subclass to class mapping
+allen_cell_type_nomination = pd.read_excel('Data/abc_atlas/allen_institute_nominature.xlsx', sheet_name='subclass_annotation')
+allen_cell_type_nomination['subclass_label'] = allen_cell_type_nomination['subclass_label'].str.replace('/', '-')
+subclass_to_class = allen_cell_type_nomination[['subclass_label', 'class_label']].set_index('subclass_label')['class_label']
+# convert cpm to class level
+aggregate_cpm_by_class('Data/ATAC_cpm_peakBysubclass.csv', subclass_to_class, 'Data/ATAC_cpm_peakByclass.csv')
+aggregate_cpm_by_class('Data/H3K4me1_cpm_peak_pad_500_Bysubclass.csv', subclass_to_class, 'Data/H3K4me1_cpm_peak_pad_500_Byclass.csv')
+aggregate_cpm_by_class('Data/H3K9me3_cpm_peak_pad_500_Bysubclass.csv', subclass_to_class, 'Data/H3K9me3_cpm_peak_pad_500_Byclass.csv')
+aggregate_cpm_by_class('Data/H3K27ac_cpm_peak_pad_500_Bysubclass.csv', subclass_to_class, 'Data/H3K27ac_cpm_peak_pad_500_Byclass.csv')
+aggregate_cpm_by_class('Data/H3K27me3_cpm_peak_pad_500_Bysubclass.csv', subclass_to_class, 'Data/H3K27me3_cpm_peak_pad_500_Byclass.csv')
+# aggregate chromatin state data
+chromatin_o = aggregate_cpm_by_class('Data/cre_chromatin_state_o.csv', subclass_to_class, None, transpose=True, aggr_func='sum')
+chromatin_a = aggregate_cpm_by_class('Data/cre_chromatin_state_a.csv', subclass_to_class, None, transpose=True, aggr_func='sum')
+# load cpm data
+starrfish3.load_cpm('Data/ATAC_cpm_peakByclass.csv', attr_to_add='atac_cpm')
+starrfish3.load_cpm('Data/H3K4me1_cpm_peak_pad_500_Byclass.csv', attr_to_add='h3k4me1_cpm')
+starrfish3.load_cpm('Data/H3K9me3_cpm_peak_pad_500_Byclass.csv', attr_to_add='h3k9me3_cpm')
+starrfish3.load_cpm('Data/H3K27ac_cpm_peak_pad_500_Byclass.csv', attr_to_add='h3k27ac_cpm')
+starrfish3.load_cpm('Data/H3K27me3_cpm_peak_pad_500_Byclass.csv', attr_to_add='h3k27me3_cpm')
+# add chromatin state data
+starrfish3.chromatin_o = (chromatin_o.T.copy() + chromatin_a.T.copy()) / 2
+starrfish3.chromatin_a = chromatin_a.T.copy()
+
+
+# %% get precision recall
+from plots import get_pr_df, plot_bar
+pr_df1 = get_pr_df(qvalue_df=q_res.loc[reproducible_celltypes, reproducible_cres].copy(), cell_types_to_use=reproducible_celltypes,
+                   starrfish_obj=starrfish3, metric = ['atac_cpm', 'h3k4me1_cpm', 'h3k27ac_cpm'], z_cutoffs=[2.0])
+pr_df2 = get_pr_df(qvalue_df=q_res.loc[reproducible_celltypes, reproducible_cres].copy(), cell_types_to_use=reproducible_celltypes,
+                   starrfish_obj=starrfish3, 
+                   metric=['chromatin_o', 'chromatin_a'], z_cutoffs=[0.5])
+# pr_df3 = get_pr_df(qvalue_df=q_toplot.loc[cell_types_to_use_nc_2].copy(), cell_types_to_use=cell_types_to_use,
+#                    starrfish_obj=starrfish3, 
+#                    metric=['snapatac2_de_fc'], z_cutoffs=[2])
+# pr_df2 = pd.concat((pr_df2, pr_df3), axis=0, ignore_index=True)
+pr_df2 = pr_df2.sort_values(by=['cell_type_rank']).reset_index(drop=True)
+pr_df1 = pr_df1[pr_df1['cell_type'].isin(pr_df2['cell_type'])].copy()
+pr_df2 = pr_df2[pr_df2['cell_type'].isin(pr_df1['cell_type'])].copy()
+df_bar = pr_df1[(pr_df1['z_cutoff'] == 2.0)].copy()
+# add a column for overall precision
+df_bar_all1 = pd.DataFrame({'cell_type': 'ALL',
+    'precision': df_bar.groupby(['mod'])['correct'].sum() / df_bar.groupby(['mod'])['all_pred'].sum(),
+    'correct': df_bar.groupby(['mod'])['correct'].sum(),
+    'all_pred': df_bar.groupby(['mod'])['all_pred'].sum(),
+    'target': df_bar.groupby(['mod'])['target'].sum(),
+})
+df_bar_all1['recall'] = df_bar_all1['correct'].astype(str) + '/' + df_bar_all1['all_pred'].astype(str)
+df_bar_all1['mod'] = df_bar_all1.index
+df_bar = df_bar[df_bar['target'] >= 2].copy()
+fig, ax = plot_bar(df_bar, legend_loc=(0.95, 0.75), figsize=(6, 6), flip_axis=True, fontsize=6)
+df_bar = pr_df2.copy()
+df_bar_all2 = pd.DataFrame({'cell_type': 'ALL',
+    'precision': df_bar.groupby(['mod'])['correct'].sum() / df_bar.groupby(['mod'])['all_pred'].sum(),
+    'correct': df_bar.groupby(['mod'])['correct'].sum(),
+    'all_pred': df_bar.groupby(['mod'])['all_pred'].sum(),
+    'target': df_bar.groupby(['mod'])['target'].sum(),
+})
+df_bar_all2['recall'] = df_bar_all2['correct'].astype(str) + '/' + df_bar_all2['all_pred'].astype(str)
+df_bar = df_bar[df_bar['target'] >= 2].copy()
+df_bar_all2['mod'] = df_bar_all2.index
+fig, ax = plot_bar(df_bar, figsize=(6, 6), flip_axis=True, fontsize=6)
+# ALL cell type
+df_bar_all = pd.concat([df_bar_all1, df_bar_all2], axis=0, ignore_index=True)
+fig, ax = plot_bar(df_bar_all, figsize=(6, 6), flip_axis=True, fontsize=6)
+fig.savefig('results/expr3/precision_recall_all_class.pdf')
 
 # %%

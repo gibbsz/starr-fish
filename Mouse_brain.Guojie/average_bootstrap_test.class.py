@@ -230,47 +230,7 @@ overlap_df['celltype_n_sec2'] = starrfish3_sec2.get_celltypes().value_counts().r
 overlap_df['celltype_n_all'] = starrfish3.get_celltypes().value_counts().reindex(overlap_df.index).fillna(0).astype(int).values
 overlap_df['celltype_n'] = np.minimum(overlap_df['celltype_n_sec1'], overlap_df['celltype_n_sec2'], overlap_df['celltype_n_all'])
 # %%
-def plot_reproducibility(overlap_df, celltypes_to_use, percentage_col, bar1_col, bar2_col, bar1_label, bar2_label):
-    # get cell type orders
-    # order by allen institute's nominature
-    cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
-    cluster_annotation_term['class'] = cluster_annotation_term['class'].str.replace('/', '-')
-    overlap_df['cell_type_rank'] = cluster_annotation_term['class_number'].groupby(cluster_annotation_term['class']).first().loc[overlap_df.index].values
-    overlap_df = overlap_df.sort_values(['cell_type_rank'], ascending=[True])
-    # Filter for cell types with celltype_n >= 1000
-    overlap_df_filtered = overlap_df[overlap_df['celltype_n'] >= 1000]
-    overlap_df_filtered = overlap_df_filtered.loc[celltypes_to_use.intersection(overlap_df_filtered.index)]
-    overlap_df_filtered = overlap_df_filtered.sort_values(['cell_type_rank'], ascending=[True])
-    # Create x positions
-    x = np.arange(len(overlap_df_filtered))
-    cell_types = overlap_df_filtered.index
-
-    fig, ax1 = plt.subplots(figsize=(14, 6))
-
-    # Left y-axis for percentage
-    sns.barplot(x=cell_types, y=overlap_df_filtered[percentage_col], ax=ax1, alpha=0.8)
-    ax1.set_xlabel('Cell Types')
-    ax1.set_ylabel('Reproducibility (percentage)', color='black')
-    ax1.tick_params(axis='y', labelcolor='black')
-    plt.setp(ax1.get_xticklabels(), rotation=45, ha='right')
-
-    # Right y-axis for bar values
-    ax2 = ax1.twinx()
-    x_pos = np.arange(len(overlap_df_filtered))
-
-    # Set colors based on column names
-    color1 = 'orange' if bar1_col == 'sec1' else 'green' if bar1_col == 'sec2' else 'pink'
-    color2 = 'orange' if bar2_col == 'sec1' else 'green' if bar2_col == 'sec2' else 'pink'
-
-    ax2.bar(x_pos - 0.2, overlap_df_filtered[bar1_col], 0.4, label=bar1_label, alpha=0.8, color=color1)
-    ax2.bar(x_pos + 0.2, overlap_df_filtered[bar2_col], 0.4, label=bar2_label, alpha=0.8, color=color2)
-    ax2.set_ylabel('# significant CREs', color='black')
-    ax2.tick_params(axis='y', labelcolor='black')
-    ax2.legend(loc='upper right')
-
-    plt.tight_layout()
-    return fig
-
+from plots import plot_reproducibility
 # Plot sec1-sec2
 fig = plot_reproducibility(overlap_df, reproducible_celltypes, 'percentage_sec1_sec2', 'sec1', 'sec2', 'sec1', 'sec2')
 fig.savefig('results/expr3/class/reproducibility_by_celltype_sec1_sec2.pdf')
@@ -456,5 +416,189 @@ for celltype in reproducible_celltypes:
             cell_types_to_use=cell_types_to_visualize)
         fig.savefig(f'results/expr3/class/celltype_significant_cres/{celltype}_{cre}_left_tail.pdf')
 
+# %% load subclass to class mapping
+allen_cell_type_nomination = pd.read_excel('Data/abc_atlas/allen_institute_nominature.xlsx', sheet_name='subclass_annotation')
+allen_cell_type_nomination['subclass_label'] = allen_cell_type_nomination['subclass_label'].str.replace('/', '-')
+subclass_to_class = allen_cell_type_nomination[['subclass_label', 'class_label']].set_index('subclass_label')['class_label']
 
+# %% show consistency with ATAC
+def get_precision_df(res_q_df, starrfish, subclass_to_class, use='atac-peak'):
+    precision_df = pd.DataFrame(index=res_q_df.index, columns=['TP', 'Total', 'ATAC', 'precision', 'recall'])
+    for celltype in precision_df.index:
+        # get all atac_peaks in the cell type and subclass
+        all_atac_peaks = []
+        for subclass in subclass_to_class.index[subclass_to_class == celltype]:
+            atac_peaks = starrfish.get_positive_control_cres(cell_type=subclass, use=use)
+            if atac_peaks is not None:
+                all_atac_peaks.extend(atac_peaks)
+        sig_cres = res_q_df.columns[res_q_df.loc[celltype] <= 0.05]
+        nan_cres = res_q_df.columns[pd.isna(res_q_df.loc[celltype])]
+        atac_peaks = [i for i in np.unique(all_atac_peaks) if i not in nan_cres]
+        if atac_peaks is not None and len(sig_cres) > 0:
+            precision_df.loc[celltype, 'TP'] = sig_cres.isin(atac_peaks).sum()
+        precision_df.loc[celltype, 'Total'] = sum(~pd.isna(res_q_df.loc[celltype]))
+        precision_df.loc[celltype, use] = len(atac_peaks) if atac_peaks is not None else 0
+        if precision_df.loc[celltype, 'Total'] != 0:
+            precision_df.loc[celltype, 'recall'] = precision_df.loc[celltype, 'TP'] / precision_df.loc[celltype, 'Total']
+        if precision_df.loc[celltype, use] != 0:
+            precision_df.loc[celltype, 'precision'] = precision_df.loc[celltype, 'TP'] / precision_df.loc[celltype, use]
+    precision_df = precision_df.sort_values('precision', ascending=False)
+    return precision_df
+
+# Plot ATAC precision using the same strategy as plot_reproducibility
+def plot_atac_precision(atac_precision_df, celltypes_to_use, use='atac-peak'):
+    # get cell type orders
+    # order by allen institute's nominature
+    cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
+    atac_precision_df['cell_type_rank'] = cluster_annotation_term['class_number'].groupby(cluster_annotation_term['class']).first().loc[atac_precision_df.index].values
+    atac_precision_df = atac_precision_df.sort_values(['cell_type_rank'], ascending=[True])
+    # Filter for cell types with celltype_n >= 1000
+    atac_precision_df_filtered = atac_precision_df.loc[celltypes_to_use.intersection(atac_precision_df.index)]
+    atac_precision_df_filtered = atac_precision_df_filtered.sort_values(['cell_type_rank'], ascending=[True])
+    # Create x positions
+    x = np.arange(len(atac_precision_df_filtered))
+    cell_types = atac_precision_df_filtered.index
+
+    fig, ax1 = plt.subplots(figsize=(14, 6))
+
+    # Left y-axis for precision
+    sns.barplot(x=cell_types, y=atac_precision_df_filtered['precision'], ax=ax1, alpha=0.8)
+    ax1.set_xlabel('Cell Types')
+    ax1.set_ylabel('ATAC Precision', color='black')
+    ax1.tick_params(axis='y', labelcolor='black')
+    plt.setp(ax1.get_xticklabels(), rotation=45, ha='right')
+
+    # Add horizontal dashed line for overall precision
+    overall_precision = atac_precision_df_filtered['TP'].sum() / atac_precision_df_filtered[use].sum()
+    ax1.axhline(y=overall_precision, color='black', linestyle='--', alpha=0.7, label=f'Overall precision: {overall_precision:.3f}')
+    ax1.legend(loc='upper left')
+
+    # Right y-axis for bar values
+    ax2 = ax1.twinx()
+    x_pos = np.arange(len(atac_precision_df_filtered))
+
+    ax2.bar(x_pos - 0.2, atac_precision_df_filtered['TP'], 0.4, label=f'Significant CREs in {use}', alpha=0.8, color='orange')
+    ax2.bar(x_pos + 0.2, atac_precision_df_filtered[use], 0.4, label=f'Total {use}', alpha=0.8, color='green')
+    ax2.set_ylabel('Count', color='black')
+    ax2.tick_params(axis='y', labelcolor='black')
+    ax2.legend(loc='upper right')
+
+    plt.tight_layout()
+    return fig
+
+# Plot ATAC precision
+overall_tp = {}
+overall_total = {}
+for use in ['atac-peak', 'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a']:
+    precision_df = get_precision_df(res_q_right, starrfish3, subclass_to_class, use=use)
+    fig = plot_atac_precision(precision_df, reproducible_celltypes, use=use)
+    fig.savefig(f'results/expr3/class/{use.replace("-", "_")}_precision_by_celltype.pdf')
+    overall_tp[use] = precision_df.loc[reproducible_celltypes, 'TP'].sum()
+    overall_total[use] = precision_df.loc[reproducible_celltypes, use].sum()
+# %% plot bar of overall precision
+cre_precision_data = pd.DataFrame({
+    'Assay': list(overall_tp.keys()),
+    'TP': list(overall_tp.values()),
+    'Total': list(overall_total.values()),
+    'Precision': [tp / total if total > 0 else 0 for tp, total in zip(overall_tp.values(), overall_total.values())]
+})
+fig, ax = plt.subplots(figsize=(6, 4))
+sns.barplot(data=cre_precision_data, x='Assay', y='Precision', ax=ax, alpha=0.8)
+ax.set_xlabel('Assay')
+ax.set_ylabel('Overall Precision')
+ax.set_ylim(0, 0.3)
+for i, row in cre_precision_data.iterrows():
+    ax.text(i, row['Precision'] + 0.02, f"{row['TP']}/{row['Total']}", ha='center', va='bottom')
+fig.savefig('results/expr3/class/overall_precision_barplot.pdf')
+fig.show()
+
+# %% number of on-target CREs
+def get_cre_precision_df(res_q_df, starrfish, subclass_to_class, celltypes_to_use=None, use='atac-peak'):
+    precision_df = pd.DataFrame(index=res_q_df.columns, columns=['TP', 'Total', 'precision', 'recall'])
+    for cre in precision_df.index:
+        atac_peaks = starrfish.get_positive_control_celltypes(cre=cre, use=use)
+        atac_peaks = subclass_to_class.loc[atac_peaks[atac_peaks.isin(subclass_to_class.index)]] if atac_peaks is not None else None
+        sig_celltypes = res_q_df.index[res_q_df[cre] <= 0.05]
+        nan_celltypes = res_q_df.index[pd.isna(res_q_df[cre])]
+        if celltypes_to_use is not None:
+            sig_celltypes = sig_celltypes[sig_celltypes.isin(celltypes_to_use)]
+            nan_celltypes = nan_celltypes[nan_celltypes.isin(celltypes_to_use)]
+        atac_peaks = atac_peaks[~atac_peaks.isin(nan_celltypes)].unique() if atac_peaks is not None else None
+        if atac_peaks is not None and len(sig_celltypes) > 0:
+            precision_df.loc[cre, 'TP'] = sig_celltypes.isin(atac_peaks).sum()
+        precision_df.loc[cre, 'Total'] = sum(~pd.isna(res_q_df[cre]))
+        precision_df.loc[cre, use] = len(atac_peaks) if atac_peaks is not None else 0
+        if precision_df.loc[cre, 'Total'] != 0:
+            precision_df.loc[cre, 'recall'] = precision_df.loc[cre, 'TP'] / precision_df.loc[cre, 'Total']
+        if precision_df.loc[cre, use] != 0:
+            precision_df.loc[cre, 'precision'] = precision_df.loc[cre, 'TP'] / precision_df.loc[cre, use]
+    precision_df = precision_df.sort_values('precision', ascending=False)
+    return precision_df
+reproducible_cres = overlap_cre_df.index[overlap_cre_df['reproducibility'].isin(['All Reproducible', 'Partially Reproducible'])]
+
+for use in ['atac-peak', 'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a']:
+    for y in ['precision', 'percentage']:
+        cre_precision_df_repro = get_cre_precision_df(res_q_right[reproducible_cres].copy(), starrfish3, subclass_to_class, use=use)
+        repro_percentage = sum(cre_precision_df_repro['TP'] > 0) / len(cre_precision_df_repro)
+        repro_precision = sum(cre_precision_df_repro['TP'] > 0) / sum(cre_precision_df_repro[use] > 0)
+        print(f'{use} Reproducible CREs percentage: {sum(cre_precision_df_repro['TP'] > 0)} out of {len(cre_precision_df_repro)}')
+        print(f'{use} Reproducible CREs precision: {sum(cre_precision_df_repro['TP'] > 0)} out of {sum(cre_precision_df_repro[use] > 0)}')
+
+        cre_precision_df_all = get_cre_precision_df(res_q_right, starrfish3, subclass_to_class, use=use)
+        all_percentage = sum(cre_precision_df_all['TP'] > 0) / len(cre_precision_df_all)
+        all_precision = sum(cre_precision_df_all['TP'] > 0) / sum(cre_precision_df_all[use] > 0)
+        print(f'{use} All CREs percentage: {sum(cre_precision_df_all['TP'] > 0)} out of {len(cre_precision_df_all)}')
+        print(f'{use} All CREs precision: {sum(cre_precision_df_all['TP'] > 0)} out of {sum(cre_precision_df_all[use] > 0)}')
+        
+        # Plot CRE precision as two separate side-by-side bar plots
+        repro_tp_count = sum(cre_precision_df_repro['TP'] > 0)
+        repro_total_count = len(cre_precision_df_repro)
+        all_tp_count = sum(cre_precision_df_all['TP'] > 0)
+        all_total_count = len(cre_precision_df_all)
+
+        cre_precision_data = pd.DataFrame({
+            'CRE_type': ['Sec1-Sec2\nReproducible CREs', 'All CREs'],
+            'percentage': [repro_percentage, all_percentage],
+            'precision': [repro_precision, all_precision],
+            'TP_count': [repro_tp_count, all_tp_count]
+        })
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6, 4))
+
+        # Left plot: Percentage
+        sns.barplot(data=cre_precision_data, x='CRE_type', y=y, ax=ax1, alpha=0.8)
+        ax1.set_xlabel('CRE Categories')
+        ax1.set_ylabel('Percentage')
+        ax1.set_ylim(0, 1)
+        if y == 'precision':
+            ax1.set_title('Precision of CREs on-target')
+        else:
+            ax1.set_title('Percentage of CREs on-target')
+
+        # Right plot: Count
+        sns.barplot(data=cre_precision_data, x='CRE_type', y='TP_count', ax=ax2, alpha=0.8, color='orange')
+        ax2.set_xlabel('CRE Categories')
+        ax2.set_ylabel('Number')
+        ax2.set_title('Count of CREs on-target')
+
+        plt.tight_layout()
+        fig.savefig(f'results/expr3/class/cre_{y}_barplot_{use.replace("-", "_")}.pdf')
+        plt.show()
+
+
+
+# %% do upset plot of ATAC, H3K4me1, H3K27ac, Chromatin A
+on_target_cres = {}
+for use in ['atac-peak', 'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a']:
+    cre_precision_df_all = get_cre_precision_df(res_q_right.copy(), starrfish3, subclass_to_class, reproducible_celltypes, use=use)
+    on_target_cres[use] = cre_precision_df_all.index[cre_precision_df_all['TP'] > 0]
+    overall_tp[use] = cre_precision_df_all['TP'].sum()
+    overall_total[use] = len(cre_precision_df_all)
+# do upset plot
+from upsetplot import UpSet, from_contents
+upset_data = from_contents(on_target_cres)
+fig = plt.figure(figsize=(6, 4))
+upset = UpSet(upset_data, subset_size='count', show_counts='%d', sort_by='degree', sort_categories_by=None)
+upset.plot(fig=fig)
+fig.savefig('results/expr3/class/cre_ontarget_upsetplot.pdf')
 # %%

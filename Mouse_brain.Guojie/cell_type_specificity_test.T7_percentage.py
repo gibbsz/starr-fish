@@ -27,7 +27,7 @@ import os
 try:
     PWD = os.path.dirname(os.path.abspath(__file__))
 except NameError:
-    PWD = '/share/vault/Users/gz2294/starr-fish/Mouse_brain.Guojie'
+    PWD = '/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/Mouse_brain.Guojie'
 sys.path.append(f'{PWD}/')
 os.chdir(PWD)
 from utils import STARRFISH
@@ -101,89 +101,48 @@ def preprocess(adata_path):
         adata.obsm['T7CRE'] = adata.obsm['T7CRE'][adata.uns['CRE_info'].index]
     return adata
 # %%
-adata3 = preprocess(f'{PWD}/Data/scdata_5_28_2025_BRBB500gn_final_CRE_T7CRE.h5ad')
-# split the adata3 into two parts based on two sections
-adata3.obs['section'] = (adata3.obsm['X_spatial'][:, 0] >= -1900).astype(int)
-adata3_sec1 = adata3[adata3.obs['section'] == 0].copy()
-adata3_sec2 = adata3[adata3.obs['section'] == 1].copy()
-# make two STARRFISH objects
-starrfish3_sec1 = STARRFISH(adata3_sec1)
-starrfish3_sec2 = STARRFISH(adata3_sec2)
-starrfish3 = STARRFISH(adata3)
-del adata3_sec1, adata3_sec2, adata3
-
-# %% load
-starrfish3 = STARRFISH.load('results/starrfish3.cortex.pkl')
-starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.cortex.pkl')
-starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.cortex.pkl')
-
-# %% define the CREs and Cell Type matric to keep
-infected_cells_threshold = 5
-to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
-to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
-to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < infected_cells_threshold
-# to_filter[cre_blacklist] = True
-# to_filter_sec1[cre_blacklist] = True
-# to_filter_sec2[cre_blacklist] = True
-cortex_celltypes = starrfish3.adata.obs['subclass'][
-    starrfish3.adata.obs['subclass'].str.contains(r'^L[1-6].*|^Lamp5|^Sncg|^Vip Gaba|^Sst Gaba|^Pvalb Gaba|^Pvalb chandelier Gaba', regex=True, na=False)
-].unique()
+# adata3 = preprocess(f'{PWD}/Data/scdata_5_28_2025_BRBB500gn_final_CRE_T7CRE.h5ad')
+# # split the adata3 into two parts based on two sections
+# adata3.obs['section'] = (adata3.obsm['X_spatial'][:, 0] >= -1900).astype(int)
+# adata3_sec1 = adata3[adata3.obs['section'] == 0].copy()
+# adata3_sec2 = adata3[adata3.obs['section'] == 1].copy()
+# # make two STARRFISH objects
+# starrfish3_sec1 = STARRFISH(adata3_sec1)
+# starrfish3_sec2 = STARRFISH(adata3_sec2)
+starrfish3_sec1 = STARRFISH.load('results/starrfish3_sec1.binarize_t7.pkl')
+starrfish3_sec2 = STARRFISH.load('results/starrfish3_sec2.binarize_t7.pkl')
+starrfish3 = STARRFISH.load('results/starrfish3.binarize_t7.pkl')
+# %% get subclass name and subclass transform
+subclass_annotation = pd.read_excel(f'Data/abc_atlas/allen_institute_nominature.xlsx')
+subclass_annotation['subclass'] = subclass_annotation['subclass_id_label'].str.replace('^[0-9]+ ', '', regex=True)
+subclass_annotation['subclass'] = subclass_annotation['subclass'].str.replace('/', '-', regex=True)
+subclass_to_subclass_name = subclass_annotation['subclass_id_label'].groupby(subclass_annotation['subclass']).first().to_dict()
+subclass_name_to_subclass = subclass_annotation['subclass'].groupby(subclass_annotation['subclass_id_label']).first().to_dict()
 cre_blacklist = ['CRE061', 'CRE143', 'CRE001']
 cre_whitelist = starrfish3_sec1.get_creinfo().index[~starrfish3_sec1.get_creinfo().index.isin(cre_blacklist)]
 # read in the mismatching barcode CREs
 mismatching_cres = pd.read_csv('Data/AAV_ONT_Barcode_Counts_vs_Mismatch_Percentage.csv', index_col=0)
 cre_whitelist = cre_whitelist[~cre_whitelist.isin(mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20])]
 cre_blacklist = np.unique(cre_blacklist + mismatching_cres.index[mismatching_cres['MismatchPercent'] > 20].tolist()).tolist()
-starrfish3.blacklist_cre = cre_blacklist
+# assign to starrfish3
 starrfish3_sec1.blacklist_cre = cre_blacklist
 starrfish3_sec2.blacklist_cre = cre_blacklist
+starrfish3.blacklist_cre = cre_blacklist
 
-# %% rename to allen names and redo test
-ctx_rename = {
-    # GABAergic interneurons (alphabetical)
-    'Lamp5 Gaba': 'Lamp5',
-    'Lamp5 Lhx6 Gaba': 'Lamp5 Lhx6',
-    'Pvalb Gaba': 'Pvalb',
-    'Pvalb chandelier Gaba': 'Pvalb Chc',
-    'Sncg Gaba': 'Sncg',
-    'Sst Gaba': 'Sst',
-    'Vip Gaba': 'Vip',
 
-    # Glutamatergic neurons (by layer)
-    # Layer 2
-    'L2 IT ENT-po Glut': 'L2-3 IT',
-    'L2 IT PPP-APr Glut': 'L2-3 IT',
+# %% define the CREs and Cell Type matric to keep
+infected_cells_threshold = 5
+to_filter = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum() < infected_cells_threshold
+to_filter_sec1 = (starrfish3_sec1.get_cre_expression() > 0).groupby(starrfish3_sec1.get_celltypes()).sum() < infected_cells_threshold
+to_filter_sec2 = (starrfish3_sec2.get_cre_expression() > 0).groupby(starrfish3_sec2.get_celltypes()).sum() < infected_cells_threshold
+to_filter[cre_blacklist] = True
+to_filter_sec1[cre_blacklist] = True
+to_filter_sec2[cre_blacklist] = True
 
-    # Layer 2-3
-    'L2-3 IT CTX Glut': 'L2-3 IT',
-    'L2-3 IT ENT Glut': 'L2-3 IT',
-    'L2-3 IT PIR-ENTl Glut': 'L2-3 IT',
-    'L2-3 IT PPP Glut': 'L2-3 IT',
-    'L2-3 IT RSP Glut': 'L2-3 IT',
 
-    # Layer 4
-    # 'L4 RSP-ACA Glut': 'L4 RSP-ACA',
-    # 'L4-5 IT CTX Glut': 'L4-5 IT',
-
-    # Layer 5
-    'L5 ET CTX Glut': 'L5 ET',
-    'L5 IT CTX Glut': 'L5 IT',
-    'L5 NP CTX Glut': 'L5-6 NP',
-    # 'L5-6 IT TPE-ENT Glut': 'L5-6 IT TPE-ENT',
-
-    # Layer 6
-    'L6 CT CTX Glut': 'L6 CT',
-    'L6 IT CTX Glut': 'L6 IT',
-    'L6b CTX Glut': 'L6b',
-    'L6b EPd Glut': 'L6b',
-    'L6b-CT ENT Glut': 'L6b',
-}
-starrfish3.adata.obs['subclass'] = starrfish3.adata.obs['subclass'].replace(ctx_rename)
-starrfish3_sec1.adata.obs['subclass'] = starrfish3_sec1.adata.obs['subclass'].replace(ctx_rename)
-starrfish3_sec2.adata.obs['subclass'] = starrfish3_sec2.adata.obs['subclass'].replace(ctx_rename)
 
 # %% run the fold change test for T7
-fold_change_test_config = {"cell_types_to_use": [c for c in ctx_rename.values()],
+fold_change_test_config = {"cell_types_to_use": None,
                            "normalize_by_cell_rna": False,
                            "normalize_by_cell_volume": False,
                            "normalize_by_cell_t7": False, # normalize by T7
@@ -191,25 +150,89 @@ fold_change_test_config = {"cell_types_to_use": [c for c in ctx_rename.values()]
                            "normalize_by_celltype_rna": False,
                            "normalize_by_celltype_volume": False,
                            "normalize_by_celltype_t7": True, # normalize by T7
-                           "normalize_by_negative_control": True, # normalize by negative control
+                           "binarize_t7": True, # binarize T7 counts
+                           "normalize_by_negative_control": False, # normalize by negative control
                            'normalize_by_total_cre': False,
                            "normalize_by_infected_cell": False,
                            "normalize_by_libsize": False,
                            "log_transform": False,
                            "filter_zero_counts": False,
                            "bootstrap_number": 10000,
-                           "n_jobs": 36,
-                           "fill_nan": False,
-                           'load_stored': True,}
-res = starrfish3.fold_change_test(**fold_change_test_config)
+                           "n_jobs": 72,
+                           'load_stored': True,
+                           'fill_nan': False}
 res1 = starrfish3_sec1.fold_change_test(**fold_change_test_config)
+# starrfish3_sec1.save('results/starrfish3_sec1.binarize_t7.pkl')
 res2 = starrfish3_sec2.fold_change_test(**fold_change_test_config)
+# starrfish3_sec2.save('results/starrfish3_sec2.binarize_t7.pkl')
+res = starrfish3.fold_change_test(**fold_change_test_config)
+# starrfish3.save('results/starrfish3.binarize_t7.pkl')
 
-# # %% save
-starrfish3.save('results/starrfish3.cortex.pkl')
-starrfish3_sec1.save('results/starrfish3_sec1.cortex.pkl')
-starrfish3_sec2.save('results/starrfish3_sec2.cortex.pkl')
 
+# # %% get activity from average_bootstrap method
+# with open('results/starrfish3.average_bootstrap.pkl', 'rb') as f:
+#     res_avg = pickle.load(f)
+# with open('results/starrfish3_sec1.average_bootstrap.pkl', 'rb') as f:
+#     res1_avg = pickle.load(f)
+# with open('results/starrfish3_sec2.average_bootstrap.pkl', 'rb') as f:
+#     res2_avg = pickle.load(f)
+# # %% compare the two methods
+# from plots import average_foldchange_specificity_test, q_value_correction
+# p_mat_rank_test, p_mat_frequentist = average_foldchange_specificity_test(res_avg, res)
+# # sec1 
+# p_mat_rank_test1, p_mat_frequentist1 = average_foldchange_specificity_test(res1_avg, res1)
+# # sec2
+# p_mat_rank_test2, p_mat_frequentist2 = average_foldchange_specificity_test(res2_avg, res2)
+# # %% q-value correction
+# p_mat_rank_test_filter = p_mat_rank_test.copy()
+# p_mat_rank_test_filter[to_filter] = np.nan
+# q_mat_rank_test = q_value_correction(p_mat_rank_test_filter)
+
+# p_mat_frequentist_filter = p_mat_frequentist.copy()
+# p_mat_frequentist_filter[to_filter] = np.nan
+# q_mat_frequentist = q_value_correction(p_mat_frequentist_filter)
+
+# p_mat_rank_test1_filter = p_mat_rank_test1.copy()
+# p_mat_rank_test1_filter[to_filter_sec1] = np.nan
+# q_mat_rank_test1 = q_value_correction(p_mat_rank_test1_filter)
+
+# p_mat_frequentist1_filter = p_mat_frequentist1.copy()
+# p_mat_frequentist1_filter[to_filter_sec1] = np.nan
+# q_mat_frequentist1 = q_value_correction(p_mat_frequentist1_filter)
+
+# p_mat_rank_test2_filter = p_mat_rank_test2.copy()
+# p_mat_rank_test2_filter[to_filter_sec2] = np.nan
+# q_mat_rank_test2 = q_value_correction(p_mat_rank_test2_filter)
+
+# p_mat_frequentist2_filter = p_mat_frequentist2.copy()
+# p_mat_frequentist2_filter[to_filter_sec2] = np.nan
+# q_mat_frequentist2 = q_value_correction(p_mat_frequentist2_filter)
+
+# %% recalculate p-value
+def recalculate_activity_pvalue(res, to_filter=None, bootstrap_threshold=0.8):
+    activity_res = res['celltype_activity'].copy()
+    activity_array = res['activity_array'].copy()
+    # apply filter
+    if to_filter is not None:
+        activity_res[to_filter] = np.nan
+    # drop the nan or inf results
+    activity_res[np.isfinite(activity_res) == False] = np.nan
+    # figure out failed nan values
+    p_value_mat = np.ones(activity_res.shape) * np.nan
+    for i, celltype in enumerate(activity_res.index):
+        for j, cre in enumerate(activity_res.columns):
+            if np.isfinite(activity_res.iloc[i, j]):
+                # get bootstrap values
+                boot_values = activity_array[:, i, j]
+                boot_values = boot_values[np.isfinite(boot_values)]
+                if len(boot_values) >= bootstrap_threshold * activity_array.shape[0]:
+                    # perform frequentist p-value calculation
+                    p_value_mat[i, j] = np.sum(activity_res.iloc[i, j] <= boot_values) / len(boot_values)
+    # calibrate p-values
+    q_res = p_value_mat.flatten().copy().astype(float)
+    q_res[~np.isnan(q_res)] = multitest.multipletests(q_res[~np.isnan(q_res)], method='fdr_bh')[1]
+    q_res = pd.DataFrame(q_res.reshape(activity_res.shape), index=activity_res.index, columns=activity_res.columns)
+    return activity_res, q_res
 
 # %% check reproducibility of cell type specificity
 activity_res1 = res1['celltype_activity'].copy()
@@ -224,35 +247,35 @@ to_filter[cre_blacklist] = True
 to_filter_sec1[cre_blacklist] = True
 to_filter_sec2[cre_blacklist] = True
 # recalculate q-values
-q_res = res['pvalue_activity'].copy()
-q_res[to_filter] = np.nan
-activity_res[to_filter] = np.nan
-q_res = q_res.values.flatten().copy().astype(float)
-q_res[~np.isnan(q_res)] = multitest.multipletests(q_res[~np.isnan(q_res)], method='fdr_bh')[1]
-q_res = pd.DataFrame(q_res.reshape(activity_res.shape), index=activity_res.index, columns=activity_res.columns)
+activity_res1, q_res1 = recalculate_activity_pvalue(res1, to_filter=to_filter_sec1)
+activity_res2, q_res2 = recalculate_activity_pvalue(res2, to_filter=to_filter_sec2)
+# find consistent reproducible q-values
+q_res1_filter = q_res1.reindex(activity_res.index).copy()
+q_res2_filter = q_res2.reindex(activity_res.index).copy()
+q_consistent = ((q_res1_filter <= 0.05) & (q_res2_filter <= 0.05)) | ((q_res1_filter > 0.05) & (q_res2_filter > 0.05))
+activity_res, q_res = recalculate_activity_pvalue(res, to_filter=to_filter)
+# q_res[~q_consistent] = np.nan
 
-q_res1 = res1['pvalue_activity'].copy()
-q_res1[to_filter_sec1] = np.nan
-activity_res1[to_filter_sec1] = np.nan
-q_res1 = q_res1.values.flatten().copy().astype(float)
-q_res1[~np.isnan(q_res1)] = multitest.multipletests(q_res1[~np.isnan(q_res1)], method='fdr_bh')[1]
-q_res1 = pd.DataFrame(q_res1.reshape(activity_res1.shape), index=activity_res1.index, columns=activity_res1.columns)
+# %% 
+# q_res1 = q_mat_frequentist1.copy()
+# q_res2 = q_mat_frequentist2.copy()
+# q_res = q_mat_frequentist.copy()
+# activity_res1 = res1_avg['celltype_activity'].copy()
+# activity_res1[to_filter_sec1] = np.nan
+# activity_res2 = res2_avg['celltype_activity'].copy()
+# activity_res2[to_filter_sec2] = np.nan
+# activity_res = res_avg['celltype_activity'].copy()
+# activity_res[to_filter] = np.nan
 
-q_res2 = res2['pvalue_activity'].copy()
-q_res2[to_filter_sec2] = np.nan
-activity_res2[to_filter_sec2] = np.nan
-q_res2 = q_res2.values.flatten().copy().astype(float)
-q_res2[~np.isnan(q_res2)] = multitest.multipletests(q_res2[~np.isnan(q_res2)], method='fdr_bh')[1]
-q_res2 = pd.DataFrame(q_res2.reshape(activity_res2.shape), index=activity_res2.index, columns=activity_res2.columns)
 
 
 # %% define reproducible cell types
-reproducible_celltypes = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=200].intersection(
-    starrfish3_sec1.get_celltypes().value_counts().index[starrfish3_sec1.get_celltypes().value_counts()>=200]).intersection(
-    starrfish3_sec2.get_celltypes().value_counts().index[starrfish3_sec2.get_celltypes().value_counts()>=200]
+reproducible_celltypes = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000].intersection(
+    starrfish3_sec1.get_celltypes().value_counts().index[starrfish3_sec1.get_celltypes().value_counts()>=1000]).intersection(
+    starrfish3_sec2.get_celltypes().value_counts().index[starrfish3_sec2.get_celltypes().value_counts()>=1000]
 )
 # remove one of them based on figure 4 results
-reproducible_celltypes = reproducible_celltypes.intersection(cortex_celltypes)
+reproducible_celltypes = reproducible_celltypes[~reproducible_celltypes.isin(['Ependymal NN'])]
 
 
 
@@ -270,9 +293,13 @@ fig, ax = plt.subplots(figsize=(4, 4))
 sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
 sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
 ax.set_xscale('log')
+fig.savefig('results/expr3/specificity_t7_proportion/reproducibility_by_cre_pearson_sec1_sec2.pdf')
 # %% plot pearson R in violin
 fig, ax = plt.subplots(figsize=(2, 4))
 sns.violinplot(data=cre_corr[(cre_corr['effect_n'] >= n_celltype_threshold)], y='pearson', ax=ax)
+fig.savefig('results/expr3/specificity_t7_proportion/reproducibility_by_cre_pearson_violin_sec1_sec2.pdf')
+
+
 
 
 # %%
@@ -305,18 +332,72 @@ legend.set_title('')
 for text in legend.get_texts():
     if text.get_text() in [str(i) for i in range(10)]:  # size legend items
         legend.get_texts()[legend.get_texts().index(text)].set_text('')
+fig.savefig('results/expr3/specificity_t7_proportion/reproducibility_by_cre_percentage_all.pdf', bbox_inches='tight')
 
 
 # %% plot number of reproducible CREs
 reproducible_cres_sec1_sec2 = res_compare.index[res_compare['Common'] > 0]
 reproducible_cres_sec1_all = res_compare.index[res_compare['Common_sec1'] > 0]
 reproducible_cres_sec2_all = res_compare.index[res_compare['Common_sec2'] > 0]
-fig, ax = plt.subplots(figsize=(4, 4))
+fig, ax = plt.subplots(figsize=(6, 6))
 venn_labels = {'Sec1-Sec2': set(reproducible_cres_sec1_sec2),
                'Sec2-All': set(reproducible_cres_sec1_all),
                'Sec1-All': set(reproducible_cres_sec2_all)}
 from matplotlib_venn import venn3
 venn3(subsets=venn_labels.values(), set_labels=venn_labels.keys(), ax=ax)
+fig.savefig('results/expr3/specificity_t7_proportion/reproducible_cres_venn_sec1_sec2_all.pdf', bbox_inches='tight')
+
+
+# %% filter based on cell types
+cell_type_counts_df = pd.DataFrame(index=starrfish3.get_celltypes().unique(), columns=['Sec1', 'Sec2', 'All'])
+cell_type_counts_df['Sec1'] = starrfish3_sec1.get_celltypes().value_counts().reindex(cell_type_counts_df.index, fill_value=0)
+cell_type_counts_df['Sec2'] = starrfish3_sec2.get_celltypes().value_counts().reindex(cell_type_counts_df.index, fill_value=0)
+cell_type_counts_df['All'] = starrfish3.get_celltypes().value_counts().reindex(cell_type_counts_df.index, fill_value=0)
+cell_type_size_thresholds = np.concatenate((np.linspace(0, 90, 10), np.linspace(100, 900, 9), np.linspace(1000, 8000, 8)))
+cell_type_size_reproducity = pd.DataFrame(index=cell_type_size_thresholds, columns=['Sec1-All', 'Sec2-All', 'Sec1-Sec2', '#Sec1-All', '#Sec2-All', '#Sec1-Sec2'])
+for threshold in cell_type_size_thresholds:
+    cell_types_to_use = cell_type_counts_df.index[(cell_type_counts_df > threshold).all(axis=1)]
+    res_compare = plot_q_value_cre_reproducibility(q_res1.loc[cell_types_to_use], q_res2.loc[cell_types_to_use], q_res.loc[cell_types_to_use], starrfish3.lib_size, 0.05, plot=False)
+    to_compare = res_compare[(res_compare[['Sec1', 'All']] > 0).all(axis=1)]
+    cell_type_size_reproducity.loc[threshold, 'Sec1-All'] = to_compare['Common_sec1'].sum() / np.minimum(to_compare['Sec1'].sum(), to_compare['All'].sum())
+    cell_type_size_reproducity.loc[threshold, '#Sec1-All'] = to_compare['Common_sec1'].sum()
+    to_compare = res_compare[(res_compare[['Sec2', 'All']] > 0).all(axis=1)]
+    cell_type_size_reproducity.loc[threshold, 'Sec2-All'] = to_compare['Common_sec2'].sum() / np.minimum(to_compare['Sec2'].sum(), to_compare['All'].sum())
+    cell_type_size_reproducity.loc[threshold, '#Sec2-All'] = to_compare['Common_sec2'].sum()
+    to_compare = res_compare[(res_compare[['Sec1', 'Sec2']] > 0).all(axis=1)]
+    cell_type_size_reproducity.loc[threshold, 'Sec1-Sec2'] = to_compare['Common'].sum() / np.minimum(to_compare['Sec1'].sum(), to_compare['Sec2'].sum())
+    cell_type_size_reproducity.loc[threshold, '#Sec1-Sec2'] = to_compare['Common'].sum()
+# plot
+fig, ax = plt.subplots(figsize=(8, 6))
+sns.lineplot(x=cell_type_size_reproducity.index, y=cell_type_size_reproducity['Sec1-All'], ax=ax, label='Sec1-All', alpha=0.7)
+sns.lineplot(x=cell_type_size_reproducity.index, y=cell_type_size_reproducity['Sec2-All'], ax=ax, label='Sec2-All', alpha=0.7)
+sns.lineplot(x=cell_type_size_reproducity.index, y=cell_type_size_reproducity['Sec1-Sec2'], ax=ax, label='Sec1-Sec2', alpha=0.7)
+# Determine consistent hue range for all scatter plots
+hue_min = min(cell_type_size_reproducity['#Sec1-All'].min(), 
+              cell_type_size_reproducity['#Sec2-All'].min(),
+              cell_type_size_reproducity['#Sec1-Sec2'].min())
+hue_max = max(cell_type_size_reproducity['#Sec1-All'].max(), 
+              cell_type_size_reproducity['#Sec2-All'].max(),
+              cell_type_size_reproducity['#Sec1-Sec2'].max())
+# Create scatter plots with coolwarm colormap
+scatter1 = ax.scatter(cell_type_size_reproducity.index, cell_type_size_reproducity['Sec1-All'], 
+                     c=cell_type_size_reproducity['#Sec1-All'], cmap='coolwarm', 
+                     vmin=hue_min, vmax=hue_max, alpha=0.7, s=50)
+scatter2 = ax.scatter(cell_type_size_reproducity.index, cell_type_size_reproducity['Sec2-All'], 
+                     c=cell_type_size_reproducity['#Sec2-All'], cmap='coolwarm', 
+                     vmin=hue_min, vmax=hue_max, alpha=0.7, s=50)
+scatter3 = ax.scatter(cell_type_size_reproducity.index, cell_type_size_reproducity['Sec1-Sec2'], 
+                     c=cell_type_size_reproducity['#Sec1-Sec2'], cmap='coolwarm', 
+                     vmin=hue_min, vmax=hue_max, alpha=0.7, s=50)
+# Add colorbar
+cbar = plt.colorbar(scatter1, ax=ax)
+cbar.set_label('Count of Reproducible CRE-Cell Type pairs')
+ax.set_title('Cell Type Size ~ Reproducibility')
+ax.set_xlabel('Cell Type Size Threshold')
+ax.set_ylabel('Reproducibility')
+ax.set_xscale('log')
+ax.legend()
+fig.savefig('results/expr3/specificity_t7_proportion/reproducibility_by_cre_threshold_celltype.pdf')
 
 
 # %% dot plot of some biology
@@ -326,39 +407,28 @@ cre_info = starrfish3.get_creinfo().copy()
 cre_info['best_subclass'] = 'CRE'
 cre_info.loc[negative_control_cres, 'best_subclass'] = 'Negative Control'
 # plot
-# celltypes_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000].intersection(q_res.index[q_res.isnull().sum(axis=1) < q_res.shape[1]])
-celltypes_to_use = q_res.index.copy()
+celltypes_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
 cres_to_use = q_res.columns[np.nanmin(q_res.loc[celltypes_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
 cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
-fig, cre_orders = cre_pval_dotplot(q_res, activity_res, cres_to_use, celltypes_to_use, cre_info, reorder_cres=True, figsize=(15, 25))
+# cres_to_use = cres_to_use.intersection(reproducible_cres)
+fig, cre_orders = cre_pval_dotplot(q_res, activity_res, cres_to_use, celltypes_to_use, cre_info, reorder_cres=True, figsize=(15, 15))
+fig.savefig('results/expr3/specificity_t7_proportion/cre_pval_dotplot_all.pdf')
 fig
 # %%
 fig, cre_orders = cre_pval_dotplot(q_res1, activity_res1, pd.Index(cre_orders), celltypes_to_use, cre_info, reorder_cres=False, figsize=(15, 15))
+fig.savefig('results/expr3/specificity_t7_proportion/cre_pval_dotplot_1.pdf')
 fig
 # %%
 fig, cre_orders = cre_pval_dotplot(q_res2, activity_res2, pd.Index(cre_orders), celltypes_to_use, cre_info, reorder_cres=False, figsize=(15, 15))
+fig.savefig('results/expr3/specificity_t7_proportion/cre_pval_dotplot_2.pdf')
 fig
 
 
 
-# %% visualization
-# find expressed counts
-have_target_cres = q_res.columns[np.nanmin(q_res.loc[celltypes_to_use], axis=0) < 0.05]
-crects = (starrfish3.get_cre_expression() > 0).groupby(starrfish3.get_celltypes()).sum()
-creprop = (crects.loc[celltypes_to_use] / crects.loc[celltypes_to_use].sum())
-creprop_max = pd.concat((creprop.max(), crects.loc[celltypes_to_use].sum()), axis=1)
-creprop_max.columns = ['max_prop', 'sum_counts']
-creprop_maskq = creprop.copy()
-creprop_maskq[(q_res.loc[celltypes_to_use] > 0.05) | (pd.isna(q_res))] = np.nan
-# get max prop and sum counts
-creprop_maskq_max = pd.concat((creprop_maskq.max(), crects.loc[celltypes_to_use].sum()), axis=1)
-creprop_maskq_max.columns = ['max_prop', 'sum_counts']
-
-
 # %% visualize some example
+have_target_cres = q_res.columns[np.nanmin(q_res.loc[celltypes_to_use], axis=0) < 0.05]
 for cre in have_target_cres:
     # rank by q-value
-    # %%
     cre_q_values = q_res.loc[celltypes_to_use, cre]
     cre_q_values = cre_q_values[cre_q_values <= 0.05]
     # order by rank
@@ -367,13 +437,32 @@ for cre in have_target_cres:
     fig = starrfish3.plot_gene(
         cre, average_by_celltype=False, # if true, all cells from same cell type will have same value
         cell_types_to_visualize=cell_types_to_visualize, # only visualize some cell types
+        norm_by_negative_control_cell_type_sum=False,
+        binarize_t7=True,
         scale_size_by='counts', # scale size by "counts": normalized counts; or "celltype_number": number of cells in the cell type
         log=True, transpose=-1, flipx=-1, sz_max=50,
-        norm_by_negative_control_cell_type_mean=True, aggregate_background_celltypes=True,
-        use_celltype_cmap=True, select_region_by_best_celltype=False,
         cell_types_to_use=celltypes_to_use)
-    fig.savefig(f'results/expr3/cortex_rename_cre_significant_celltypes_avarega_background/{cre}.pdf')
-    fig
+    fig.savefig(f'results/expr3/specificity_t7_proportion/cre_significant_celltypes/{cre}.pdf')
+
+
+# %% plot correlation with three modalities
+cell_types_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
+cre_corr, celltype_corr = starrfish3.corr_atac_cpm(cell_types_to_use=reproducible_celltypes, cres_to_use=None, acvitity_df = activity_res)
+cre_corr['libsize'] = starrfish3.lib_size['counts'].loc[cre_corr.index]
+celltype_corr['celltype_sec1'] = starrfish3_sec1.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_sec2'] = starrfish3_sec2.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_full'] = starrfish3.get_celltypes().value_counts().reindex(celltype_corr.index).fillna(0).values
+celltype_corr['celltype_n'] = np.minimum(celltype_corr['celltype_sec1'], celltype_corr['celltype_sec2'])
+# plot cre_corr scatter
+n_cre_threshold = 10
+n_celltype_threshold = 10
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
+fig, ax = plt.subplots(figsize=(2, 4))
+sns.violinplot(data=cre_corr[(cre_corr['effect_n'] >= n_celltype_threshold)], y='pearson', ax=ax)
+
+
 
 # %% Next chapter, do precision analysis
 from plots import get_pr_df, plot_bar
@@ -390,9 +479,9 @@ starrfish3.chromatin_o = (chromatin_o.copy() + chromatin_a.copy()) / 2
 starrfish3.chromatin_a = chromatin_a.copy()
 
 # %% get precision recall
-pr_df1 = get_pr_df(qvalue_df=q_res.loc[cortex_celltypes, reproducible_cres].copy(), cell_types_to_use=cortex_celltypes,
-                   starrfish_obj=starrfish3, metric = ['atac_cpm', 'h3k4me1_cpm', 'h3k27ac_cpm'], z_cutoffs=[0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5])
-pr_df2 = get_pr_df(qvalue_df=q_res.loc[cortex_celltypes, reproducible_cres].copy(), cell_types_to_use=cortex_celltypes,
+pr_df1 = get_pr_df(qvalue_df=q_res.loc[reproducible_celltypes, reproducible_cres].copy(), cell_types_to_use=reproducible_celltypes,
+                   starrfish_obj=starrfish3, metric = ['atac_cpm', 'h3k4me1_cpm', 'h3k27ac_cpm'], z_cutoffs=[0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5])
+pr_df2 = get_pr_df(qvalue_df=q_res.loc[reproducible_celltypes, reproducible_cres].copy(), cell_types_to_use=reproducible_celltypes,
                    starrfish_obj=starrfish3, 
                    metric=['chromatin_o', 'chromatin_a'], z_cutoffs=[0.5])
 # pr_df3 = get_pr_df(qvalue_df=q_toplot.loc[cell_types_to_use_nc_2].copy(), cell_types_to_use=cell_types_to_use,
@@ -426,9 +515,9 @@ df_bar = df_bar[df_bar['target'] >= 2].copy()
 df_bar_all2['mod'] = df_bar_all2.index
 fig, ax = plot_bar(df_bar, figsize=(6, 6), flip_axis=True, fontsize=6)
 # ALL cell type
-df_bar_all = pd.concat([df_bar_all1], axis=0, ignore_index=True)
+df_bar_all = pd.concat([df_bar_all1, df_bar_all2], axis=0, ignore_index=True)
 fig, ax = plot_bar(df_bar_all, figsize=(6, 6), flip_axis=True, fontsize=6)
-fig.savefig('results/expr3/specificity_norm_neg_control/precision_recall_all.pdf')
+fig.savefig('results/expr3/specificity_t7_proportion/precision_recall_all.pdf')
 
 # %%
 overall_precision = pr_df1.groupby(['mod', 'z_cutoff'])['correct'].sum() / pr_df1.groupby(['mod', 'z_cutoff'])['all_pred'].sum()

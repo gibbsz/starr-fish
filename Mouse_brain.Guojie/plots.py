@@ -1704,11 +1704,13 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
     if flip_axis:
         fig, axes = plt.subplots(2, len(height_ratios), figsize=figsize, sharex=False, sharey=False,
                                  gridspec_kw={'height_ratios': [1, 0.2], 'width_ratios': height_ratios[::-1]})
-    else:    
+    else:
         fig, axes = plt.subplots(len(height_ratios), 2, figsize=figsize, sharex=False, sharey=False,
                                  gridspec_kw={'height_ratios': height_ratios, 'width_ratios': [0.2, 1]})
     # Plot each CRE type in a subplot
     final_order = []
+    legend_handles = None
+    legend_labels = None
     for i, category in enumerate(cre_categories):
         if len(cre_categories) == 1:
             ax = axes[1]
@@ -1831,10 +1833,13 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
         if category in ['On-target', 'Mix-target', 'Off-target', 'CREs']:
             # Capture legend handles/labels from the FIRST subplot before removal
             legend = ax.get_legend()
-            legend_handles = legend.legend_handles
-            legend_labels = [t.get_text() for t in legend.get_texts()]
-        # Remove subplot legend
-        ax.get_legend().remove()
+            if legend is not None and legend_handles is None:
+                legend_handles = legend.legend_handles
+                legend_labels = [t.get_text() for t in legend.get_texts()]
+        # Remove subplot legend if it exists
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.remove()
         if category == 'CREs':
             if flip_axis:
                 # remove x axis label
@@ -1852,7 +1857,8 @@ def cre_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, positive
         else:
             ax.tick_params(axis='y', which='both', labelsize=8)
     # put legends to right of the plot
-    fig.legend(legend_handles, legend_labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10, labelspacing=1.5)
+    if legend_handles is not None and legend_labels is not None:
+        fig.legend(legend_handles, legend_labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10, labelspacing=1.5)
     fig.tight_layout()
     plt.close(fig)
     return fig, final_order
@@ -1946,12 +1952,12 @@ def cre_proportion_dotplot(proportion, activity, cres_to_use, cell_types_to_use,
         ax.set_xticklabels(ax.get_xticklabels(), rotation=90)
         ax.set_xlabel('Cell Types')
     legend = ax.get_legend()
-    legend_handles = legend.legend_handles
-    legend_labels = [t.get_text() for t in legend.get_texts()]
-    # remove legend
-    ax.get_legend().remove()
-    # put legends to right of the plot
-    fig.legend(legend_handles, legend_labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10, labelspacing=1.5)
+    if legend is not None:
+        legend_handles = legend.legend_handles
+        legend_labels = [t.get_text() for t in legend.get_texts()]
+        legend.remove()
+        # put legends to right of the plot
+        fig.legend(legend_handles, legend_labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10, labelspacing=1.5)
     fig.tight_layout()
     plt.close(fig)
     return fig
@@ -1972,7 +1978,6 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
     try:
         cell_types_to_use_cluster_number = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[cell_types_to_use].values
     except KeyError:
-        cell_types_to_use_cluster_number = cluster_annotation_term['class_number'].groupby(cluster_annotation_term['class']).first().loc[cell_types_to_use].values
         try:
             cell_types_to_use_cluster_number = cluster_annotation_term['class_number'].groupby(cluster_annotation_term['class']).first().loc[cell_types_to_use].values
         except KeyError:
@@ -2075,11 +2080,13 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
     if flip_axis:
         fig, axes = plt.subplots(2, len(height_ratios), figsize=figsize, sharex=False, sharey=False,
                                     gridspec_kw={'height_ratios': [1, 0.2], 'width_ratios': height_ratios[::-1]})
-    else:    
+    else:
         fig, axes = plt.subplots(len(height_ratios), 2, figsize=figsize, sharex=False, sharey=False,
                                 gridspec_kw={'height_ratios': height_ratios, 'width_ratios': [0.2, 1]})
     # Plot each CRE type in a subplot
     final_order = []
+    legend_handles = None
+    legend_labels = None
     for i, category in enumerate(cre_categories):
         if len(cre_categories) == 1:
             ax = axes[1]
@@ -2215,10 +2222,13 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
         if category in ['On-target', 'Mix-target', 'Off-target', 'CREs']:
             # Capture legend handles/labels from the FIRST subplot before removal
             legend = ax.get_legend()
-            legend_handles = legend.legend_handles
-            legend_labels = [t.get_text() for t in legend.get_texts()]
-        # Remove subplot legend
-        ax.get_legend().remove()
+            if legend is not None and legend_handles is None:
+                legend_handles = legend.legend_handles
+                legend_labels = [t.get_text() for t in legend.get_texts()]
+        # Remove subplot legend if it exists
+        legend = ax.get_legend()
+        if legend is not None:
+            legend.remove()
         if category == 'CREs':
             if flip_axis:
                 # remove x axis label
@@ -2236,7 +2246,8 @@ def celltype_pval_dotplot(q_value, activity, cres_to_use, cell_types_to_use, pos
         else:
             ax.tick_params(axis='y', which='both', labelsize=8)
     # put legends to right of the plot
-    fig.legend(legend_handles, legend_labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10, labelspacing=1.5)
+    if legend_handles is not None and legend_labels is not None:
+        fig.legend(legend_handles, legend_labels, loc='center left', bbox_to_anchor=(1, 0.5), fontsize=10, labelspacing=1.5)
     fig.tight_layout()
     plt.close(fig)
     return fig, final_order
@@ -2422,7 +2433,7 @@ def get_pr_df(qvalue_df, starrfish_obj, cell_types_to_use,
     for z in z_cutoffs:
         for mod in metric:
             if mod.endswith('_cpm'):
-                mod_cpm = getattr(starrfish_obj, mod).copy()
+                mod_cpm = getattr(starrfish_obj, mod).copy() * 10
                 qvalue_df = qvalue_df[qvalue_df.columns.intersection(mod_cpm.columns)]
                 mod_cpm = mod_cpm.loc[qvalue_df.index.intersection(mod_cpm.index), qvalue_df.columns]
                 # log transform
@@ -2457,7 +2468,14 @@ def get_pr_df(qvalue_df, starrfish_obj, cell_types_to_use,
     # order by allen institute's nominature
     cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
     cluster_annotation_term['subclass'] = cluster_annotation_term['subclass'].str.replace('/', '-')
-    res_df['cell_type_rank'] = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[res_df['cell_type']].values
+    try:
+        res_df['cell_type_rank'] = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[res_df['cell_type']].values
+    except KeyError:
+        try:
+            res_df['cell_type_rank'] = cluster_annotation_term['class_number'].groupby(cluster_annotation_term['class']).first().loc[res_df['cell_type']].values
+        except KeyError:
+            # alphabetical order
+            res_df['cell_type_rank'] = pd.Categorical(res_df['cell_type']).codes
     # reorder by cell type rank
     res_df = res_df.sort_values(by=['cell_type_rank']).reset_index(drop=True)
     return res_df
@@ -2494,13 +2512,18 @@ def plot_bar(df_bar, legend_loc=None, figsize=(3, 1.5), flip_axis=False, fontsiz
             x = patch.get_x() + patch.get_width() / 2
             ax.text(x, precision, str(recall), va='center', ha='center', fontsize=fontsize)
     # set limits and labels based on orientation
+    max_precision = df_bar_sorted['precision'].max()
+    # Handle NaN or empty dataframe case
+    if pd.isna(max_precision) or len(df_bar_sorted) == 0:
+        max_precision = 1.0  # default max value
+
     if flip_axis:
-        ax.set_xlim(0, df_bar_sorted['precision'].max() + 0.02)
+        ax.set_xlim(0, max_precision + 0.02)
         ax.tick_params(axis='x', labelsize=fontsize)
         ax.set_xlabel('Precision', fontsize=6)
         ax.set_ylabel('')
     else:
-        ax.set_ylim(0, df_bar_sorted['precision'].max() + 0.02)
+        ax.set_ylim(0, max_precision + 0.02)
         ax.tick_params(axis='y', labelsize=fontsize)
         ax.set_ylabel('Precision', fontsize=6)
         ax.set_xlabel('')
@@ -2617,13 +2640,55 @@ def _process_average_foldchange_specificity_test(args):
     return (celltype, cre, p_frequentist, p_rank_test)
 
 def average_foldchange_specificity_test(res_avg, res):
-
-    p_mat_frequentist = res['pvalue_activity'].copy()
-    p_mat_rank_test = res['pvalue_activity'].copy()
+    # match the index of res['pvalue_activity'] and res_avg['celltype_activity_array']
+    common_idxes = res['pvalue_activity'].index.intersection(res_avg['celltype_activity'].index)
+    
+    p_mat_frequentist = res['pvalue_activity'].loc[common_idxes].copy()
+    p_mat_rank_test = res['pvalue_activity'].loc[common_idxes].copy()
 
     # Pre-compute log transformations
-    log_celltype_activity = np.log(res_avg['celltype_activity_array'])
-    log_activity = np.log(res['activity_array'])
+    res_avg_idxes = res_avg['celltype_activity'].index.get_indexer(common_idxes)
+    log_celltype_activity = np.log(res_avg['celltype_activity_array'][:, res_avg_idxes, :])
+    res_idxes = res['celltype_activity'].index.get_indexer(common_idxes)
+    log_activity = np.log(res['activity_array'][:, res_idxes, :])
+
+    # Prepare arguments for parallel processing with pre-extracted data slices
+    args_list = [(celltype, cre,
+                  log_celltype_activity[:, j, i],  # res_avg_data
+                  log_activity[:, j, i],           # bkg_data
+                  res_avg['celltype_activity_array'][:, j, i],  # orig_celltype
+                  res['activity_array'][:, j, i])   # orig_activity
+                 for i, cre in enumerate(p_mat_rank_test.columns)
+                 for j, celltype in enumerate(p_mat_rank_test.index)]
+
+    # Use joblib for better NumPy array handling
+    n_cores = min(multiprocessing.cpu_count(), 20)  # Use more cores
+    print(f"Processing {len(p_mat_rank_test.columns)} CREs x {len(p_mat_rank_test.index)} celltypes with {n_cores} cores...")
+
+    results = Parallel(n_jobs=n_cores, backend='threading', verbose=1)(
+        delayed(_process_average_foldchange_specificity_test)(args) for args in args_list
+    )
+
+    # Fill results back into matrices
+    for celltype, cre, p_freq, p_rank in results:
+        p_mat_frequentist.loc[celltype, cre] = p_freq
+        p_mat_rank_test.loc[celltype, cre] = p_rank
+
+    return p_mat_rank_test, p_mat_frequentist
+
+
+def average_foldchange_specificity_t_test(res_avg, res):
+    # match the index of res['pvalue_activity'] and res_avg['celltype_activity_array']
+    common_idxes = res['pvalue_activity'].index.intersection(res_avg['celltype_activity'].index)
+    
+    p_mat_frequentist = res['pvalue_activity'].loc[common_idxes].copy()
+    p_mat_rank_test = res['pvalue_activity'].loc[common_idxes].copy()
+
+    # Pre-compute log transformations
+    res_avg_idxes = res_avg['celltype_activity'].index.get_indexer(common_idxes)
+    log_celltype_activity = np.log(res_avg['celltype_activity_array'][:, res_avg_idxes, :])
+    res_idxes = res['celltype_activity'].index.get_indexer(common_idxes)
+    log_activity = np.log(res['activity_array'][:, res_idxes, :])
 
     # Prepare arguments for parallel processing with pre-extracted data slices
     args_list = [(celltype, cre,
@@ -2651,6 +2716,64 @@ def average_foldchange_specificity_test(res_avg, res):
 
 def q_value_correction(p_mat):
     q_mat = p_mat.values.flatten().copy().astype(float)
-    q_mat[~np.isnan(q_mat)] = multitest.multipletests(q_mat[~np.isnan(q_mat)], method='fdr_bh')[1]
+    non_nan_mask = ~np.isnan(q_mat)
+    # Only perform correction if there are non-NaN values
+    if non_nan_mask.sum() > 0:
+        q_mat[non_nan_mask] = multitest.multipletests(q_mat[non_nan_mask], method='fdr_bh')[1]
     q_mat = pd.DataFrame(q_mat.reshape(p_mat.shape), index=p_mat.index, columns=p_mat.columns)
     return q_mat
+
+def plot_reproducibility(overlap_df, celltypes_to_use, percentage_col, bar1_col, bar2_col, bar1_label, bar2_label):
+    # get cell type orders
+    # order by allen institute's nominature
+    cluster_annotation_term = pd.read_csv('Data/abc_atlas/cluster_annotation_term.csv', index_col=0)
+    cluster_annotation_term['subclass'] = cluster_annotation_term['subclass'].str.replace('/', '-')
+    cluster_annotation_term['class'] = cluster_annotation_term['class'].str.replace('/', '-')
+    try:
+        overlap_df['cell_type_rank'] = cluster_annotation_term['subclass_number'].groupby(cluster_annotation_term['subclass']).first().loc[overlap_df.index].values
+        overlap_df = overlap_df.sort_values(['cell_type_rank'], ascending=[True])
+    except KeyError:
+        try:
+            overlap_df['cell_type_rank'] = cluster_annotation_term['class_number'].groupby(cluster_annotation_term['class']).first().loc[overlap_df.index].values
+            overlap_df = overlap_df.sort_values(['cell_type_rank'], ascending=[True])
+        except KeyError:
+            # alphabetical order
+            overlap_df['cell_type_rank'] = pd.Categorical(overlap_df.index).codes
+            overlap_df = overlap_df.sort_values(['cell_type_rank'], ascending=[True])
+    # Filter for cell types with celltype_n >= 1000
+    overlap_df_filtered = overlap_df[overlap_df['celltype_n'] >= 1000]
+    overlap_df_filtered = overlap_df_filtered.loc[celltypes_to_use.intersection(overlap_df_filtered.index)]
+    overlap_df_filtered = overlap_df_filtered.sort_values(['cell_type_rank'], ascending=[True])
+    # Create x positions
+    x = np.arange(len(overlap_df_filtered))
+    cell_types = overlap_df_filtered.index
+
+    fig, (ax1, ax2) = plt.subplots(nrows=2, figsize=(14, 12))
+
+    # Left y-axis for percentage
+    sns.barplot(x=cell_types, y=overlap_df_filtered[percentage_col], ax=ax1, alpha=0.8)
+    ax1.set_xlabel('Cell Types')
+    ax1.set_ylabel('Reproducibility (percentage)', color='black')
+    ax1.tick_params(axis='y', labelcolor='black')
+    plt.setp(ax1.get_xticklabels(), rotation=45, ha='right')
+
+    # Right y-axis for bar values
+    x_pos = np.arange(len(overlap_df_filtered))
+
+    # Set colors based on column names
+    color1 = 'orange' if bar1_col == 'sec1' else 'green' if bar1_col == 'sec2' else 'pink'
+    color2 = 'orange' if bar2_col == 'sec1' else 'green' if bar2_col == 'sec2' else 'pink'
+
+    # Plot bars side-by-side
+    bar_width = 0.35
+    ax2.bar(x_pos - bar_width/2, overlap_df_filtered[bar1_col], bar_width, alpha=0.8, color=color1, label=bar1_label)
+    ax2.bar(x_pos + bar_width/2, overlap_df_filtered[bar2_col], bar_width, alpha=0.8, color=color2, label=bar2_label)
+    ax2.set_xticks(x_pos)
+    ax2.set_xticklabels(cell_types, rotation=45, ha='right')
+    ax2.set_xlabel('Cell Types')
+    ax2.set_ylabel('# significant CREs', color='black')
+    ax2.tick_params(axis='y', labelcolor='black')
+    ax2.legend(loc='upper right')
+
+    plt.tight_layout()
+    return fig

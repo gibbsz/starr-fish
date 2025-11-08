@@ -19,7 +19,7 @@ import numpy as np
 try:
     PWD = os.path.dirname(os.path.abspath(__file__))
 except NameError:
-    PWD = '/share/vault/Users/gz2294/starr-fish/Mouse_brain.Guojie'
+    PWD = '/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/Mouse_brain.Guojie'
 sys.path.append(f'{PWD}/')
 os.chdir(PWD)
 from utils import STARRFISH
@@ -583,47 +583,62 @@ def get_cre_precision_df(res_q_df, starrfish, celltypes_to_use=None, use='atac-p
             precision_df.loc[cre, 'recall'] = precision_df.loc[cre, 'TP'] / precision_df.loc[cre, 'Total']
         if precision_df.loc[cre, use] != 0:
             precision_df.loc[cre, 'precision'] = precision_df.loc[cre, 'TP'] / precision_df.loc[cre, use]
+        # add the atac-peaks cell types
+        precision_df.loc[cre, 'atac_peaks_celltypes'] = ', '.join(atac_peaks) if atac_peaks is not None else ''
     precision_df = precision_df.sort_values('precision', ascending=False)
     return precision_df
 reproducible_cres = overlap_cre_df.index[overlap_cre_df['reproducibility'].isin(['All Reproducible', 'Partially Reproducible'])]
-cre_precision_df_repro = get_cre_precision_df(res_q_right[reproducible_cres].copy(), starrfish3, use='atac-peak')
-repro_percentage = sum(cre_precision_df_repro['TP'] > 0) / len(cre_precision_df_repro)
-print(f'Reproducible CREs with TP > 0: {repro_percentage:.3f}')
 
-cre_precision_df_all = get_cre_precision_df(res_q_right, starrfish3, use='atac-peak')
-all_percentage = sum(cre_precision_df_all['TP'] > 0) / len(cre_precision_df_all)
-print(f'All CREs with TP > 0: {all_percentage:.3f}')
+for use in ['atac-peak', 'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a']:
+    for y in ['precision', 'percentage']:
+        cre_precision_df_repro = get_cre_precision_df(res_q_right[reproducible_cres].copy(), starrfish3, use=use)
+        repro_percentage = sum(cre_precision_df_repro['TP'] > 0) / len(cre_precision_df_repro)
+        repro_precision = sum(cre_precision_df_repro['TP'] > 0) / sum(cre_precision_df_repro[use] > 0)
+        print(f'{use} Reproducible CREs percentage: {sum(cre_precision_df_repro['TP'] > 0)} out of {len(cre_precision_df_repro)}')
+        print(f'{use} Reproducible CREs precision: {sum(cre_precision_df_repro['TP'] > 0)} out of {sum(cre_precision_df_repro[use] > 0)}')
+        cre_precision_df_repro.to_csv(f'results/expr3/cre_{y}_reproducible_{use.replace("-", "_")}_df.csv')
+        
+        cre_precision_df_all = get_cre_precision_df(res_q_right, starrfish3, use=use)
+        all_percentage = sum(cre_precision_df_all['TP'] > 0) / len(cre_precision_df_all)
+        all_precision = sum(cre_precision_df_all['TP'] > 0) / sum(cre_precision_df_all[use] > 0)
+        print(f'{use} All CREs percentage: {sum(cre_precision_df_all['TP'] > 0)} out of {len(cre_precision_df_all)}')
+        print(f'{use} All CREs precision: {sum(cre_precision_df_all['TP'] > 0)} out of {sum(cre_precision_df_all[use] > 0)}')
+        cre_precision_df_all.to_csv(f'results/expr3/cre_{y}_all_{use.replace("-", "_")}_df.csv')
 
-# Plot CRE precision as two separate side-by-side bar plots
-repro_tp_count = sum(cre_precision_df_repro['TP'] > 0)
-repro_total_count = len(cre_precision_df_repro)
-all_tp_count = sum(cre_precision_df_all['TP'] > 0)
-all_total_count = len(cre_precision_df_all)
+        # Plot CRE precision as two separate side-by-side bar plots
+        repro_tp_count = sum(cre_precision_df_repro['TP'] > 0)
+        repro_total_count = len(cre_precision_df_repro)
+        all_tp_count = sum(cre_precision_df_all['TP'] > 0)
+        all_total_count = len(cre_precision_df_all)
 
-cre_precision_data = pd.DataFrame({
-    'CRE_type': ['Sec1-Sec2\nReproducible CREs', 'All CREs'],
-    'Percentage': [repro_percentage, all_percentage],
-    'TP_count': [repro_tp_count, all_tp_count]
-})
+        cre_precision_data = pd.DataFrame({
+            'CRE_type': ['Sec1-Sec2\nReproducible CREs', 'All CREs'],
+            'percentage': [repro_percentage, all_percentage],
+            'precision': [repro_precision, all_precision],
+            'TP_count': [repro_tp_count, all_tp_count]
+        })
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6, 4))
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6, 4))
 
-# Left plot: Percentage
-sns.barplot(data=cre_precision_data, x='CRE_type', y='Percentage', ax=ax1, alpha=0.8)
-ax1.set_xlabel('CRE Categories')
-ax1.set_ylabel('Percentage')
-ax1.set_ylim(0, 1)
-ax1.set_title('Percentage of CREs on-target')
+        # Left plot: Percentage
+        sns.barplot(data=cre_precision_data, x='CRE_type', y=y, ax=ax1, alpha=0.8)
+        ax1.set_xlabel('CRE Categories')
+        ax1.set_ylabel('Percentage')
+        ax1.set_ylim(0, 1)
+        if y == 'precision':
+            ax1.set_title('Precision of CREs on-target')
+        else:
+            ax1.set_title('Percentage of CREs on-target')
 
-# Right plot: Count
-sns.barplot(data=cre_precision_data, x='CRE_type', y='TP_count', ax=ax2, alpha=0.8, color='orange')
-ax2.set_xlabel('CRE Categories')
-ax2.set_ylabel('Number')
-ax2.set_title('Count of CREs on-target')
+        # Right plot: Count
+        sns.barplot(data=cre_precision_data, x='CRE_type', y='TP_count', ax=ax2, alpha=0.8, color='orange')
+        ax2.set_xlabel('CRE Categories')
+        ax2.set_ylabel('Number')
+        ax2.set_title('Count of CREs on-target')
 
-plt.tight_layout()
-fig.savefig('results/expr3/cre_precision_percentage_barplot.pdf')
-plt.show()
+        plt.tight_layout()
+        fig.savefig(f'results/expr3/cre_{y}_barplot_{use.replace("-", "_")}.pdf')
+        plt.show()
 
 
 
