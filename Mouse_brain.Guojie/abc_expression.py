@@ -155,9 +155,12 @@ wmb_pseudobulk_logtpm = log_tpm_transform(wmb_pseudobulk)
 starrfish_pseudobulk_logtpm = log_tpm_transform(starrfish_pseudobulk)
 # %% 
 # raw correlation of wmb_pseudobulk vs starrfish_pseudobulk, row by row
-correlation_matrix = pd.DataFrame(index=wmb_pseudobulk_logtpm.index, columns=starrfish_pseudobulk_logtpm.index)
-for subclass in wmb_pseudobulk_logtpm.index:
-    for starrfish_subclass in starrfish_pseudobulk_logtpm.index:
+# drop the cell types with < 100 cells in starrfish_pseudobulk_logtpm
+celltype_n = adata3.obs['subclass_name'].value_counts()
+correlation_matrix = pd.DataFrame(index=celltype_n.index[celltype_n >= 100],
+                                  columns=celltype_n.index[celltype_n >= 100])
+for subclass in correlation_matrix.index:
+    for starrfish_subclass in correlation_matrix.columns:
         corr = np.corrcoef(
             wmb_pseudobulk_logtpm.loc[subclass],
             starrfish_pseudobulk_logtpm.loc[starrfish_subclass]
@@ -226,6 +229,10 @@ confusion_matrix = confusion_matrix.reindex(
     index=sorted(confusion_matrix.index),
     columns=sorted(confusion_matrix.columns)
 )
+# filter out cells with < 100 original cells
+celltype_n = adata3.obs['subclass_name'].value_counts()
+confusion_matrix = confusion_matrix.loc[celltype_n.index[celltype_n >= 100],
+                                        celltype_n.index[celltype_n >= 100]]
 # plot heatmap
 fig, ax = plt.subplots(figsize=(25, 20))
 sns.heatmap(confusion_matrix, annot=False, cmap='Reds', ax=ax)
@@ -236,5 +243,16 @@ fig.tight_layout()
 fig.savefig(f'{PWD}/results/expr3/abc_atlas/WMB_vs_STARRFISH_label_transfer_confusion_heatmap.pdf')
 # %% save adata3 with new labels
 adata3.write_h5ad(f'{PWD}/Data/scdata_5_28_2025_BRBB500gn_final_CRE_T7CRE_integrate_wmb.h5ad')
+
+# %% plot confusion matrix diag vs celltype_n
+confusion_diag = confusion_matrix.values.diagonal()
+fig, ax = plt.subplots(figsize=(6, 6))
+sns.scatterplot(x=celltype_n[celltype_n >= 100], y=confusion_diag, ax=ax)
+ax.set_title('Label Transfer Accuracy vs Original Cell Type Size')
+ax.set_xlabel('Original Cell Type Size (Number of Cells)')
+ax.set_ylabel('Label Transfer Accuracy (Diagonal of Confusion Matrix)')
+ax.set_xscale('log')
+fig.tight_layout()
+fig.savefig(f'{PWD}/results/expr3/abc_atlas/WMB_vs_STARRFISH_label_transfer_accuracy_vs_size.pdf')
 
 # %%

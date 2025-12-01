@@ -230,6 +230,19 @@ sns.violinplot(data=celltype_corr[(celltype_corr['effect_n'] >= n_cre_threshold)
 reproducible_celltypes = celltype_corr.index[(celltype_corr['effect_n'] >= n_cre_threshold) & (celltype_corr['celltype_n'] >= 1000)]
 fig.savefig('results/expr3/reproducibility_by_celltype_pearson_violin_sec1_sec2.pdf')
 
+# %% plot by CRE
+n_cre_threshold = 10
+n_celltype_threshold = 10
+fig, ax = plt.subplots(figsize=(4, 4))
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] > 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='blue', ax=ax)
+sns.scatterplot(data=cre_corr[(cre_corr['pearson_p'] <= 0.05) & (cre_corr['effect_n'] >= n_celltype_threshold)], x='libsize', y='pearson', color='red', ax=ax)
+ax.set_xscale('log')
+fig.savefig('results/expr3/reproducibility_by_cre_pearson_sec1_sec2.pdf')
+# %% plot pearson R in violin
+fig, ax = plt.subplots(figsize=(2, 4))
+sns.violinplot(data=cre_corr[(cre_corr['effect_n'] >= n_celltype_threshold)], y='pearson', ax=ax)
+fig.savefig('results/expr3/reproducibility_by_cre_pearson_violin_sec1_sec2.pdf')
+
 
 
 # %% check overlap of significant CREs between sections
@@ -398,22 +411,22 @@ fig.show()
 # %%
 from plots import celltype_pval_dotplot
 # cell_types_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
-cell_types_to_use = reproducible_celltypes
+cell_types_to_use = res_q1_right.index.intersection(res_q2_right.index)
 cres_to_use = res_q_right.columns[np.nanmin(res_q_right.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
 cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
 fig, final_order = celltype_pval_dotplot(res_q_right, res_df_fdc, cres_to_use, cell_types_to_use,
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(12, 30))
+                                         figsize=(50, 30))
 fig.savefig('results/expr3/celltype_pval_dotplot_all.pdf')
 # %%
 fig, final_order = celltype_pval_dotplot(res_q1_right, res_df1_fdc, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(12, 30))
+                                         figsize=(50, 30))
 fig.savefig('results/expr3/celltype_pval_dotplot_sec1.pdf')
 # %%
 fig, final_order = celltype_pval_dotplot(res_q2_right, res_df2_fdc, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(12, 30))
+                                         figsize=(50, 30))
 fig.savefig('results/expr3/celltype_pval_dotplot_sec2.pdf')
 
 
@@ -543,10 +556,10 @@ overall_tp = {}
 overall_total = {}
 for use in ['atac-peak', 'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a']:
     precision_df = get_precision_df(res_q_right, starrfish3, use=use)
-    fig = plot_atac_precision(precision_df, reproducible_celltypes, use=use)
+    fig = plot_atac_precision(precision_df, cell_types_to_use, use=use)
     fig.savefig(f'results/expr3/{use.replace("-", "_")}_precision_by_celltype.pdf')
-    overall_tp[use] = precision_df.loc[reproducible_celltypes, 'TP'].sum()
-    overall_total[use] = precision_df.loc[reproducible_celltypes, use].sum()
+    overall_tp[use] = precision_df.loc[cell_types_to_use, 'TP'].sum()
+    overall_total[use] = precision_df.loc[cell_types_to_use, use].sum()
 # %% plot bar of overall precision
 cre_precision_data = pd.DataFrame({
     'Assay': list(overall_tp.keys()),
@@ -563,6 +576,46 @@ for i, row in cre_precision_data.iterrows():
     ax.text(i, row['Precision'] + 0.02, f"{row['TP']}/{row['Total']}", ha='center', va='bottom')
 fig.savefig('results/expr3/overall_precision_barplot.pdf')
 fig.show()
+
+# %% make reproducible q value df
+celltypes_overlap = res_q1_right.index.intersection(res_q2_right.index)
+res_q_reproducible = (
+    (res_q1_right.loc[celltypes_overlap] <= 0.05) & (res_q2_right.loc[celltypes_overlap] <= 0.05)
+)
+res_q_right_reproducible = res_q_right.loc[celltypes_overlap].copy()
+res_q_right_reproducible[~res_q_reproducible] = np.nan
+res_df_fdc_reproducible = res_df_fdc.loc[celltypes_overlap].copy()
+res_df_fdc_reproducible[res_q_right_reproducible.isna()] = np.nan
+# do for sec1
+res_q1_right_reproducible = res_q1_right.loc[celltypes_overlap].copy()
+res_q1_right_reproducible[~res_q_reproducible] = np.nan
+res_df1_fdc_reproducible = res_df1_fdc.loc[celltypes_overlap].copy()
+res_df1_fdc_reproducible[res_q1_right_reproducible.isna()] = np.nan
+# do for sec2
+res_q2_right_reproducible = res_q2_right.loc[celltypes_overlap].copy()
+res_q2_right_reproducible[~res_q_reproducible] = np.nan
+res_df2_fdc_reproducible = res_df2_fdc.loc[celltypes_overlap].copy()
+res_df2_fdc_reproducible[res_q2_right_reproducible.isna()] = np.nan
+# %% plot dotplot for reproducible CRE-Celltype pairs
+from plots import celltype_pval_dotplot
+cell_types_to_use = res_q_right_reproducible.index[np.nanmin(res_q_right_reproducible, axis=1) < 0.05]
+cres_to_use = res_q_right_reproducible.columns[np.nanmin(res_q_right_reproducible.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
+cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
+fig, final_order = celltype_pval_dotplot(res_q_right_reproducible, res_df_fdc_reproducible, cres_to_use, cell_types_to_use,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
+                                         figsize=(12, 20))
+fig.savefig('results/expr3/celltype_pval_dotplot_reproducible_CRE_CellType_pair.pdf')
+# %%
+fig, final_order = celltype_pval_dotplot(res_q1_right_reproducible, res_df1_fdc_reproducible, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
+                                         figsize=(12, 20))
+fig.savefig('results/expr3/celltype_pval_dotplot_sec1_reproducible_CRE_CellType_pair.pdf')
+# %%
+fig, final_order = celltype_pval_dotplot(res_q2_right_reproducible, res_df2_fdc_reproducible, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
+                                         figsize=(12, 20))
+fig.savefig('results/expr3/celltype_pval_dotplot_sec2_reproducible_CRE_CellType_pair.pdf')
+
 
 # %% number of on-target CREs
 def get_cre_precision_df(res_q_df, starrfish, celltypes_to_use=None, use='atac-peak'):
@@ -588,35 +641,39 @@ def get_cre_precision_df(res_q_df, starrfish, celltypes_to_use=None, use='atac-p
     precision_df = precision_df.sort_values('precision', ascending=False)
     return precision_df
 reproducible_cres = overlap_cre_df.index[overlap_cre_df['reproducibility'].isin(['All Reproducible', 'Partially Reproducible'])]
-
+cre_precision_data_all = []
 for use in ['atac-peak', 'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a']:
     for y in ['precision', 'percentage']:
-        cre_precision_df_repro = get_cre_precision_df(res_q_right[reproducible_cres].copy(), starrfish3, use=use)
-        repro_percentage = sum(cre_precision_df_repro['TP'] > 0) / len(cre_precision_df_repro)
+        cre_precision_df_repro = get_cre_precision_df(res_q_right_reproducible[reproducible_cres].copy(), starrfish3, use=use)
+        repro_percentage = sum(cre_precision_df_repro['TP'] > 0) / sum(~cre_precision_df_repro['TP'].isna())
         repro_precision = sum(cre_precision_df_repro['TP'] > 0) / sum(cre_precision_df_repro[use] > 0)
-        print(f'{use} Reproducible CREs percentage: {sum(cre_precision_df_repro['TP'] > 0)} out of {len(cre_precision_df_repro)}')
-        print(f'{use} Reproducible CREs precision: {sum(cre_precision_df_repro['TP'] > 0)} out of {sum(cre_precision_df_repro[use] > 0)}')
         cre_precision_df_repro.to_csv(f'results/expr3/cre_{y}_reproducible_{use.replace("-", "_")}_df.csv')
         
-        cre_precision_df_all = get_cre_precision_df(res_q_right, starrfish3, use=use)
-        all_percentage = sum(cre_precision_df_all['TP'] > 0) / len(cre_precision_df_all)
+        cre_precision_df_all = get_cre_precision_df(res_q_right_reproducible, starrfish3, use=use)
+        all_percentage = sum(cre_precision_df_all['TP'] > 0) / sum(~cre_precision_df_all['TP'].isna())
         all_precision = sum(cre_precision_df_all['TP'] > 0) / sum(cre_precision_df_all[use] > 0)
-        print(f'{use} All CREs percentage: {sum(cre_precision_df_all['TP'] > 0)} out of {len(cre_precision_df_all)}')
-        print(f'{use} All CREs precision: {sum(cre_precision_df_all['TP'] > 0)} out of {sum(cre_precision_df_all[use] > 0)}')
         cre_precision_df_all.to_csv(f'results/expr3/cre_{y}_all_{use.replace("-", "_")}_df.csv')
 
         # Plot CRE precision as two separate side-by-side bar plots
         repro_tp_count = sum(cre_precision_df_repro['TP'] > 0)
-        repro_total_count = len(cre_precision_df_repro)
+        repro_total_count = sum(~cre_precision_df_repro['TP'].isna())
         all_tp_count = sum(cre_precision_df_all['TP'] > 0)
-        all_total_count = len(cre_precision_df_all)
+        all_total_count = sum(~cre_precision_df_all['TP'].isna())
+        print(f'{use} Reproducible CREs percentage: {repro_tp_count} out of {repro_total_count}')
+        print(f'{use} Reproducible CREs precision: {repro_tp_count} out of {sum(cre_precision_df_repro[use] > 0)}')
+        print(f'{use} All CREs percentage: {all_tp_count} out of {all_total_count}')
+        print(f'{use} All CREs precision: {all_tp_count} out of {sum(cre_precision_df_all[use] > 0)}')
 
         cre_precision_data = pd.DataFrame({
             'CRE_type': ['Sec1-Sec2\nReproducible CREs', 'All CREs'],
             'percentage': [repro_percentage, all_percentage],
             'precision': [repro_precision, all_precision],
-            'TP_count': [repro_tp_count, all_tp_count]
+            'TP_count': [repro_tp_count, all_tp_count],
+            'Total_count': [sum(cre_precision_df_repro[use] > 0), sum(cre_precision_df_all[use] > 0)],
+            'use': [use, use],
+            'y': [y, y]
         })
+        cre_precision_data_all.append(cre_precision_data)
 
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(6, 4))
 
@@ -627,19 +684,54 @@ for use in ['atac-peak', 'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a']:
         ax1.set_ylim(0, 1)
         if y == 'precision':
             ax1.set_title('Precision of CREs on-target')
+            # Add precision counts as text
+            ax1.text(0, cre_precision_data.loc[0, y] + 0.02,
+                    f"{repro_tp_count}/{sum(cre_precision_df_repro[use] > 0)}",
+                    ha='center', va='bottom', fontsize=9)
+            ax1.text(1, cre_precision_data.loc[1, y] + 0.02,
+                    f"{all_tp_count}/{sum(cre_precision_df_all[use] > 0)}",
+                    ha='center', va='bottom', fontsize=9)
         else:
             ax1.set_title('Percentage of CREs on-target')
+            # Add percentage counts as text
+            ax1.text(0, cre_precision_data.loc[0, y] + 0.02,
+                    f"{repro_tp_count}/{repro_total_count}",
+                    ha='center', va='bottom', fontsize=9)
+            ax1.text(1, cre_precision_data.loc[1, y] + 0.02,
+                    f"{all_tp_count}/{all_total_count}",
+                    ha='center', va='bottom', fontsize=9)
 
         # Right plot: Count
         sns.barplot(data=cre_precision_data, x='CRE_type', y='TP_count', ax=ax2, alpha=0.8, color='orange')
         ax2.set_xlabel('CRE Categories')
         ax2.set_ylabel('Number')
         ax2.set_title('Count of CREs on-target')
+        # Add count values as text on bars
+        for i, row in cre_precision_data.iterrows():
+            ax2.text(i, row['TP_count'] + max(cre_precision_data['TP_count']) * 0.01,
+                    f"{int(row['TP_count'])}",
+                    ha='center', va='bottom', fontsize=9)
 
         plt.tight_layout()
         fig.savefig(f'results/expr3/cre_{y}_barplot_{use.replace("-", "_")}.pdf')
         plt.show()
 
+# %%
+cre_precision_data = pd.concat(cre_precision_data_all, axis=0, ignore_index=True)
+cre_precision_data = cre_precision_data[cre_precision_data['use'].isin(['atac-peak', 'chromatin-a'])]
+cre_precision_data = cre_precision_data.drop_duplicates()
+cre_precision_data = cre_precision_data[cre_precision_data['CRE_type'] == 'Sec1-Sec2\nReproducible CREs']
+cre_precision_data = cre_precision_data[cre_precision_data['y'] == 'precision']
+fig, ax = plt.subplots(figsize=(3, 4))
+sns.barplot(data=cre_precision_data, x='use', y='precision', ax=ax, alpha=0.8)
+ax.set_xlabel('Assay')
+ax.set_ylabel('Precision')
+ax.set_ylim(0, max(cre_precision_data['precision']) + 0.1)
+for idx, (i, row) in enumerate(cre_precision_data.iterrows()):
+    ax.text(idx, row['precision'] + 0.01, f"{int(row['TP_count'])}/{int(row['Total_count'])}",
+            ha='center', va='bottom', fontsize=9)
+fig.savefig('results/expr3/cre_precision_reproducible_cres_barplot.pdf')
+fig.show()
 
 
 # %% do upset plot of ATAC, H3K4me1, H3K27ac, Chromatin A

@@ -1918,14 +1918,16 @@ class STARRFISH:
             cre_celltypes_expression = np.log1p(cre_celltypes_expression)
         return cre_celltypes_expression, cell_types_to_use
 
-    def get_celltypes(self) -> pd.Series:
+    def get_celltypes(self, celltype_tag=None) -> pd.Series:
         # get the cell types
-        return self.get_tag(self.celltype_tag)
+        if celltype_tag is None:
+            celltype_tag = self.celltype_tag
+        return self.get_tag(celltype_tag)
     
-    def get_cre_celltypes(self, celltypes) -> tuple[pd.DataFrame, pd.Series]:
+    def get_cre_celltypes(self, celltypes, celltype_tag=None) -> tuple[pd.DataFrame, pd.Series]:
         # get cre for the cell types
         cres = self.get_cre_expression().copy()
-        celltypes_orig = self.get_celltypes().copy()
+        celltypes_orig = self.get_celltypes(celltype_tag=celltype_tag).copy()
         # get the cre for the cell types
         cre_celltypes = cres[celltypes_orig.isin(celltypes)]
         celltypes = celltypes_orig[celltypes_orig.isin(celltypes)]
@@ -2060,17 +2062,17 @@ class STARRFISH:
                   norm_by_negative_control_cell_type_mean=False, norm_by_negative_control_cell_type_sum=False, norm_by_negative_control_single_cell=False,
                   binarize_t7=False, norm_by_t7_cell_type_mean=True, norm_by_t7_cell_type_sum=False, norm_by_t7_single_cell=False,
                   log=True, calibrate=None, aggregate_background_celltypes=False,
-                  cell_types_to_use=None, cell_types_to_visualize=None, 
+                  cell_types_to_use=None, cell_types_to_visualize=None, cell_types_tag=None,
                   nmin=None, nmax=None, sz_background=3, sz_min=5, sz_max=30, 
                   scale_size_by: Literal['counts', 'celltype_number']='counts',  
-                  cmap_name='Reds', use_celltype_cmap=False,
+                  cmap_name='Reds', use_celltype_cmap=False, celltype_cmap=None,
                   x_region=None, y_region=None, select_region_by_best_celltype=False, 
                   show_celltypes=True, show_scalebar=True, show_title=True,
                   transpose=1, flipx=1, flipy=1, smooth_k=None, figsize=(30, 10)):
         tag = self.spatial_tag.split(':')[1]
         Xcells = self.adata.obsm[tag][:, ::transpose] * [flipx, flipy]
         # Track cell types for coloring later
-        celltypes = self.get_celltypes().values.copy()
+        celltypes = self.get_celltypes(cell_types_tag).values.copy()
         # get best cell type
         if use == 'CRE' or use == 'T7CRE':
             if cell_types_to_visualize is None:
@@ -2078,6 +2080,11 @@ class STARRFISH:
                 best_celltype = [self.adata.uns['CRE_info'].loc[gene, 'best_subclass']]
             else:
                 best_celltype = list(cell_types_to_visualize)
+        else:
+            if cell_types_to_visualize is not None:
+                best_celltype = list(cell_types_to_visualize)
+            else:
+                best_celltype = []
         # Get expression data
         if use == 'X':
             gene_idx = list(self.adata.var.index).index(gene)
@@ -2087,12 +2094,12 @@ class STARRFISH:
         # if average_by_celltype, then average by cell type
         if average_by_celltype:
             # get the cell types
-            cell_type_cts = cts.groupby(self.get_celltypes()).mean()
+            cell_type_cts = cts.groupby(self.get_celltypes(cell_types_tag)).mean()
             # only assign to non-zero cts
             zero_cts = cts == 0
-            cts = cell_type_cts.loc[self.get_celltypes()].copy()
+            cts = cell_type_cts.loc[self.get_celltypes(cell_types_tag)].copy()
             # rename the index
-            cts.index = self.get_celltypes().index
+            cts.index = self.get_celltypes(cell_types_tag).index
             # set the zero counts to 0
             cts[zero_cts] = 0
         negative_control_cres = self.get_negative_control_cres()
@@ -2103,19 +2110,19 @@ class STARRFISH:
         if binarize_t7 and t7_expression is not None:
             t7_expression = (t7_expression > 0).astype(float)
         # get the background cell types
-        background_celltypes = self.get_celltypes()[~self.get_celltypes().isin(best_celltype)]
+        background_celltypes = self.get_celltypes(cell_types_tag)[~self.get_celltypes(cell_types_tag).isin(best_celltype)]
         if cell_types_to_use is not None:
             background_celltypes = background_celltypes[background_celltypes.isin(cell_types_to_use)]
         # if norm_by_negative_control, then normalize by negative control
         if norm_by_negative_control_cell_type_mean:
-            negative_control_counts = self.get_cre_expression()[negative_control_cres].sum(axis=1).groupby(self.get_celltypes()).mean()
+            negative_control_counts = self.get_cre_expression()[negative_control_cres].sum(axis=1).groupby(self.get_celltypes(cell_types_tag)).mean()
             if aggregate_background_celltypes:
                 # average the negative control counts for background cell types
                 background_negative_control_counts = self.get_cre_expression().loc[background_celltypes.index][negative_control_cres].sum(axis=1).mean()
                 # assign the background negative control counts to all background cell types
                 negative_control_counts.loc[background_celltypes.unique()] = background_negative_control_counts
             if norm_by_t7_cell_type_mean or norm_by_t7_cell_type_sum or norm_by_t7_single_cell:
-                negative_control_t7 = t7_expression[negative_control_cres].sum(axis=1).groupby(self.get_celltypes()).mean()
+                negative_control_t7 = t7_expression[negative_control_cres].sum(axis=1).groupby(self.get_celltypes(cell_types_tag)).mean()
                 if aggregate_background_celltypes:
                     background_negative_control_t7 = t7_expression.loc[background_celltypes.index][negative_control_cres].sum(axis=1).mean()
                     # assign the background negative control t7 to all background cell types
@@ -2123,13 +2130,13 @@ class STARRFISH:
                 # fill a 0.5 value to avoid inf results
                 negative_control_t7[negative_control_t7 == 0] = 0.5
                 negative_control_counts = negative_control_counts / negative_control_t7
-            norm_factor = negative_control_counts.loc[self.get_celltypes()]
+            norm_factor = negative_control_counts.loc[self.get_celltypes(cell_types_tag)]
             cts = cts / norm_factor.values
         if norm_by_negative_control_cell_type_sum:
-            negative_control_counts = self.get_cre_expression()[negative_control_cres].sum(axis=1).groupby(self.get_celltypes()).sum()
+            negative_control_counts = self.get_cre_expression()[negative_control_cres].sum(axis=1).groupby(self.get_celltypes(cell_types_tag)).sum()
             if aggregate_background_celltypes:
                 # get the background cell types
-                background_celltypes = self.get_celltypes()[~self.get_celltypes().isin(best_celltype)]
+                background_celltypes = self.get_celltypes(cell_types_tag)[~self.get_celltypes(cell_types_tag).isin(best_celltype)]
                 if cell_types_to_use is not None:
                     background_celltypes = background_celltypes[background_celltypes.isin(cell_types_to_use)]
                 # average the negative control counts for background cell types
@@ -2137,7 +2144,7 @@ class STARRFISH:
                 # assign the background negative control counts to all background cell types
                 negative_control_counts.loc[background_celltypes.unique()] = background_negative_control_counts
             if norm_by_t7_cell_type_sum or norm_by_t7_cell_type_mean or norm_by_t7_single_cell:
-                negative_control_t7 = t7_expression[negative_control_cres].sum(axis=1).groupby(self.get_celltypes()).sum()
+                negative_control_t7 = t7_expression[negative_control_cres].sum(axis=1).groupby(self.get_celltypes(cell_types_tag)).sum()
                 if aggregate_background_celltypes:
                     background_negative_control_t7 = t7_expression.loc[background_celltypes.index][negative_control_cres].sum(axis=1).sum()
                     # assign the background negative control t7 to all background cell types
@@ -2145,24 +2152,24 @@ class STARRFISH:
                 # fill a 0.5 value to avoid inf results
                 negative_control_t7[negative_control_t7 == 0] = 0.5
                 negative_control_counts = negative_control_counts / negative_control_t7
-            norm_factor = negative_control_counts.loc[self.get_celltypes()]
+            norm_factor = negative_control_counts.loc[self.get_celltypes(cell_types_tag)]
             cts = cts / norm_factor.values
         if norm_by_negative_control_single_cell:
             negative_control_counts = self.get_cre_expression()[negative_control_cres].sum(axis=1)
             cts = cts / negative_control_counts.values
         if norm_by_t7_cell_type_mean and t7_expression is not None:
-            t7_counts = t7_expression[gene].groupby(self.get_celltypes()).mean()
-            norm_factor = t7_counts.loc[self.get_celltypes()]
-            norm_factor.index = self.get_celltypes().index
+            t7_counts = t7_expression[gene].groupby(self.get_celltypes(cell_types_tag)).mean()
+            norm_factor = t7_counts.loc[self.get_celltypes(cell_types_tag)]
+            norm_factor.index = self.get_celltypes(cell_types_tag).index
             if aggregate_background_celltypes:
                 background_t7_counts = t7_expression.loc[background_celltypes.index][gene].mean()
                 # assign the background t7 counts to all background cell types
                 norm_factor.loc[background_celltypes.index] = background_t7_counts
             cts = cts / norm_factor.values
         if norm_by_t7_cell_type_sum and t7_expression is not None:
-            t7_counts = t7_expression[gene].groupby(self.get_celltypes()).sum()
-            norm_factor = t7_counts.loc[self.get_celltypes()]
-            norm_factor.index = self.get_celltypes().index
+            t7_counts = t7_expression[gene].groupby(self.get_celltypes(cell_types_tag)).sum()
+            norm_factor = t7_counts.loc[self.get_celltypes(cell_types_tag)]
+            norm_factor.index = self.get_celltypes(cell_types_tag).index
             if aggregate_background_celltypes:
                 background_t7_counts = t7_expression.loc[background_celltypes.index][gene].sum()
                 # assign the background t7 counts to all background cell types
@@ -2178,7 +2185,7 @@ class STARRFISH:
             cts = cts - calibrate
         if cell_types_to_use is not None:
             # only cts for the cell types to use
-            cts[~self.get_celltypes().isin(cell_types_to_use)] = np.nan
+            cts[~self.get_celltypes(cell_types_tag).isin(cell_types_to_use)] = np.nan
         # Prepare plot parameters
         cts = np.nan_to_num(cts, nan=0, posinf=0, neginf=0)
         # if smoothing_k is not None, then smooth the data spatially by k-nearest neighbors
@@ -2196,7 +2203,7 @@ class STARRFISH:
             ymax = Xcells[:, 1].max()
             for celltype in best_celltype:
                 # get the cell type
-                celltype_idx = self.get_celltypes() == celltype
+                celltype_idx = self.get_celltypes(cell_types_tag) == celltype
                 # get the coordinates of the cells
                 x_min = Xcells[celltype_idx, 0].min()
                 x_max = Xcells[celltype_idx, 0].max()
@@ -2224,8 +2231,8 @@ class STARRFISH:
             cts = cts[select_region]
             celltypes = celltypes[select_region]
         # filter out nmin
-        cts_background = cts[self.get_celltypes().isin(background_celltypes)]
-        cts_foreground = cts[self.get_celltypes().isin(best_celltype)]
+        cts_background = cts[self.get_celltypes(cell_types_tag).isin(background_celltypes)]
+        cts_foreground = cts[self.get_celltypes(cell_types_tag).isin(best_celltype)]
         if nmin is not None:
             cts[cts < nmin] = nmin
         else:
@@ -2233,22 +2240,25 @@ class STARRFISH:
         if nmax is not None:
             cts[cts > nmax] = nmax
         else:
-            nmax=cts_foreground.max()
+            if cts_foreground.size == 0:
+                nmax = cts.max()
+            else:
+                nmax=cts_foreground.max()
         ncts = np.clip((cts-nmin)/(nmax-nmin), 0, 1)
         if scale_size_by == 'counts':
             size = sz_min + ncts * (sz_max - sz_min)
         elif scale_size_by == 'celltype_number':
             # get the number of cell types
-            celltype_number = self.get_celltypes().value_counts().loc[self.get_celltypes()].values
+            celltype_number = self.get_celltypes(cell_types_tag).value_counts().loc[self.get_celltypes(cell_types_tag)].values
             # if not in cell_types_to_use, then set to 0
-            celltype_number[~self.get_celltypes().isin(cell_types_to_use)] = 0
+            celltype_number[~self.get_celltypes(cell_types_tag).isin(cell_types_to_use)] = 0
             # normalize the celltype_number
             celltype_number = celltype_number.max() - celltype_number + 1
             celltype_number = np.clip(celltype_number / celltype_number.max(), 0, 1)
             size = sz_min + celltype_number * (sz_max - sz_min)
         cmap = plt.get_cmap(cmap_name)(ncts)
         # Create single figure and axes
-        if use == 'CRE' or use == 'T7CRE':
+        if use == 'CRE' or use == 'T7CRE' or use == 'T7Sum':
             if show_celltypes:
                 fig = plt.figure(figsize=figsize, facecolor='k')
                 gs = fig.add_gridspec(1, 3, width_ratios=[0.49, 0.02, 0.49], wspace=0.05)
@@ -2264,9 +2274,9 @@ class STARRFISH:
                             )
                 ax_ctypes = fig.add_subplot(gs[2])
                 cluster_color_map = plot_cluster_scdata(
-                    self.adata, clusters=best_celltype, use='subclass',
+                    self.adata, clusters=best_celltype, use=cell_types_tag.split(':')[1] if cell_types_tag is not None else 'subclass',
                     transpose=transpose, flipx=flipx, flipy=flipy,
-                    x_region=x_region, y_region=y_region,
+                    x_region=x_region, y_region=y_region, cmap=celltype_cmap,
                     sbig=20, small=3, ax=ax_ctypes, plot_legend=show_title, show_title=show_title)
             else:
                 fig = plt.figure(figsize=figsize, facecolor='k')
@@ -2275,7 +2285,8 @@ class STARRFISH:
                 ax_cbar = fig.add_subplot(gs[1])
                 # Create cluster_color_map for all cell types in cell_types_to_visualize or best_celltype
                 cluster_color_map = {}
-                celltype_cmap = self.adata.uns['cmap']
+                if celltype_cmap is None:
+                    celltype_cmap = self.adata.uns['cmap']
                 clusters_to_map = best_celltype if cell_types_to_visualize is None else list(cell_types_to_visualize)
                 for i, cluster in enumerate(clusters_to_map):
                     if isinstance(celltype_cmap, dict):

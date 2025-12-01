@@ -208,44 +208,72 @@ class_color_map = dict(zip(unique_classes, palette))
 cluster_annotation_term['color'] = cluster_annotation_term['class_id_label'].map(class_color_map)
 # assign T7 average counts to the subclass
 cluster_annotation_term['T7Avg'] = subclass_T7.loc[cluster_annotation_term['subclass_id_label']].values
-# %% plot average CRE counts per class
+# %% plot average CRE counts per class# %% plot average CRE counts per class
 for p in ['T7', 'CRE', 'ratio_NC']:
     fig, ax = plt.subplots(ncols=1, figsize=(4, 6))
-    # use the color map to color the bars
+    
+    # Prepare data - apply offset after log transform
     if p == 'T7':
-        sns.barplot(y=class_T7.index, x=class_T7.values, ax=ax, palette=class_color_map, orient='h')
+        original_data = class_T7.values
+        # Handle zeros by replacing with small positive value
+        data_clean = np.where(original_data > 0, original_data, 0.1)
+        data_log = np.log10(data_clean)
+        # Apply offset to make all log values positive
+        log_offset = -np.min(data_log) + 0.1  # Offset to make all values positive
+        data_to_plot = data_log + log_offset
+        vline_xs = [class_T7.mean(), starrfish3.get_t7_expression().sum(axis=1).mean()]
+        ticks = [1, 2, 5, 10, 20, 40]
+        tick_labels = ticks
+        tick_positions = np.log10(ticks) + log_offset  # Apply same offset to tick positions
     elif p == 'CRE':
-        sns.barplot(y=class_CRE.index, x=class_CRE.values, ax=ax, palette=class_color_map, orient='h')
+        original_data = class_CRE.values
+        data_clean = np.where(original_data > 0, original_data, 0.05)
+        data_log = np.log10(data_clean)
+        log_offset = -np.min(data_log) + 0.1
+        data_to_plot = data_log + log_offset
+        vline_xs = [class_CRE.mean(), starrfish3.get_cre_expression().sum(axis=1).mean()]
+        ticks = [0.5, 1, 2, 5, 10]
+        tick_labels = ticks
+        tick_positions = np.log10(ticks) + log_offset
     else:
         ratio = class_NC_CRE / class_NC_T7
-        sns.barplot(y=ratio.index, x=ratio.values, ax=ax, palette=class_color_map, orient='h')
+        original_data = np.where(np.isfinite(ratio.values), ratio.values, 0)
+        data_clean = np.where(original_data > 0, original_data, 0.01)
+        data_log = np.log10(data_clean)
+        log_offset = -np.min(data_log) + 0.1
+        data_to_plot = data_log + log_offset
+        vline_xs = [ratio.mean(), starrfish3.get_cre_expression().sum(axis=1).mean() / starrfish3.get_t7_expression().sum(axis=1).mean()]
+        ticks = [0.05, 0.1, 0.2, 0.5, 1]
+        tick_labels = ticks
+        tick_positions = np.log10(ticks) + log_offset
+    
+    # Plot with offset log-transformed data
+    if p == 'T7':
+        sns.barplot(y=class_T7.index, x=data_to_plot, ax=ax, palette=class_color_map, orient='h')
+    elif p == 'CRE':
+        sns.barplot(y=class_CRE.index, x=data_to_plot, ax=ax, palette=class_color_map, orient='h')
+    else:
+        sns.barplot(y=ratio.index, x=data_to_plot, ax=ax, palette=class_color_map, orient='h')
+    
     ax.set_xlabel(f'Average {p} counts per cell')
-    # make y-label to the right
     ax.yaxis.set_label_position('right')
     ax.yaxis.tick_right()
-    # flip x-axis, log scale x
-    ax.set_xscale('log')
-    # grey dash line
-    if p == 'T7':
-        vline_xs = [class_T7.mean(), starrfish3.get_t7_expression().sum(axis=1).mean()]
-        color_xs = ['grey', 'black']
-        ticks = [1, 2, 5, 10, 20, 40]
-    elif p == 'CRE':
-        vline_xs = [class_CRE.mean(), starrfish3.get_cre_expression().sum(axis=1).mean()]
-        color_xs = ['grey', 'black']
-        ticks = [0.5, 1, 2, 5, 10]
-    else:
-        vline_xs = [ratio.mean(), starrfish3.get_cre_expression().sum(axis=1).mean() / starrfish3.get_t7_expression().sum(axis=1).mean()]
-        color_xs = ['grey', 'black']
-        ticks = [0.05, 0.1, 0.2, 0.5, 1]
-    ax.set_xticks(ticks)
-    ax.set_xticklabels(ticks)
-    for vline_x, color_x in zip(vline_xs, color_xs):
-        ax.axvline(x=vline_x, color=color_x, linestyle='--', linewidth=1.5)
-    ax.set_xlim(ax.get_xlim()[::-1])
+    
+    # Set ticks at adjusted positions but show original values
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels)
+    
+    # Convert vlines with the same offset
+    for vline_x, color_x in zip(vline_xs, ['grey', 'black']):
+        if vline_x > 0:
+            vline_log = np.log10(vline_x) + log_offset
+            ax.axvline(x=vline_log, color=color_x, linestyle='--', linewidth=1.5)
+    
+    # Invert x-axis if needed
+    ax.invert_xaxis()
+    
     fig.tight_layout()
     fig.savefig(f'results/expr3/fig3/Avg_{p}_per_class.pdf')
-    
 
 # %% neuron type level
 cluster_annotation_term['nt_type_combo_label'] = cluster_annotation_term['nt_type_combo_label'].fillna('Non-neuron')
@@ -264,84 +292,155 @@ neuron_type_color_map = dict(zip(unique_neuron_types, palette))
 colors = [neuron_type_color_map[x] for x in neuron_type_T7.index]
 for p in ['T7', 'CRE', 'ratio_NC']:
     fig, ax = plt.subplots(ncols=1, figsize=(4, 6))
+    
+    # Prepare data - apply offset after log transform
     if p == 'T7':
-        sns.barplot(y=neuron_type_T7.index, x=neuron_type_T7.values, ax=ax, palette=neuron_type_color_map, orient='h')
+        original_data = neuron_type_T7.values
+        # Handle zeros by replacing with small positive value
+        data_clean = np.where(original_data > 0, original_data, 0.1)
+        data_log = np.log10(data_clean)
+        # Apply offset to make all log values positive
+        log_offset = -np.min(data_log) + 0.1  # Offset to make all values positive
+        data_to_plot = data_log + log_offset
+        vline_xs = [neuron_type_T7.mean(), starrfish3.get_t7_expression().sum(axis=1).mean()]
+        ticks = [1, 2, 5, 10, 20, 40]
+        tick_labels = ticks
+        tick_positions = np.log10(ticks) + log_offset  # Apply same offset to tick positions
     elif p == 'CRE':
-        sns.barplot(y=neuron_type_CRE.index, x=neuron_type_CRE.values, ax=ax, palette=neuron_type_color_map, orient='h')
+        original_data = neuron_type_CRE.values
+        data_clean = np.where(original_data > 0, original_data, 0.05)
+        data_log = np.log10(data_clean)
+        log_offset = -np.min(data_log) + 0.1
+        data_to_plot = data_log + log_offset
+        vline_xs = [neuron_type_CRE.mean(), starrfish3.get_cre_expression().sum(axis=1).mean()]
+        ticks = [0.5, 1, 2, 5, 10]
+        tick_labels = ticks
+        tick_positions = np.log10(ticks) + log_offset
     else:
         ratio = neuron_type_NC_CRE / neuron_type_NC_T7
-        sns.barplot(y=ratio.index, x=ratio.values, ax=ax, palette=neuron_type_color_map, orient='h')
+        original_data = np.where(np.isfinite(ratio.values), ratio.values, 0)
+        data_clean = np.where(original_data > 0, original_data, 0.01)
+        data_log = np.log10(data_clean)
+        log_offset = -np.min(data_log) + 0.1
+        data_to_plot = data_log + log_offset
+        vline_xs = [ratio.mean(), starrfish3.get_cre_expression().sum(axis=1).mean() / starrfish3.get_t7_expression().sum(axis=1).mean()]
+        ticks = [0.05, 0.1, 0.2, 0.5, 1]
+        tick_labels = ticks
+        tick_positions = np.log10(ticks) + log_offset
+    
+    # Plot with offset log-transformed data
+    if p == 'T7':
+        sns.barplot(y=neuron_type_T7.index, x=data_to_plot, ax=ax, palette=neuron_type_color_map, orient='h')
+    elif p == 'CRE':
+        sns.barplot(y=neuron_type_CRE.index, x=data_to_plot, ax=ax, palette=neuron_type_color_map, orient='h')
+    else:
+        sns.barplot(y=ratio.index, x=data_to_plot, ax=ax, palette=neuron_type_color_map, orient='h')
+    
     ax.margins(y=0)
     ax.set_xlabel(f'Average {p} counts per cell')
     ax.set_ylabel('Neuron type')
-    # make y-label to the right 
     ax.yaxis.set_label_position('right')
     ax.yaxis.tick_right()
-    # flip x-axis, log scale x
-    ax.set_xscale('log')
-    # grey dash line
-    if p == 'T7':
-        vline_xs = [neuron_type_T7.mean(), starrfish3.get_t7_expression().sum(axis=1).mean()]
-        color_xs = ['grey', 'black']
-        ticks = [1, 2, 5, 10, 20, 40]
-    elif p == 'CRE':
-        vline_xs = [neuron_type_CRE.mean(), starrfish3.get_cre_expression().sum(axis=1).mean()]
-        color_xs = ['grey', 'black']
-        ticks = [0.5, 1, 2, 5, 10]
-    else:
-        vline_xs = [ratio.mean(), starrfish3.get_cre_expression().sum(axis=1).mean() / starrfish3.get_t7_expression().sum(axis=1).mean()]
-        color_xs = ['grey', 'black']
-        ticks = [0.05, 0.1, 0.2, 0.5, 1]
-    ax.set_xticks(ticks)
-    ax.set_xticklabels(ticks)
-    for vline_x, color_x in zip(vline_xs, color_xs):
-        ax.axvline(x=vline_x, color=color_x, linestyle='--', linewidth=1.5)
-    ax.set_xlim(ax.get_xlim()[::-1])
+    
+    # Set ticks at adjusted positions but show original values
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels)
+    
+    # Convert vlines with the same offset
+    for vline_x, color_x in zip(vline_xs, ['grey', 'black']):
+        if vline_x > 0:
+            vline_log = np.log10(vline_x) + log_offset
+            ax.axvline(x=vline_log, color=color_x, linestyle='--', linewidth=1.5)
+    
+    # Invert x-axis if needed
+    ax.invert_xaxis()
+    
     fig.tight_layout()
     fig.savefig(f'results/expr3/fig3/Avg_{p}_per_neuron_type.pdf')
     
+    
+
 # %% subclass level
 # Horizontal colored bar for class
 subclass_color_map = dict(zip(cluster_annotation_term['subclass_id_label'], cluster_annotation_term['color']))
 colors = [subclass_color_map[x] for x in subclass_T7.index]
 for p in ['T7', 'CRE', 'ratio_NC']:
     fig, ax = plt.subplots(ncols=1, figsize=(4, 15))
+    
+    # Prepare data - apply offset after log transform
     if p == 'T7':
-        ax.barh(y=subclass_T7.index, width=subclass_T7.values, height=1.0, color=colors)
+        original_data = subclass_T7.values
+        # Handle zeros by replacing with small positive value
+        data_clean = np.where(original_data > 0, original_data, 0.1)
+        data_log = np.log10(data_clean)
+        # Apply offset to make all log values positive
+        log_offset = -np.min(data_log) + 0.1  # Offset to make all values positive
+        data_to_plot = data_log + log_offset
+        vline_xs = [subclass_T7.mean(), starrfish3.get_t7_expression().sum(axis=1).mean()]
+        ticks = [1, 2, 5, 10, 20, 40]
+        tick_labels = ticks
+        tick_positions = np.log10(ticks) + log_offset  # Apply same offset to tick positions
     elif p == 'CRE':
-        ax.barh(y=subclass_CRE.index, width=subclass_CRE.values, height=1.0, color=colors)
+        original_data = subclass_CRE.values
+        data_clean = np.where(original_data > 0, original_data, 0.05)
+        data_log = np.log10(data_clean)
+        log_offset = -np.min(data_log) + 0.1
+        data_to_plot = data_log + log_offset
+        vline_xs = [subclass_CRE.mean(), starrfish3.get_cre_expression().sum(axis=1).mean()]
+        ticks = [0.5, 1, 2, 5, 10]
+        tick_labels = ticks
+        tick_positions = np.log10(ticks) + log_offset
     else:
         ratio = subclass_NC_CRE / subclass_NC_T7
-        ax.barh(y=ratio.index, width=ratio.values, height=1.0, color=colors)
+        original_data = np.where(np.isfinite(ratio.values), ratio.values, 0)
+        data_clean = np.where(original_data > 0, original_data, 0.01)
+        data_log = np.log10(data_clean)
+        log_offset = -np.min(data_log) + 0.1
+        data_to_plot = data_log + log_offset
+        vline_xs = [subclass_NC_CRE.mean() / subclass_NC_T7.mean(), starrfish3.get_cre_expression().sum(axis=1).mean() / starrfish3.get_t7_expression().sum(axis=1).mean()]
+        ticks = [0.05, 0.1, 0.2, 0.5, 1]
+        tick_labels = ticks
+        tick_positions = np.log10(ticks) + log_offset
+    
+    # Plot with offset log-transformed data
+    if p == 'T7':
+        ax.barh(y=subclass_T7.index, width=data_to_plot, height=1.0, color=colors)
+    elif p == 'CRE':
+        ax.barh(y=subclass_CRE.index, width=data_to_plot, height=1.0, color=colors)
+    else:
+        ax.barh(y=ratio.index, width=data_to_plot, height=1.0, color=colors)
+    
     ax.margins(y=0)
     ax.set_xlabel(f'Average {p} counts per cell')
     # remove y-label ticks
     ax.set_yticklabels([])
     ax.set_yticks([])
-    # flip x-axis, log scale x
-    ax.set_xscale('log')
-    # grey dash line
-    if p == 'T7':
-        vline_xs = [subclass_T7.mean(), starrfish3.get_t7_expression().sum(axis=1).mean()]
-        color_xs = ['grey', 'black']
-        ticks = [1, 2, 5, 10, 20, 40]
-    elif p == 'CRE':
-        vline_xs = [subclass_CRE.mean(), starrfish3.get_cre_expression().sum(axis=1).mean()]
-        color_xs = ['grey', 'black']
-        ticks = [0.5, 1, 2, 5, 10]
-    else:
-        vline_xs = [subclass_NC_CRE.mean() / subclass_NC_T7.mean(), starrfish3.get_cre_expression().sum(axis=1).mean() / starrfish3.get_t7_expression().sum(axis=1).mean()]
-        color_xs = ['grey', 'black']
-        ticks = [0.05, 0.1, 0.2, 0.5, 1]
-    ax.set_xticks(ticks)
-    ax.set_xticklabels(ticks)
-    for vline_x, color_x in zip(vline_xs, color_xs):
-        ax.axvline(x=vline_x, color=color_x, linestyle='--', linewidth=1.5)
-    ax.set_xlim(ax.get_xlim()[::-1])
+    
+    # Set ticks at adjusted positions but show original values
+    ax.set_xticks(tick_positions)
+    ax.set_xticklabels(tick_labels)
+    
+    # Set x-axis limits to ensure proper display
+    x_min = np.min(data_to_plot) - 0.1  # Add some padding
+    x_max = np.max(data_to_plot) + 0.1  # Add some padding
+    ax.set_xlim(x_min, x_max)
+    
+    # Convert vlines with the same offset
+    for vline_x, color_x in zip(vline_xs, ['grey', 'black']):
+        if vline_x > 0:
+            vline_log = np.log10(vline_x) + log_offset
+            ax.axvline(x=vline_log, color=color_x, linestyle='--', linewidth=1.5)
+    
+    # Invert x-axis if needed
+    ax.invert_xaxis()
+    
+    # Keep y-axis reversal if needed
     ax.set_ylim(ax.get_ylim()[::-1])  # flip y-axis
+    
     fig.tight_layout()
     fig.savefig(f'results/expr3/fig3/Avg_{p}_per_subclass.pdf')
     
+
 # %% spatial plot for T7
 starrfish3.adata.obsm['T7Avg'] = pd.DataFrame({'T7Avg': subclass_T7.loc[starrfish3.adata.obs['subclass_name']].values},
                                               index=starrfish3.adata.obs.index)
@@ -350,6 +449,35 @@ fig = starrfish3.plot_gene('T7Avg', use='T7Avg',
                            norm_by_t7_cell_type_mean=False,
                            log=False, sz_min=1, sz_max=1)
 fig.savefig('results/expr3/fig3/Spatial_subclass_T7Avg.pdf')
+starrfish3.adata.obsm['T7Avg'] = pd.DataFrame({'T7Avg': class_T7.loc[starrfish3.adata.obs['class_name']].values},
+                                              index=starrfish3.adata.obs.index)
+fig = starrfish3.plot_gene('T7Avg', use='T7Avg', 
+                           norm_by_negative_control_cell_type_sum=False, 
+                           norm_by_t7_cell_type_mean=False,
+                           log=False, sz_min=1, sz_max=1)
+fig.savefig('results/expr3/fig3/Spatial_class_T7Avg.pdf')
+starrfish3.adata.obsm['T7Avg'] = pd.DataFrame({'T7Avg': neuron_type_T7.loc[neuron_type_label.values].values},
+                                              index=starrfish3.adata.obs.index)
+fig = starrfish3.plot_gene('T7Avg', use='T7Avg', 
+                           norm_by_negative_control_cell_type_sum=False, 
+                           norm_by_t7_cell_type_mean=False,
+                           log=False, sz_min=1, sz_max=1)
+fig.savefig('results/expr3/fig3/Spatial_neurontransmitter_T7Avg.pdf')
+
+
+# %% show cluster
+starrfish3.adata.obsm['T7Sum'] = pd.DataFrame({'T7Sum': starrfish3.get_t7_expression().sum(axis=1)},
+                                              index=starrfish3.adata.obs.index)
+fig = starrfish3.plot_gene('T7Sum', use='T7Sum', 
+                           norm_by_negative_control_cell_type_sum=False, 
+                           norm_by_t7_cell_type_mean=False,
+                           cell_types_tag='obs:class_name',
+                           cell_types_to_visualize=starrfish3.adata.obs['class_name'].unique().tolist(),
+                           use_celltype_cmap=True,
+                           celltype_cmap=class_color_map,
+                           log=True, sz_min=1, sz_max=1)
+fig.savefig('results/expr3/fig3/Spatial_class_T7Sum.pdf')
+
 
 # %% spatial plot for CRE
 starrfish3.adata.obsm['CREAvg'] = pd.DataFrame({'CREAvg': subclass_CRE.loc[starrfish3.adata.obs['subclass_name']].values},
@@ -359,6 +487,21 @@ fig = starrfish3.plot_gene('CREAvg', use='CREAvg',
                            norm_by_t7_cell_type_mean=False,
                            sz_min=1, sz_max=1)
 fig.savefig('results/expr3/fig3/Spatial_subclass_CREAvg.pdf')
+starrfish3.adata.obsm['CREAvg'] = pd.DataFrame({'CREAvg': class_CRE.loc[starrfish3.adata.obs['class_name']].values},
+                                              index=starrfish3.adata.obs.index)
+fig = starrfish3.plot_gene('CREAvg', use='CREAvg', 
+                           norm_by_negative_control_cell_type_sum=False, log=False,
+                           norm_by_t7_cell_type_mean=False,
+                           sz_min=1, sz_max=1)
+fig.savefig('results/expr3/fig3/Spatial_class_CREAvg.pdf')
+starrfish3.adata.obsm['CREAvg'] = pd.DataFrame({'CREAvg': neuron_type_CRE.loc[neuron_type_label.values].values},
+                                              index=starrfish3.adata.obs.index)
+fig = starrfish3.plot_gene('CREAvg', use='CREAvg', 
+                           norm_by_negative_control_cell_type_sum=False, log=False,
+                           norm_by_t7_cell_type_mean=False,
+                           sz_min=1, sz_max=1)
+fig.savefig('results/expr3/fig3/Spatial_neurontransmitter_CREAvg.pdf')
+
 
 # %% spatial plot for T7/CRE ratio at class level
 starrfish3.adata.obsm['CRE/T7'] = pd.DataFrame({'CRE/T7': (class_NC_CRE / class_NC_T7).loc[starrfish3.adata.obs['class_name']].values},
@@ -469,3 +612,4 @@ ax[1].set_ylabel('Correlation between total T7 and total CRE counts')
 fig.savefig('results/expr3/fig3/T7_CRE_total_counts_correlation_per_celltype.pdf')
 
 # %%
+
