@@ -1,1 +1,3 @@
-# starr-fish
+# STARR-FISH
+
+STARR-FISH (self transcribing active regulatory region fluorescence *in situ* hybridization) is an imaging-based method to capture the transcriptional activity of cis-regulatory elements (e.g. enhancers) in a multiplexed, spatially resolved manner at single molecule resolution. This repository includes custom Python implementations for the processing of raw image data, enhancer activity quantification, and data visualization. 
