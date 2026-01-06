@@ -39,6 +39,12 @@ from matplotlib.colors import Normalize, LinearSegmentedColormap, to_rgb
 from matplotlib.colorbar import ColorbarBase
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from matplotlib.cm import ScalarMappable
+
+# Configure matplotlib for editable PDFs/SVGs
+plt.rcParams['pdf.fonttype'] = 42  # TrueType fonts for editable text in PDFs
+plt.rcParams['ps.fonttype'] = 42   # TrueType fonts for editable text in PS files
+plt.rcParams['svg.fonttype'] = 'none'  # Keep text as text in SVG files
+
 # %% helper function to reload
 def reload(starrfish):
     import importlib
@@ -272,8 +278,13 @@ for p in ['CRE', 'T7', 'CRE/T7']:
 
 
 # %% Heatmap of CRE counts and T7 counts per cell type
-cell_types_to_use = cell_type_counts.index[(cell_type_counts['Sec1'] > 1000) & (cell_type_counts['Sec2'] > 1000) & 
+cell_types_to_use = cell_type_counts.index[(cell_type_counts['Sec1'] > 1000) & (cell_type_counts['Sec2'] > 1000) &
                                            (cell_type_counts['Exp2'] > 1000) & (cell_type_counts['Exp3'] > 1000)].map(subclass_to_subclass_name)
+# Sort cell types by numeric prefix (e.g., 041, 314, etc.)
+def get_numeric_prefix(name):
+    match = re.match(r'^(\d+)', str(name))
+    return int(match.group(1)) if match else float('inf')
+cell_types_to_use = sorted(cell_types_to_use, key=get_numeric_prefix)
 cre_anno = pd.DataFrame(data = 0, index=cell_types_to_use.to_list() + ['Negative Control'], columns=starrfish3_sec1.get_creinfo().index)
 for i in cell_types_to_use:
     cres = starrfish3_sec1.get_positive_control_cres(subclass_name_to_subclass[i], use='atac-peak')
@@ -283,26 +294,91 @@ cre_anno.loc['Negative Control', starrfish3_sec1.get_negative_control_cres()] = 
 def plot_heatmap(expression_mat_sec1, expression_mat_sec2, cell_type_sec1, cell_type_sec2, cell_types_to_use, cre_anno, log=False):
     cre_celltype_sec1 = expression_mat_sec1.groupby(cell_type_sec1).mean()
     cre_celltype_sec2 = expression_mat_sec2.groupby(cell_type_sec2).mean()
-    # sort cre by lib size
-    
-    fig, ax = plt.subplots(nrows=4, figsize=(24, 12), height_ratios=[1, 1, 0.1, 0.1])
-    toplot1 = cre_celltype_sec1.loc[cell_types_to_use, cre_whitelist].copy()
-    toplot2 = cre_celltype_sec2.loc[cell_types_to_use, cre_whitelist].copy()
+
+    # Separate negative control CREs from regular CREs
+    neg_control_cres = starrfish3_sec1.get_negative_control_cres()
+    regular_cres = cre_whitelist[~cre_whitelist.isin(neg_control_cres)]
+    nc_cres = cre_whitelist[cre_whitelist.isin(neg_control_cres)]
+
+    # Sort CREs by library size
+    lib_size = starrfish3_sec1.lib_size['counts']
+    regular_cres = regular_cres[regular_cres.isin(lib_size.index)]
+    regular_cres = lib_size.loc[regular_cres].sort_values(ascending=False).index
+    nc_cres = nc_cres[nc_cres.isin(lib_size.index)]
+    nc_cres = lib_size.loc[nc_cres].sort_values(ascending=False).index
+
+    # Create figure with wider layout to accommodate gap between regular and NC columns
+    _, ax = plt.subplots(nrows=4, ncols=2, figsize=(24, 12), height_ratios=[1, 1, 0.1, 0.1],
+                           width_ratios=[len(regular_cres), len(nc_cres)], gridspec_kw={'wspace': 0.02})
+
+    # Prepare data for regular CREs
+    toplot1_regular = cre_celltype_sec1.loc[cell_types_to_use, regular_cres].copy()
+    toplot2_regular = cre_celltype_sec2.loc[cell_types_to_use, regular_cres].copy()
+
+    # Prepare data for negative control CREs
+    toplot1_nc = cre_celltype_sec1.loc[cell_types_to_use, nc_cres].copy()
+    toplot2_nc = cre_celltype_sec2.loc[cell_types_to_use, nc_cres].copy()
+
     if log:
-        toplot1 = np.log1p(toplot1)
-        toplot2 = np.log1p(toplot2)
-    # toplot1 = toplot1.div(toplot1.max(axis=0), axis=1)
-    # toplot2 = toplot2.div(toplot2.max(axis=0), axis=1)
-    sns.heatmap(toplot1, cmap='coolwarm', ax=ax[0])
-    ax[0].set_xticks([])
-    sns.heatmap(toplot2, cmap='coolwarm', ax=ax[1])
-    ax[1].set_xticks([])
-    # mark library size
-    sns.heatmap(starrfish3_sec1.lib_size['counts'].loc[cre_anno.columns.intersection(cre_whitelist)].values.reshape(1, -1), cmap='coolwarm', ax=ax[2])
-    ax[2].set_xticks([])
-    # mark negative control
-    sns.heatmap(cre_anno.loc[['Negative Control'], cre_whitelist], cmap='coolwarm', ax=ax[3])
-    ax[3].set_xticks([])
+        toplot1_regular = np.log1p(toplot1_regular)
+        toplot2_regular = np.log1p(toplot2_regular)
+        toplot1_nc = np.log1p(toplot1_nc)
+        toplot2_nc = np.log1p(toplot2_nc)
+
+    # Calculate shared vmin and vmax for expression heatmaps
+    expr_vmin = min(toplot1_regular.min().min(), toplot2_regular.min().min(),
+                    toplot1_nc.min().min(), toplot2_nc.min().min())
+    expr_vmax = max(toplot1_regular.max().max(), toplot2_regular.max().max(),
+                    toplot1_nc.max().max(), toplot2_nc.max().max())
+
+    # Plot regular CREs (only show colorbar on the right column)
+    sns.heatmap(toplot1_regular, cmap='coolwarm', ax=ax[0, 0], cbar=False, vmin=expr_vmin, vmax=expr_vmax)
+    ax[0, 0].set_xticks([])
+    ax[0, 0].set_ylabel('Sec1')
+
+    sns.heatmap(toplot2_regular, cmap='coolwarm', ax=ax[1, 0], cbar=False, vmin=expr_vmin, vmax=expr_vmax)
+    ax[1, 0].set_xticks([])
+    ax[1, 0].set_ylabel('Sec2')
+
+    # Plot library size for regular CREs
+    lib_size_regular = lib_size.loc[regular_cres].values.reshape(1, -1)
+    lib_size_nc = lib_size.loc[nc_cres].values.reshape(1, -1)
+    lib_vmin = min(lib_size_regular.min(), lib_size_nc.min())
+    lib_vmax = max(lib_size_regular.max(), lib_size_nc.max())
+
+    sns.heatmap(lib_size_regular, cmap='coolwarm', ax=ax[2, 0], cbar=False, vmin=lib_vmin, vmax=lib_vmax)
+    ax[2, 0].set_xticks([])
+    ax[2, 0].set_ylabel('Lib size')
+
+    # Plot negative control annotation for regular CREs
+    sns.heatmap(cre_anno.loc[['Negative Control'], regular_cres], cmap='coolwarm', ax=ax[3, 0],
+                cbar=False, vmin=0, vmax=1)
+    ax[3, 0].set_xticks([])
+    ax[3, 0].set_ylabel('NC annotation')
+
+    # Plot negative control CREs (with shared colorbars on the right)
+    sns.heatmap(toplot1_nc, cmap='coolwarm', ax=ax[0, 1], cbar=True, yticklabels=False,
+                vmin=expr_vmin, vmax=expr_vmax, cbar_kws={'label': 'Expression'})
+    ax[0, 1].set_xticks([])
+    ax[0, 1].set_ylabel('')
+    ax[0, 1].set_title('Negative Controls', fontsize=10)
+
+    sns.heatmap(toplot2_nc, cmap='coolwarm', ax=ax[1, 1], cbar=True, yticklabels=False,
+                vmin=expr_vmin, vmax=expr_vmax, cbar_kws={'label': 'Expression'})
+    ax[1, 1].set_xticks([])
+    ax[1, 1].set_ylabel('')
+
+    # Plot library size for NC CREs
+    sns.heatmap(lib_size_nc, cmap='coolwarm', ax=ax[2, 1], cbar=True, yticklabels=False,
+                vmin=lib_vmin, vmax=lib_vmax, cbar_kws={'label': 'Library size'})
+    ax[2, 1].set_xticks([])
+    ax[2, 1].set_ylabel('')
+
+    # Plot negative control annotation for NC CREs
+    sns.heatmap(cre_anno.loc[['Negative Control'], nc_cres], cmap='coolwarm', ax=ax[3, 1],
+                cbar=True, yticklabels=False, vmin=0, vmax=1, cbar_kws={'label': 'NC'})
+    ax[3, 1].set_xticks([])
+    ax[3, 1].set_ylabel('')
 
 cell_type_sec1 = starrfish3_sec1.get_tag('obs:subclass_name')
 cell_type_sec2 = starrfish3_sec2.get_tag('obs:subclass_name')
@@ -310,6 +386,137 @@ plot_heatmap(starrfish3_sec1.get_cre_expression(), starrfish3_sec2.get_cre_expre
 plot_heatmap(starrfish3_sec1.get_t7_expression(), starrfish3_sec2.get_t7_expression(), cell_type_sec1, cell_type_sec2, cell_types_to_use, cre_anno)
 plot_heatmap(starrfish3_sec1.get_cre_expression()>0, starrfish3_sec2.get_cre_expression()>0, cell_type_sec1, cell_type_sec2, cell_types_to_use, cre_anno)
 plot_heatmap(starrfish3_sec1.get_t7_expression()>0, starrfish3_sec2.get_t7_expression()>0, cell_type_sec1, cell_type_sec2, cell_types_to_use, cre_anno)
+
+# %% plot all
+
+def plot_single_heatmap(expression_mat, cell_type, cell_types_to_use, cre_anno, log=False, title='', figsize=(24, 9), vmin=None, vmax=None):
+    cre_celltype = expression_mat.groupby(cell_type).mean()
+
+    # Separate negative control CREs from regular CREs
+    neg_control_cres = starrfish3_sec1.get_negative_control_cres()
+    regular_cres = cre_whitelist[~cre_whitelist.isin(neg_control_cres)]
+    nc_cres = cre_whitelist[cre_whitelist.isin(neg_control_cres)]
+
+    # Sort CREs by library size
+    lib_size = starrfish3_sec1.lib_size['counts']
+    regular_cres = regular_cres[regular_cres.isin(lib_size.index)]
+    regular_cres = lib_size.loc[regular_cres].sort_values(ascending=False).index
+    nc_cres = nc_cres[nc_cres.isin(lib_size.index)]
+    nc_cres = lib_size.loc[nc_cres].sort_values(ascending=False).index
+
+    # Create figure with 3 columns: regular CREs, NC CREs, and colorbar
+    # Smaller height ratios for lib size and NC annotation rows
+    fig, ax = plt.subplots(nrows=3, ncols=3, figsize=figsize, height_ratios=[1, 0.05, 0.05],
+                           width_ratios=[len(regular_cres), len(nc_cres), 5],
+                           gridspec_kw={'wspace': 0.05, 'hspace': 0.05})
+
+    # Prepare data
+    toplot_regular = cre_celltype.loc[cell_types_to_use, regular_cres].copy()
+    toplot_nc = cre_celltype.loc[cell_types_to_use, nc_cres].copy()
+
+    # Apply log transformation if requested
+    if log:
+        # Transform: log1p(x * 1000)
+        toplot_regular = np.log1p(toplot_regular * 1000)
+        toplot_nc = np.log1p(toplot_nc * 1000)
+
+    # Calculate or use provided vmin and vmax for expression heatmaps
+    if vmin is None:
+        expr_vmin = min(toplot_regular.min().min(), toplot_nc.min().min())
+    else:
+        if log:
+            expr_vmin = np.log1p(vmin * 1000)
+        else:
+            expr_vmin = vmin
+
+    if vmax is None:
+        expr_vmax = max(toplot_regular.max().max(), toplot_nc.max().max())
+    else:
+        if log:
+            expr_vmax = np.log1p(vmax * 1000)
+        else:
+            expr_vmax = vmax
+
+    # Plot regular CREs
+    im_expr_reg = sns.heatmap(toplot_regular, cmap='coolwarm', ax=ax[0, 0], cbar=False, vmin=expr_vmin, vmax=expr_vmax)
+    ax[0, 0].set_xticks([])
+    ax[0, 0].set_ylabel(title if title else 'Expression')
+
+    # Plot library size for regular CREs
+    lib_size_regular = lib_size.loc[regular_cres].values.reshape(1, -1)
+    lib_size_nc = lib_size.loc[nc_cres].values.reshape(1, -1)
+    lib_vmin = min(lib_size_regular.min(), lib_size_nc.min())
+    lib_vmax = max(lib_size_regular.max(), lib_size_nc.max())
+
+    im_lib_reg = sns.heatmap(lib_size_regular, cmap='coolwarm', ax=ax[1, 0], cbar=False, vmin=lib_vmin, vmax=lib_vmax)
+    ax[1, 0].set_xticks([])
+    ax[1, 0].set_ylabel('Lib size', fontsize=8)
+
+    # Plot negative control annotation for regular CREs
+    im_nc_reg = sns.heatmap(cre_anno.loc[['Negative Control'], regular_cres], cmap='coolwarm', ax=ax[2, 0],
+                            cbar=False, vmin=0, vmax=1)
+    ax[2, 0].set_xticks([])
+    ax[2, 0].set_ylabel('NC annotation', fontsize=8)
+
+    # Plot negative control CREs
+    im_expr_nc = sns.heatmap(toplot_nc, cmap='coolwarm', ax=ax[0, 1], cbar=False, yticklabels=False,
+                             vmin=expr_vmin, vmax=expr_vmax)
+    ax[0, 1].set_xticks([])
+    ax[0, 1].set_ylabel('')
+    ax[0, 1].set_title('Negative Controls', fontsize=10)
+
+    # Plot library size for NC CREs
+    im_lib_nc = sns.heatmap(lib_size_nc, cmap='coolwarm', ax=ax[1, 1], cbar=False, yticklabels=False,
+                            vmin=lib_vmin, vmax=lib_vmax)
+    ax[1, 1].set_xticks([])
+    ax[1, 1].set_ylabel('')
+
+    # Plot negative control annotation for NC CREs
+    im_nc_nc = sns.heatmap(cre_anno.loc[['Negative Control'], nc_cres], cmap='coolwarm', ax=ax[2, 1],
+                           cbar=False, yticklabels=False, vmin=0, vmax=1)
+    ax[2, 1].set_xticks([])
+    ax[2, 1].set_ylabel('')
+
+    # Create separate colorbars in the third column
+    # Expression colorbar
+    cbar_expr_label = 'Expression (log scale)' if log else 'Expression'
+    cbar_expr = fig.colorbar(im_expr_nc.collections[0], cax=ax[0, 2], label=cbar_expr_label)
+    # Format colorbar to show original scale if log transform was applied
+    if log:
+        tick_locs = cbar_expr.ax.get_yticks()
+        tick_labels = [(np.expm1(tick) / 1000) for tick in tick_locs]
+        formatted_labels = [f'{label:.2g}' for label in tick_labels]
+        cbar_expr.ax.set_yticklabels(formatted_labels)
+    else:
+        # Format non-log scale to 2 significant digits as well
+        tick_locs = cbar_expr.ax.get_yticks()
+        formatted_labels = [f'{tick:.2g}' for tick in tick_locs]
+        cbar_expr.ax.set_yticklabels(formatted_labels)
+
+    # Library size colorbar with 2 significant digits
+    cbar_lib = fig.colorbar(im_lib_nc.collections[0], cax=ax[1, 2], label='Library size')
+    tick_locs_lib = cbar_lib.ax.get_yticks()
+    formatted_labels_lib = [f'{tick:.2g}' for tick in tick_locs_lib]
+    cbar_lib.ax.set_yticklabels(formatted_labels_lib)
+
+    # NC annotation colorbar with 2 significant digits
+    cbar_nc = fig.colorbar(im_nc_nc.collections[0], cax=ax[2, 2], label='NC')
+    tick_locs_nc = cbar_nc.ax.get_yticks()
+    formatted_labels_nc = [f'{tick:.2g}' for tick in tick_locs_nc]
+    cbar_nc.ax.set_yticklabels(formatted_labels_nc)
+
+    return fig
+
+cell_types_to_use = cell_type_counts.index[(cell_type_counts['Exp3'] > 1000)].map(subclass_to_subclass_name)
+cell_types_to_use = sorted(cell_types_to_use, key=get_numeric_prefix)
+# Example usage for starrfish3_sec1
+fig1 = plot_single_heatmap(starrfish3.get_cre_expression(), starrfish3.get_celltypes().map(subclass_to_subclass_name), 
+                           cell_types_to_use, cre_anno, title='CRE', figsize=(18, 18), log=True)
+fig1.savefig('results/expr3/cre_celltype_heatmap.pdf', bbox_inches='tight')
+
+fig2 = plot_single_heatmap(starrfish3.get_t7_expression(), starrfish3.get_celltypes().map(subclass_to_subclass_name), 
+                           cell_types_to_use, cre_anno, title='T7', figsize=(18, 18), log=True)
+fig2.savefig('results/expr3/t7_celltype_heatmap.pdf', bbox_inches='tight')
 
 
 

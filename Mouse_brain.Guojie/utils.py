@@ -2256,7 +2256,12 @@ class STARRFISH:
             celltype_number = celltype_number.max() - celltype_number + 1
             celltype_number = np.clip(celltype_number / celltype_number.max(), 0, 1)
             size = sz_min + celltype_number * (sz_max - sz_min)
-        cmap = plt.get_cmap(cmap_name)(ncts)
+
+        # Create custom colormap from white to light red for better contrast
+        from matplotlib.colors import LinearSegmentedColormap
+        custom_cmap = LinearSegmentedColormap.from_list('white_to_red', ['#FFFFFF', '#FF6B6B'])
+        cmap = custom_cmap(ncts)
+
         # Create single figure and axes
         if use == 'CRE' or use == 'T7CRE' or use == 'T7Sum':
             if show_celltypes:
@@ -2348,23 +2353,26 @@ class STARRFISH:
                 legend_sizes = sz_min + (sz_max - sz_min) * legend_scaled_sizes
                 legend_alphas = legend_vals  # Directly scale alpha from value
 
+                # Get colors from the same colormap as main plot
+                legend_colors = custom_cmap(legend_vals)
+
                 # Plot circles in ax_cbar
-                dot_spacing = 0.15  # smaller = tighter packing
-                for i, (val, sz, alpha) in enumerate(zip(legend_cts, legend_sizes, legend_alphas)):
+                dot_spacing = 0.08  # smaller = tighter packing
+                for i, (val, sz, alpha, color) in enumerate(zip(legend_cts, legend_sizes, legend_alphas, legend_colors)):
                     x = i * dot_spacing
-                    ax_cbar.scatter(x, 0.25, s=sz, alpha=alpha, color='#00FF00', edgecolors='none')
+                    ax_cbar.scatter(x, 0.25, s=sz, alpha=alpha, color=color, edgecolors='none')
 
                 # Add only min and max labels
-                ax_cbar.text(-0.6, 0.25, f'{legend_cts[0]:.2f}', va='center', ha='center', color='white', fontsize=12)
-                ax_cbar.text(1.4, 0.25, f'{legend_cts[-1]:.2f}', va='center', ha='center', color='white', fontsize=12)
+                ax_cbar.text(-0.3, 0.25, f'{legend_cts[0]:.2f}', va='center', ha='center', color='white', fontsize=8)
+                ax_cbar.text((len(legend_cts)-1) * dot_spacing + 0.3, 0.25, f'{legend_cts[-1]:.2f}', va='center', ha='center', color='white', fontsize=8)
 
                 # Set limits and aesthetics
                 ax_cbar.set_xlim(0, 2)
-                ax_cbar.set_xlim(-0.5, (len(legend_cts)-1) * dot_spacing + 0.5)
+                ax_cbar.set_xlim(-0.3, (len(legend_cts)-1) * dot_spacing + 0.3)
                 ax_cbar.set_ylim(0, 1.5)  # Enough vertical space for dots + labels
                 # ax_cbar.set_ylim(-0.5, len(legend_cts) - 0.5)
                 ax_cbar.text(0.5 * (len(legend_cts)-1) * dot_spacing, 0.4, 'Normalized Counts',
-                ha='center', va='top', color='white', fontsize=12)
+                ha='center', va='top', color='white', fontsize=9)
 
                 # Format colorbar
                 # cbar.set_label('Normalized Counts', color='white', fontsize=16)
@@ -2379,10 +2387,15 @@ class STARRFISH:
                 ax_cbar.spines['bottom'].set_visible(False)
                 ax_cbar.spines['left'].set_visible(False)
         else:
-            fig, ax = plt.subplots(figsize=(10, 10), facecolor='black')
+            # Create figure with colorbar axis
+            fig = plt.figure(figsize=(10, 10), facecolor='black')
+            gs = fig.add_gridspec(2, 1, height_ratios=[0.95, 0.05], hspace=0.05)
+            ax = fig.add_subplot(gs[0])
+            ax_cbar = fig.add_subplot(gs[1])
+
             ax.set_title(f'{gene} - N max {nmax}', color='white')
             ax.set_facecolor('black')
-            
+
             # Plot data
             XC = -Xcells[:, ::-1]
             cell_with_genes = np.where(cts > 0)[0]
@@ -2390,12 +2403,60 @@ class STARRFISH:
             ax.scatter(XC[:, 0], XC[:, 1], c='grey', s=sz_min, marker='.', rasterized=True)
             # ax.scatter(XC[~cell_with_genes, 0], XC[~cell_with_genes, 1], c=cmap[~cell_with_genes], s=size[~cell_with_genes])
             ax.scatter(XC[cell_with_genes, 0], XC[cell_with_genes, 1], c=cmap[cell_with_genes], s=sz_max, rasterized=True)
-            
+
             # Format axes
             ax.grid(False)
             ax.set_xticks([])
             ax.set_yticks([])
             ax.set_aspect('equal')
+
+            # Format colorbar
+            ax_cbar.set_facecolor('black')
+            if show_scalebar:
+                ax_cbar.axis('off')
+
+                # Define scale bar points
+                legend_vals = np.linspace(0, 1.0, 7)  # Normalized from 0 to 1
+                legend_cts = legend_vals * nmax
+
+                # Reuse the size and alpha scaling from main plot
+                legend_scaled_sizes = legend_vals ** 3  # Same emphasis
+                legend_sizes = sz_min + (sz_max - sz_min) * legend_scaled_sizes
+                legend_alphas = legend_vals  # Directly scale alpha from value
+
+                # Get colors from the same colormap as main plot
+                legend_colors = custom_cmap(legend_vals)
+
+                # Plot circles in ax_cbar
+                dot_spacing = 0.015  # smaller = tighter packing
+                for i, (val, sz, alpha, color) in enumerate(zip(legend_cts, legend_sizes, legend_alphas, legend_colors)):
+                    x = i * dot_spacing
+                    ax_cbar.scatter(x, 0.75, s=sz*20, alpha=alpha, color=color, edgecolors='none')
+
+                # Add only min and max labels
+                ax_cbar.text(-0.05, 0.75, f'{legend_cts[0]:.2f}', va='center', ha='center', color='white', fontsize=8)
+                ax_cbar.text((len(legend_cts)-1) * dot_spacing + 0.05, 0.75, f'{legend_cts[-1]:.2f}', va='center', ha='center', color='white', fontsize=8)
+
+                # Set limits and aesthetics
+                ax_cbar.set_xlim(0, 2)
+                ax_cbar.set_xlim(-0.3, (len(legend_cts)-1) * dot_spacing + 0.3)
+                ax_cbar.set_ylim(0, 1.5)  # Enough vertical space for dots + labels
+                # ax_cbar.set_ylim(-0.5, len(legend_cts) - 0.5)
+                ax_cbar.text(0.5 * (len(legend_cts)-1) * dot_spacing, 0.1, 'Normalized Counts',
+                ha='center', va='top', color='white', fontsize=9)
+
+                # Format colorbar
+                # cbar.set_label('Normalized Counts', color='white', fontsize=16)
+                # cbar.ax.yaxis.set_tick_params(color='white')
+                # cbar.ax.tick_params(labelcolor='white', labelsize=10)
+                # cbar.ax.set_yticks(np.linspace(0, nmax, 5))
+                # cbar.ax.set_yticklabels([f'{i:.2f}' for i in np.linspace(0, nmax, 5)], color='white')
+
+                # Remove axis spines from colorbar
+                ax_cbar.spines['top'].set_visible(False)
+                ax_cbar.spines['right'].set_visible(False)
+                ax_cbar.spines['bottom'].set_visible(False)
+                ax_cbar.spines['left'].set_visible(False)
         
         fig.tight_layout()
         plt.close(fig)

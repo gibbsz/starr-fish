@@ -410,23 +410,31 @@ fig.show()
 
 # %%
 from plots import celltype_pval_dotplot
-# cell_types_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
+# %%
 cell_types_to_use = res_q1_right.index.intersection(res_q2_right.index)
 cres_to_use = res_q_right.columns[np.nanmin(res_q_right.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
 cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
 fig, final_order = celltype_pval_dotplot(res_q_right, res_df_fdc, cres_to_use, cell_types_to_use,
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
                                          figsize=(50, 30))
+fig.savefig('results/expr3/celltype_pval_dotplot_complete.pdf')
+# %%
+cell_types_to_use = starrfish3.get_celltypes().value_counts().index[starrfish3.get_celltypes().value_counts()>=1000]
+cres_to_use = res_q_right.columns[np.nanmin(res_q_right.loc[cell_types_to_use], axis=0) < 0.05].union(starrfish3.get_negative_control_cres())
+cres_to_use = cres_to_use[~cres_to_use.isin(cre_blacklist)]
+fig, final_order = celltype_pval_dotplot(res_q_right, res_df_fdc, cres_to_use, cell_types_to_use,
+                                         positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
+                                         figsize=(20, 30))
 fig.savefig('results/expr3/celltype_pval_dotplot_all.pdf')
 # %%
 fig, final_order = celltype_pval_dotplot(res_q1_right, res_df1_fdc, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(50, 30))
+                                         figsize=(20, 30))
 fig.savefig('results/expr3/celltype_pval_dotplot_sec1.pdf')
 # %%
 fig, final_order = celltype_pval_dotplot(res_q2_right, res_df2_fdc, pd.Index(final_order), cell_types_to_use, reorder_cres=False,
                                          positive_control_info=cre_info, significant_cutoff=0.05, z_norm=False,
-                                         figsize=(50, 30))
+                                         figsize=(20, 30))
 fig.savefig('results/expr3/celltype_pval_dotplot_sec2.pdf')
 
 
@@ -644,12 +652,12 @@ reproducible_cres = overlap_cre_df.index[overlap_cre_df['reproducibility'].isin(
 cre_precision_data_all = []
 for use in ['atac-peak', 'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a']:
     for y in ['precision', 'percentage']:
-        cre_precision_df_repro = get_cre_precision_df(res_q_right_reproducible[reproducible_cres].copy(), starrfish3, use=use)
+        cre_precision_df_repro = get_cre_precision_df(res_q_right[reproducible_cres].copy(), starrfish3, use=use)
         repro_percentage = sum(cre_precision_df_repro['TP'] > 0) / sum(~cre_precision_df_repro['TP'].isna())
         repro_precision = sum(cre_precision_df_repro['TP'] > 0) / sum(cre_precision_df_repro[use] > 0)
         cre_precision_df_repro.to_csv(f'results/expr3/cre_{y}_reproducible_{use.replace("-", "_")}_df.csv')
         
-        cre_precision_df_all = get_cre_precision_df(res_q_right_reproducible, starrfish3, use=use)
+        cre_precision_df_all = get_cre_precision_df(res_q_right.copy(), starrfish3, use=use)
         all_percentage = sum(cre_precision_df_all['TP'] > 0) / sum(~cre_precision_df_all['TP'].isna())
         all_precision = sum(cre_precision_df_all['TP'] > 0) / sum(cre_precision_df_all[use] > 0)
         cre_precision_df_all.to_csv(f'results/expr3/cre_{y}_all_{use.replace("-", "_")}_df.csv')

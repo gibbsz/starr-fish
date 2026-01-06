@@ -475,7 +475,7 @@ fig = starrfish3.plot_gene('T7Sum', use='T7Sum',
                            cell_types_to_visualize=starrfish3.adata.obs['class_name'].unique().tolist(),
                            use_celltype_cmap=True,
                            celltype_cmap=class_color_map,
-                           log=True, sz_min=1, sz_max=1)
+                           log=False, sz_min=1, sz_max=1)
 fig.savefig('results/expr3/fig3/Spatial_class_T7Sum.pdf')
 
 
