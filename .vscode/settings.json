@@ -1,9 +1,0 @@
-{
-    "python-envs.defaultEnvManager": "ms-python.python:conda",
-    "python-envs.defaultPackageManager": "ms-python.python:conda",
-    "python-envs.pythonProjects": [],
-    "r.lsp.promptToInstall": false,
-    "remote.SSH.connectTimeout": 60,
-    "remote.SSH.enableDynamicForwarding": true,
-    "remote.SSH.serverAliveInterval": 30
-}

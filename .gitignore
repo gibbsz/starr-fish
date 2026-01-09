@@ -196,6 +196,7 @@ cython_debug/
 *.json
 
 # data folder
+.vscode/
 zgibbs_local/
 Mouse_brain.Guojie/Data/ATAC/wmb_bigwig
 Mouse_brain.Guojie/.genomespy_shared
