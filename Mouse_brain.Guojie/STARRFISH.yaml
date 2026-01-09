@@ -1,4 +1,4 @@
-name: scvi
+name: STARRFISH
 channels:
   - bioconda
   - pytorch
