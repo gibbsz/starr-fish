@@ -1,53 +1,103 @@
-import statsmodels.formula.api as smf
+import logging
+import multiprocessing
+import os
+import pickle
+import re
+import sys
+import time
+import warnings
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import warnings
-import time
-import multiprocessing
-from joblib import Parallel, delayed
-from scipy.optimize import minimize
-from scipy.special import logsumexp
-import os
-warnings.filterwarnings("ignore", category=FutureWarning)
-warnings.filterwarnings("ignore", category=RuntimeWarning)
-warnings.filterwarnings("ignore", category=UserWarning)
-warnings.filterwarnings("ignore", category=SyntaxWarning, module="docrep")
-from pydeseq2.dds import DeseqDataSet
-from pydeseq2.default_inference import DefaultInference
-from pydeseq2.ds import DeseqStats
-from scipy import stats, optimize
-import statsmodels.api as sm
-from statsmodels.stats import multitest
-from typing import Union, List, Literal
 import scanpy as sc
-import pickle
+import scvi
+import statsmodels.api as sm
+import statsmodels.formula.api as smf
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.tensorboard import SummaryWriter
-import matplotlib.pyplot as plt
-# add current path to sys.path
-import sys
-import os
-import scvi
-import re
-PWD = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(PWD)
-from starr_fish_vae import STARRFISHVI
-from tracksClass import PlotTracks
 from cmdstanpy import CmdStanModel
+from genomespy import igv
+from joblib import Parallel, delayed
+from mpl_toolkits.axes_grid1.inset_locator import inset_axes
+from pydeseq2.dds import DeseqDataSet
+from pydeseq2.default_inference import DefaultInference
+from pydeseq2.ds import DeseqStats
+from pygenometracks.utilities import get_region
+from scipy import stats, optimize
+from scipy.optimize import minimize
+from scipy.special import logsumexp
 from scipy.stats import linregress
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
 from sklearn.preprocessing import MinMaxScaler
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-import logging
-from typing import Literal
-from genomespy import igv
-from pygenometracks.utilities import get_region
+from statsmodels.stats import multitest
+from torch.utils.tensorboard import SummaryWriter
+from typing import Union, List, Literal
+
+warnings.filterwarnings("ignore", category=FutureWarning)
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=SyntaxWarning, module="docrep")
+
+# Add current path to sys.path
+PWD = os.path.dirname(os.path.abspath(__file__))
+sys.path.append(PWD)
+
+from starr_fish_vae import STARRFISHVI
+from tracksClass import PlotTracks
 from get_preprocess_utils import get_motif, query_motif
+
 cmdstanpy_logger = logging.getLogger("cmdstanpy")
 cmdstanpy_logger.disabled = True
+
+
+# Configuration for data file paths
+class DataPaths:
+    """Centralized configuration for data file paths."""
+    CRE_ATAC_PEAKS = 'Data/cre_atac_peaks.csv'
+    CRE_H3K27AC_PEAKS = 'Data/cre_h3k27ac_peaks.csv'
+    CRE_H3K4ME1_PEAKS = 'Data/cre_h3k4me1_peaks.csv'
+    CRE_CHROMATIN_STATE_A = 'Data/cre_chromatin_state_a.csv'
+    CRE_CHROMATIN_STATE_O = 'Data/cre_chromatin_state_o.csv'
+
+
+# Helper function to reduce code duplication in get_positive_control_* methods
+def _load_csv_and_filter(file_path, key, axis='row', threshold=0.5):
+    """
+    Load CSV file and filter by threshold.
+
+    Parameters:
+    -----------
+    file_path : str
+        Path to CSV file
+    key : str
+        Row or column key to filter
+    axis : str
+        'row' to get columns where row[key] > threshold
+        'col' to get rows where column[key] > threshold
+    threshold : float
+        Threshold value for filtering
+
+    Returns:
+    --------
+    pd.Index or None
+        Filtered index or None if key not found
+    """
+    data = pd.read_csv(file_path, index_col=0)
+
+    if axis == 'row':
+        if key not in data.index:
+            return None
+        row_data = data.loc[key]
+        return row_data[row_data > threshold].index
+    else:  # axis == 'col'
+        if key not in data.columns:
+            return None
+        col_data = data[key]
+        return col_data[col_data > threshold].index
+
 
 def fit_glm(formula, y, x, volm, fov, rna, size, positive_x_or_y=True, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None, intercept_x=None, intercept_y=None):
     try:
@@ -461,63 +511,171 @@ def plot_cluster_scdata(scdata, clusters=['Endo NN'], use='subclass',
         return cluster_color_map
 
 
-def _calculate_fold_change_with_bootstrap(cre_cells_expression, cell_types_order, CRE_info, rna_cells_expression, volm, t7_cells_expression, calc_kwargs, bootstrap_args):
-    i, cell_types_to_use, bootstrap_to_fixed_sample_size = bootstrap_args
+def _check_cached_result(obj, result_attr_name, config_attr_name, config):
+    """
+    Check if cached results exist for given configuration.
+
+    Parameters:
+    -----------
+    obj : object
+        Object to check for cached results (typically self)
+    result_attr_name : str
+        Name of attribute storing results list
+    config_attr_name : str
+        Name of attribute storing configs list
+    config : dict
+        Configuration to match against
+
+    Returns:
+    --------
+    result or None
+        Cached result if found, None otherwise
+    """
+    if hasattr(obj, result_attr_name) and hasattr(obj, config_attr_name):
+        results = getattr(obj, result_attr_name)
+        configs = getattr(obj, config_attr_name)
+        for stored_config, stored_result in zip(configs, results):
+            if stored_config == config:
+                print('Results already exist, return stored results')
+                return stored_result.copy()
+    return None
+
+
+def _store_result(obj, result_attr_name, config_attr_name, result, config):
+    """
+    Store result and config in object attributes.
+
+    Parameters:
+    -----------
+    obj : object
+        Object to store results in (typically self)
+    result_attr_name : str
+        Name of attribute to store results list
+    config_attr_name : str
+        Name of attribute to store configs list
+    result : any
+        Result to store
+    config : dict
+        Configuration to store
+    """
+    if not hasattr(obj, result_attr_name) or not hasattr(obj, config_attr_name):
+        setattr(obj, result_attr_name, [])
+        setattr(obj, config_attr_name, [])
+    getattr(obj, result_attr_name).append(result)
+    getattr(obj, config_attr_name).append(config)
+
+
+def _assign_cre_info_from_best_subclass(cre_info, result_dfs, metrics):
+    """
+    Assign metrics to cre_info based on best_subclass.
+
+    Parameters:
+    -----------
+    cre_info : pd.DataFrame
+        CRE information dataframe with 'best_subclass' column
+    result_dfs : dict
+        Dictionary mapping metric names to DataFrames (indexed by cell_type, columned by CRE)
+    metrics : list
+        List of metric names to assign
+
+    Returns:
+    --------
+    pd.DataFrame
+        Updated cre_info
+    """
+    for cre in cre_info.index:
+        best_subclass = cre_info.loc[cre, 'best_subclass']
+        for metric in metrics:
+            if metric in result_dfs and best_subclass in result_dfs[metric].index:
+                cre_info.loc[cre, metric] = result_dfs[metric].loc[best_subclass, cre]
+    return cre_info
+
+
+def _bootstrap_sample_cells(cell_types_to_use, random_state, bootstrap_to_fixed_sample_size=None,
+                           bootstrap_to_fixed_pct=None, permute_labels=False):
+    """
+    Bootstrap sample cells with various sampling strategies.
+
+    Parameters:
+    -----------
+    cell_types_to_use : pd.Series
+        Series mapping cell indices to cell types
+    random_state : int
+        Random seed for reproducibility
+    bootstrap_to_fixed_sample_size : int or None
+        If -1: sample all cells from each type with replacement
+        If > 0: sample fixed number of cells from each type with replacement
+        If None: use bootstrap_to_fixed_pct instead
+    bootstrap_to_fixed_pct : float or None
+        Fraction of cells to sample (used when bootstrap_to_fixed_sample_size is None)
+    permute_labels : bool
+        If True, randomly reassign cell type labels (for fold change test)
+
+    Returns:
+    --------
+    pd.Series
+        Bootstrapped cell type assignments
+    """
     if bootstrap_to_fixed_sample_size is not None:
-        # if bootstrap_to_fixed_sample is -1, then only select the corresponding cell type of cells
         if bootstrap_to_fixed_sample_size == -1:
-            cells_bootstrap = pd.concat(
-                [cell_types_to_use[cell_types_to_use == celltype].sample(
-                    sum(cell_types_to_use == celltype), replace=True, random_state=i
-                ) for celltype in cell_types_to_use.unique()]
-            )
-            # randomly assign the cell idxs
-            cells_idx = pd.concat(
-                [cell_types_to_use[cell_types_to_use != celltype].sample(
-                    sum(cell_types_to_use == celltype), replace=True, random_state=i
-                ) for celltype in cell_types_to_use.unique()]
-            )
+            # Sample all cells from each type with replacement
+            sample_sizes = [sum(cell_types_to_use == celltype) for celltype in cell_types_to_use.unique()]
         else:
-            # for each cell_types_to_use, sample the same number of cells
-            cells_bootstrap = pd.concat(
-                [cell_types_to_use[cell_types_to_use == celltype].sample(
-                    bootstrap_to_fixed_sample_size, replace=True, random_state=i
-                ) for celltype in cell_types_to_use.unique()]
-            )
-            # randomly assign the cell idxs
-            cells_idx = pd.concat(
-                [cell_types_to_use[cell_types_to_use != celltype].sample(
-                    bootstrap_to_fixed_sample_size, replace=True, random_state=i
-                ) for celltype in cell_types_to_use.unique()]
-            )
-        cells_bootstrap.index = cells_idx.index
+            # Sample fixed number from each type
+            sample_sizes = [bootstrap_to_fixed_sample_size] * len(cell_types_to_use.unique())
+
+        cells_bootstrap = pd.concat([
+            cell_types_to_use[cell_types_to_use == celltype].sample(
+                n=size, replace=True, random_state=random_state
+            ) for celltype, size in zip(cell_types_to_use.unique(), sample_sizes)
+        ])
+
+        if permute_labels:
+            # Randomly reassign cell indices (for permutation test)
+            cells_idx = pd.concat([
+                cell_types_to_use[cell_types_to_use != celltype].sample(
+                    n=size, replace=True, random_state=random_state
+                ) for celltype, size in zip(cell_types_to_use.unique(), sample_sizes)
+            ])
+            cells_bootstrap.index = cells_idx.index
     else:
-        cells_bootstrap = cell_types_to_use.sample(frac=1, replace=False, random_state=i)
-        cells_bootstrap.index = cell_types_to_use.index
-    return calculate_fold_change(cre_cells_expression, cells_bootstrap, cell_types_order, CRE_info, 
+        # Sample by fraction
+        frac = 1.0 if bootstrap_to_fixed_pct is None else bootstrap_to_fixed_pct
+        cells_bootstrap = cell_types_to_use.sample(frac=frac, replace=True, random_state=random_state)
+
+        if permute_labels:
+            # Permute all labels
+            cells_bootstrap.index = cell_types_to_use.index
+
+    return cells_bootstrap
+
+
+def _calculate_fold_change_with_bootstrap(cre_cells_expression, cell_types_order, CRE_info,
+                                          rna_cells_expression, volm, t7_cells_expression,
+                                          calc_kwargs, bootstrap_args):
+    """Calculate fold change with bootstrap sampling (permutation test)."""
+    i, cell_types_to_use, bootstrap_to_fixed_sample_size = bootstrap_args
+    cells_bootstrap = _bootstrap_sample_cells(
+        cell_types_to_use, random_state=i,
+        bootstrap_to_fixed_sample_size=bootstrap_to_fixed_sample_size,
+        permute_labels=True
+    )
+    return calculate_fold_change(cre_cells_expression, cells_bootstrap, cell_types_order, CRE_info,
                                  rna_cells_expression, volm, t7_cells_expression, **calc_kwargs)
 
 
-def _calculate_average_with_bootstrap(cre_cells_expression, cell_types_order, CRE_info, rna_cells_expression, volm, t7_cells_expression, calc_kwargs, bootstrap_args):
+def _calculate_average_with_bootstrap(cre_cells_expression, cell_types_order, CRE_info,
+                                      rna_cells_expression, volm, t7_cells_expression,
+                                      calc_kwargs, bootstrap_args):
+    """Calculate average with bootstrap sampling (within cell type)."""
     i, cell_types_to_use, bootstrap_to_fixed_sample_size, bootstrap_to_fixed_pct = bootstrap_args
-    if bootstrap_to_fixed_sample_size is not None:
-        # if bootstrap_to_fixed_sample is -1, then only select the corresponding cell type of cells
-        if bootstrap_to_fixed_sample_size == -1:
-            cells_bootstrap = pd.concat(
-                [cell_types_to_use[cell_types_to_use == celltype].sample(
-                    sum(cell_types_to_use == celltype), replace=True, random_state=i
-                ) for celltype in cell_types_to_use.unique()]
-            )
-        else:
-            # for each cell_types_to_use, sample the same number of cells
-            cells_bootstrap = pd.concat(
-                [cell_types_to_use[cell_types_to_use == celltype].sample(
-                    bootstrap_to_fixed_sample_size, replace=True, random_state=i
-                ) for celltype in cell_types_to_use.unique()]
-            )
-    else:
-        cells_bootstrap = cell_types_to_use.sample(frac=bootstrap_to_fixed_pct, replace=True, random_state=i)
-    return calculate_fold_change(cre_cells_expression, cells_bootstrap, cell_types_order, CRE_info, 
+    cells_bootstrap = _bootstrap_sample_cells(
+        cell_types_to_use, random_state=i,
+        bootstrap_to_fixed_sample_size=bootstrap_to_fixed_sample_size,
+        bootstrap_to_fixed_pct=bootstrap_to_fixed_pct,
+        permute_labels=False
+    )
+    return calculate_fold_change(cre_cells_expression, cells_bootstrap, cell_types_order, CRE_info,
                                  rna_cells_expression, volm, t7_cells_expression, **calc_kwargs)
 
 
@@ -634,6 +792,9 @@ def col_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_thre
                               columns=['pearson', 'spearman', 'fisher', 
                                        'pearson_p', 'spearman_p', 'fisher_p', 'effect_n', 
                                        'pearson_q', 'spearman_q', 'fisher_q'])
+    # Collect results in dictionaries for efficient batch assignment
+    results_dict = {col: [] for col in col_result.columns}
+
     for i, cre in enumerate(df1.columns):
         # calculate the correlation
         try:
@@ -652,16 +813,23 @@ def col_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_thre
             else:
                 bin2 = df2[cre] > df2[cre].mean()
             fisher = stats.fisher_exact(pd.crosstab(bin1, bin2))
-            # add the result to the dataframe
-            col_result.loc[cre, 'pearson'] = pearson[0]
-            col_result.loc[cre, 'spearman'] = spearman[0]
-            col_result.loc[cre, 'fisher'] = fisher[0]
-            col_result.loc[cre, 'pearson_p'] = pearson[1]
-            col_result.loc[cre, 'spearman_p'] = spearman[1]
-            col_result.loc[cre, 'fisher_p'] = fisher[1]
-            col_result.loc[cre, 'effect_n'] = tokeep.sum()
+            # Collect results
+            results_dict['pearson'].append(pearson[0])
+            results_dict['spearman'].append(spearman[0])
+            results_dict['fisher'].append(fisher[0])
+            results_dict['pearson_p'].append(pearson[1])
+            results_dict['spearman_p'].append(spearman[1])
+            results_dict['fisher_p'].append(fisher[1])
+            results_dict['effect_n'].append(tokeep.sum())
         except:
             print('Error in calculating correlation for CRE: ', cre)
+            # Append NaN for failed calculations
+            for col in ['pearson', 'spearman', 'fisher', 'pearson_p', 'spearman_p', 'fisher_p', 'effect_n']:
+                results_dict[col].append(np.nan)
+
+    # Assign all results at once
+    for col in ['pearson', 'spearman', 'fisher', 'pearson_p', 'spearman_p', 'fisher_p', 'effect_n']:
+        col_result[col] = results_dict[col]
     col_result['pearson_q'] = multitest.multipletests(col_result['pearson_p'], method='fdr_bh')[1]
     col_result['spearman_q'] = multitest.multipletests(col_result['spearman_p'], method='fdr_bh')[1]
     col_result['fisher_q'] = multitest.multipletests(col_result['fisher_p'], method='fdr_bh')[1]
@@ -671,9 +839,12 @@ def col_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_thre
 def row_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_threshold2=None):
     # do row wise correlation
     row_result = pd.DataFrame(index=df1.index,
-                              columns=['pearson', 'spearman', 
+                              columns=['pearson', 'spearman', 'fisher',
                                        'pearson_p', 'spearman_p', 'fisher_p', 'effect_n',
                                        'pearson_q', 'spearman_q', 'fisher_q'])
+    # Collect results in dictionaries for efficient batch assignment
+    results_dict = {col: [] for col in row_result.columns}
+
     for i, celltype in enumerate(df1.index):
         # calculate the correlation
         try:
@@ -692,16 +863,23 @@ def row_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_thre
             else:
                 bin2 = df2.loc[celltype] > df2.loc[celltype].mean()
             fisher = stats.fisher_exact(pd.crosstab(bin1, bin2))
-            # add the result to the dataframe
-            row_result.loc[celltype, 'pearson'] = pearson[0]
-            row_result.loc[celltype, 'spearman'] = spearman[0]
-            row_result.loc[celltype, 'fisher'] = fisher[0]
-            row_result.loc[celltype, 'pearson_p'] = pearson[1]
-            row_result.loc[celltype, 'spearman_p'] = spearman[1]
-            row_result.loc[celltype, 'fisher_p'] = fisher[1]
-            row_result.loc[celltype, 'effect_n'] = tokeep.sum()
+            # Collect results
+            results_dict['pearson'].append(pearson[0])
+            results_dict['spearman'].append(spearman[0])
+            results_dict['fisher'].append(fisher[0])
+            results_dict['pearson_p'].append(pearson[1])
+            results_dict['spearman_p'].append(spearman[1])
+            results_dict['fisher_p'].append(fisher[1])
+            results_dict['effect_n'].append(tokeep.sum())
         except:
             print('Error in calculating correlation for celltype: ', celltype)
+            # Append NaN for failed calculations
+            for col in ['pearson', 'spearman', 'fisher', 'pearson_p', 'spearman_p', 'fisher_p', 'effect_n']:
+                results_dict[col].append(np.nan)
+
+    # Assign all results at once
+    for col in ['pearson', 'spearman', 'fisher', 'pearson_p', 'spearman_p', 'fisher_p', 'effect_n']:
+        row_result[col] = results_dict[col]
     row_result['pearson_q'] = multitest.multipletests(row_result['pearson_p'], method='fdr_bh')[1]
     row_result['spearman_q'] = multitest.multipletests(row_result['spearman_p'], method='fdr_bh')[1]
     row_result['fisher_q'] = multitest.multipletests(row_result['fisher_p'], method='fdr_bh')[1]
@@ -709,7 +887,8 @@ def row_corr(df1: pd.DataFrame, df2: pd.DataFrame, bin_threshold1=None, bin_thre
 
 
 def cross_talk_fisher_test(celltype_activated: np.ndarray):
-    pval = np.ndarray((1, celltype_activated.shape[1], celltype_activated.shape[1]))
+    # Initialize with NaN to ensure all values are properly set
+    pval = np.full((1, celltype_activated.shape[1], celltype_activated.shape[1]), np.nan)
     for j in range(celltype_activated.shape[1]):
         for k in range(j, celltype_activated.shape[1]):
             # do fisher exact test
@@ -723,8 +902,9 @@ def cross_talk_fisher_test(celltype_activated: np.ndarray):
 
 
 def cross_talk_corr_test(celltype_expression: np.ndarray, method='pearson'):
-    pval = np.ndarray((1, celltype_expression.shape[1], celltype_expression.shape[1]))
-    corr = np.ndarray((1, celltype_expression.shape[1], celltype_expression.shape[1]))
+    # Initialize with NaN to ensure all values are properly set
+    pval = np.full((1, celltype_expression.shape[1], celltype_expression.shape[1]), np.nan)
+    corr = np.full((1, celltype_expression.shape[1], celltype_expression.shape[1]), np.nan)
     for j in range(celltype_expression.shape[1]):
         for k in range(j, celltype_expression.shape[1]):
             # do fisher exact test
@@ -1643,13 +1823,47 @@ class T7CRE_Split_DistributionEM:
 
 
 class STARRFISH:
-    def __init__(self, adata: Union[sc.AnnData, str], 
+    def __init__(self, adata: Union[sc.AnnData, str],
                  cre_tag = 'obsm:CRE', t7_tag = 'obsm:T7CRE', celltype_tag='obs:subclass', spatial_tag='obsm:X_spatial', creinfo_tag='uns:CRE_info',
                  atac_cpm: Union[pd.DataFrame, str] = 'Data/ATAC/cpm_peakBysubclass.csv',
                  atac_counts: Union[pd.DataFrame, str] = 'Data/ATAC/count_peakBysubclass.csv',
                  lib_size: Union[pd.DataFrame, str] = 'Data/SFv8_400CRE_nanopore_counts.csv',
                  log_lib_size: bool = True,
                  blacklist_cre: List[str] = []):
+        """
+        Initialize STARRFISH object for analyzing spatial transcriptomics data with CRE activity.
+
+        Parameters
+        ----------
+        adata : sc.AnnData or str
+            AnnData object or path to .h5ad file containing spatial transcriptomics data
+        cre_tag : str, optional
+            Tag to access CRE expression data in adata (default: 'obsm:CRE')
+        t7_tag : str, optional
+            Tag to access T7-CRE expression data (default: 'obsm:T7CRE')
+        celltype_tag : str, optional
+            Tag to access cell type annotations (default: 'obs:subclass')
+        spatial_tag : str, optional
+            Tag to access spatial coordinates (default: 'obsm:X_spatial')
+        creinfo_tag : str, optional
+            Tag to access CRE metadata (default: 'uns:CRE_info')
+        atac_cpm : pd.DataFrame or str, optional
+            DataFrame or path to ATAC-seq CPM data by cell type
+        atac_counts : pd.DataFrame or str, optional
+            DataFrame or path to ATAC-seq count data by cell type
+        lib_size : pd.DataFrame or str, optional
+            DataFrame or path to library size data for normalization
+        log_lib_size : bool, optional
+            Whether to log-transform library size (default: True)
+        blacklist_cre : list of str, optional
+            List of CRE IDs to exclude from analysis
+
+        Notes
+        -----
+        Loads spatial transcriptomics data, processes cell type annotations, loads ATAC-seq data,
+        and prepares library size normalization factors. Handles different cell type granularities
+        (subclass, class, region) and aggregates ATAC data accordingly.
+        """
         if isinstance(adata, str):
             self.adata_path = adata
             self.load_adata(adata)
@@ -1788,6 +2002,22 @@ class STARRFISH:
             self.lib_size = lib_size
             
     def save(self, path, overwrite_adata=False):
+        """
+        Save STARRFISH object to file.
+
+        Parameters
+        ----------
+        path : str
+            Path to save the STARRFISH object (pickle file)
+        overwrite_adata : bool, optional
+            Whether to overwrite existing AnnData file (default: False)
+
+        Notes
+        -----
+        Saves the STARRFISH object to a pickle file while optionally saving the AnnData
+        object separately to an .h5ad file. The AnnData is temporarily removed before
+        pickling to reduce file size.
+        """
         # save self
         if self.adata_path is None:
             self.adata_path = f'{path}_adata.h5ad'
@@ -1804,6 +2034,26 @@ class STARRFISH:
             
     @staticmethod
     def load(path, adata: Union[sc.AnnData, str]=None) -> 'STARRFISH':
+        """
+        Load STARRFISH object from file.
+
+        Parameters
+        ----------
+        path : str
+            Path to the saved STARRFISH pickle file
+        adata : sc.AnnData or str, optional
+            AnnData object or path to .h5ad file to load
+
+        Returns
+        -------
+        STARRFISH
+            Loaded STARRFISH object with data
+
+        Notes
+        -----
+        Loads a previously saved STARRFISH object from pickle file and optionally
+        loads the associated AnnData object.
+        """
         # load self
         with open(path, 'rb') as f:
             starrfish = pickle.load(f)
@@ -1818,11 +2068,38 @@ class STARRFISH:
         return starrfish
     
     def load_adata(self, adata_path):
+        """
+        Load AnnData object from file.
+
+        Parameters
+        ----------
+        adata_path : str
+            Path to the .h5ad file
+
+        Notes
+        -----
+        Loads an AnnData object from disk and stores it in the STARRFISH object.
+        """
         # load the adata
         adata = sc.read(adata_path)
         self.adata: sc.AnnData = adata
     
     def load_cpm(self, cpm_path: str, attr_to_add: str = 'atac_cpm'):
+        """
+        Load CPM (counts per million) data from CSV file.
+
+        Parameters
+        ----------
+        cpm_path : str
+            Path to CSV file containing CPM data
+        attr_to_add : str, optional
+            Attribute name to store the loaded CPM data (default: 'atac_cpm')
+
+        Notes
+        -----
+        Loads and processes CPM data, matches it to CRE information, and stores
+        as a transposed DataFrame where rows are cell types and columns are CREs.
+        """
         cpm = pd.read_csv(cpm_path, index_col=0)
         cpm.columns = cpm.columns.str.replace('\\.', '-')
         cpm.columns = cpm.columns.str.replace('_', ' ')
@@ -1837,6 +2114,21 @@ class STARRFISH:
         self.__setattr__(attr_to_add, cpm.transpose())
     
     def load_libsize(self, lib_size_path: str, log_transform: bool = True):
+        """
+        Load library size data for CRE normalization.
+
+        Parameters
+        ----------
+        lib_size_path : str
+            Path to CSV file containing library size data
+        log_transform : bool, optional
+            Whether to apply log1p transformation to library sizes (default: True)
+
+        Notes
+        -----
+        Loads library size data, matches to CRE information, and optionally log-transforms.
+        Stores both raw (`lib_size_raw`) and processed (`lib_size`) versions.
+        """
         lib_size = pd.read_csv(lib_size_path, index_col=0)
         # only keep the cres that are in cre_info
         cre_info = self.get_creinfo().copy()
@@ -1852,6 +2144,24 @@ class STARRFISH:
         self.lib_size = lib_size
     
     def get_tag(self, tag) -> Union[pd.DataFrame, pd.Series]:
+        """
+        Retrieve data from AnnData object using tag notation.
+
+        Parameters
+        ----------
+        tag : str
+            Tag in format 'attribute:key' (e.g., 'obs:subclass', 'obsm:CRE')
+
+        Returns
+        -------
+        pd.DataFrame or pd.Series or None
+            Data from the specified tag location, or None if tag doesn't exist
+
+        Notes
+        -----
+        Parses tag string to access nested attributes in AnnData object.
+        Tag format is 'attribute:key' where attribute is 'obs', 'obsm', 'uns', etc.
+        """
         # get the CREs
         tag_attr = tag.split(':')[0]
         tag_col = tag.split(':')[1]
@@ -1860,18 +2170,78 @@ class STARRFISH:
         return self.adata.__getattribute__(tag_attr)[tag_col]
     
     def get_cre_expression(self) -> pd.DataFrame:
+        """
+        Get CRE expression data for all cells.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with cells as rows and CREs as columns containing expression values
+
+        Notes
+        -----
+        Retrieves CRE expression data from the location specified by self.cre_tag.
+        """
         return self.get_tag(self.cre_tag)
 
     def get_t7_expression(self) -> pd.DataFrame:
+        """
+        Get T7-CRE expression data for all cells.
+
+        Returns
+        -------
+        pd.DataFrame or None
+            DataFrame with cells as rows and CREs as columns, or None if T7 data unavailable
+
+        Notes
+        -----
+        T7-CRE is used to measure transfection/infection efficiency. Returns None if
+        t7_tag is not set or T7 data was not included in the dataset.
+        """
         if not hasattr(self, 't7_tag') or self.t7_tag is None:
             return None
         return self.get_tag(self.t7_tag)
 
     def get_rna_expression(self) -> pd.DataFrame:
+        """
+        Get RNA expression data for all cells.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with cells as rows and genes as columns containing RNA counts
+
+        Notes
+        -----
+        Retrieves raw RNA expression data from 'obsm:X_raw' in the AnnData object.
+        """
         # get the RNA expression
         return self.get_tag('obsm:X_raw')
 
     def get_k_nearest_neighbors(self, cell_id, k=10, spatial_tag='obsm:X_spatial') -> pd.DataFrame:
+        """
+        Find k nearest neighbor cells based on spatial coordinates.
+
+        Parameters
+        ----------
+        cell_id : str
+            Cell identifier to find neighbors for
+        k : int, optional
+            Number of nearest neighbors to find (default: 10)
+        spatial_tag : str, optional
+            Tag specifying spatial coordinate location (default: 'obsm:X_spatial')
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with neighbor cell IDs as index and columns for distance, X, and Y coordinates,
+            sorted by distance
+
+        Notes
+        -----
+        Uses Euclidean distance to find spatial neighbors. The query cell itself is excluded
+        from the results.
+        """
         # get the k nearest neighbors based on coordinates
         spatial_coords = self.get_tag(spatial_tag)
         cell_mask = self.adata.obs_names == cell_id
@@ -1896,6 +2266,30 @@ class STARRFISH:
         return result_df.sort_values('distance')
 
     def get_cre_expression_normalized(self, cell_types_to_use=None, normalize_by_cell_rna=True, normalize_by_volume=True, log_transform=False) -> pd.DataFrame:
+        """
+        Get normalized CRE expression data.
+
+        Parameters
+        ----------
+        cell_types_to_use : list, optional
+            List of cell types to include (default: all cell types)
+        normalize_by_cell_rna : bool, optional
+            Normalize by RNA content per cell (default: True)
+        normalize_by_volume : bool, optional
+            Normalize by cell volume (default: True)
+        log_transform : bool, optional
+            Apply log1p transformation (default: False)
+
+        Returns
+        -------
+        tuple of (pd.DataFrame, pd.Series)
+            Normalized CRE expression matrix and cell type labels for included cells
+
+        Notes
+        -----
+        Performs cell-level normalization to account for differences in RNA content and/or
+        cell volume before analyzing CRE activity.
+        """
         if cell_types_to_use is not None:
             # get the cell types
             cre_celltypes_expression, rna_celltypes_expression, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
@@ -1919,12 +2313,49 @@ class STARRFISH:
         return cre_celltypes_expression, cell_types_to_use
 
     def get_celltypes(self, celltype_tag=None) -> pd.Series:
+        """
+        Get cell type annotations for all cells.
+
+        Parameters
+        ----------
+        celltype_tag : str, optional
+            Tag specifying cell type location (default: uses self.celltype_tag)
+
+        Returns
+        -------
+        pd.Series
+            Series with cell IDs as index and cell type labels as values
+
+        Notes
+        -----
+        Retrieves cell type annotations from the AnnData object. By default uses
+        the tag specified during initialization.
+        """
         # get the cell types
         if celltype_tag is None:
             celltype_tag = self.celltype_tag
         return self.get_tag(celltype_tag)
     
     def get_cre_celltypes(self, celltypes, celltype_tag=None) -> tuple[pd.DataFrame, pd.Series]:
+        """
+        Get CRE expression data for specific cell types.
+
+        Parameters
+        ----------
+        celltypes : list
+            List of cell type labels to filter for
+        celltype_tag : str, optional
+            Tag specifying cell type location (default: uses self.celltype_tag)
+
+        Returns
+        -------
+        tuple of (pd.DataFrame, pd.Series)
+            Filtered CRE expression matrix and cell type labels for matching cells
+
+        Notes
+        -----
+        Filters cells to include only those matching the specified cell types.
+        """
         # get cre for the cell types
         cres = self.get_cre_expression().copy()
         celltypes_orig = self.get_celltypes(celltype_tag=celltype_tag).copy()
@@ -1934,6 +2365,25 @@ class STARRFISH:
         return cre_celltypes, celltypes
 
     def get_cre_rna_celltypes(self, celltypes) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+        """
+        Get both CRE and RNA expression data for specific cell types.
+
+        Parameters
+        ----------
+        celltypes : list
+            List of cell type labels to filter for
+
+        Returns
+        -------
+        tuple of (pd.DataFrame, pd.DataFrame, pd.Series)
+            Filtered CRE expression matrix, RNA expression matrix, and cell type labels
+            for matching cells
+
+        Notes
+        -----
+        Filters cells to include only those matching the specified cell types and returns
+        both CRE and RNA data for downstream normalization or analysis.
+        """
         # get cre for the cell types
         cres = self.get_cre_expression().copy()
         rna = self.get_rna_expression().copy()
@@ -1943,110 +2393,220 @@ class STARRFISH:
         rna_celltypes = rna[celltypes_orig.isin(celltypes)]
         celltypes = celltypes_orig[celltypes_orig.isin(celltypes)]
         return cre_celltypes, rna_celltypes, celltypes
-    
+
+    def _preprocess_expressions(self, cell_types_to_use=None, normalize_by_cell_rna=False,
+                                normalize_by_cell_volume=False, normalize_by_cell_t7=False,
+                                filter_by_cell_t7=None, binarize_t7=False, log_transform=False,
+                                log_func='log1p'):
+        """
+        Common preprocessing logic for CRE, RNA, T7 expressions.
+
+        This method extracts the common preprocessing steps used in both
+        fold_change_test and average_bootstrap_test methods.
+
+        Parameters:
+        -----------
+        log_func : str
+            Which log function to use: 'log1p' (default) or 'log'
+
+        Returns:
+        --------
+        tuple: (cre_cells_expression, rna_cells_expression, cell_types_to_use, volm, t7_cells_expression)
+        """
+        # Get data
+        if cell_types_to_use is not None:
+            cre_cells_expression, rna_cells_expression, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
+        else:
+            cre_cells_expression = self.get_cre_expression().copy()
+            rna_cells_expression = self.get_rna_expression().copy()
+            cell_types_to_use = self.get_celltypes()
+
+        volm = self.get_tag('obs:volm').copy().loc[cell_types_to_use.index]
+        rna_cells_expression = pd.DataFrame(rna_cells_expression, index=cell_types_to_use.index)
+
+        # Get T7 expression
+        t7_cells_expression = self.get_t7_expression()
+        if t7_cells_expression is not None:
+            t7_cells_expression = t7_cells_expression.loc[cre_cells_expression.index]
+            if binarize_t7:
+                t7_cells_expression = (t7_cells_expression > 0).astype(float)
+
+        # Apply cell-level normalizations
+        if normalize_by_cell_rna and normalize_by_cell_volume:
+            rna_per_volume = rna_cells_expression / volm.values.reshape(-1, 1)
+            cre_cells_expression = cre_cells_expression / rna_per_volume.mean(axis=1).values.reshape(-1, 1)
+        elif normalize_by_cell_rna:
+            cre_cells_expression = cre_cells_expression / rna_cells_expression.mean(axis=1).values.reshape(-1, 1)
+        elif normalize_by_cell_volume:
+            cre_cells_expression = cre_cells_expression / volm.values.reshape(-1, 1)
+
+        # Apply T7 normalization
+        if normalize_by_cell_t7:
+            assert t7_cells_expression is not None, "t7_cells_expression required when normalize_by_cell_t7=True"
+            cre_cells_expression = cre_cells_expression / t7_cells_expression
+            # Handle inf/nan values
+            cre_cells_expression[np.isinf(cre_cells_expression)] = np.nan
+            # If normalize_by_cell_t7 is a threshold value, filter cells below it
+            if isinstance(normalize_by_cell_t7, (int, float)):
+                cre_cells_expression[t7_cells_expression < normalize_by_cell_t7] = np.nan
+            else:
+                # For fold_change_test: fillna(0) behavior
+                cre_cells_expression = cre_cells_expression.fillna(0)
+
+        # Apply T7 filtering (separate from normalization)
+        if filter_by_cell_t7 is not None and t7_cells_expression is not None:
+            cre_cells_expression[t7_cells_expression < filter_by_cell_t7] = np.nan
+            t7_cells_expression[t7_cells_expression < filter_by_cell_t7] = np.nan
+
+        # Apply log transform
+        if log_transform:
+            if log_func == 'log':
+                cre_cells_expression = np.log(cre_cells_expression)
+            else:  # log1p
+                cre_cells_expression = np.log1p(cre_cells_expression)
+
+        return cre_cells_expression, rna_cells_expression, cell_types_to_use, volm, t7_cells_expression
+
     def get_creinfo(self) -> pd.DataFrame:
+        """
+        Get metadata information for all CREs.
+
+        Returns
+        -------
+        pd.DataFrame
+            DataFrame with CRE IDs as index and metadata columns (e.g., genomic coordinates,
+            best cell type, labeling type)
+
+        Notes
+        -----
+        Retrieves CRE metadata from the location specified by self.cre_info_tag.
+        Contains information such as enhancer coordinates, target genes, and cell type specificity.
+        """
         # get the CRE info
         return self.get_tag(self.cre_info_tag)
     
     def get_negative_control_cres(self) -> pd.Series:
+        """
+        Get negative control CREs.
+
+        Returns
+        -------
+        pd.Index
+            Index of CRE IDs labeled as negative controls
+
+        Notes
+        -----
+        Negative controls are CREs that should not show cell type-specific activity
+        and are used as background references in statistical tests.
+        """
         # get the negative control cres
         cres = self.get_creinfo().copy()
         cres = cres[cres['labeling_type'] == 'negative control']
         return cres.index
     
     def get_positive_control_cres(self, cell_type, use='define') -> pd.Series:
-        # get the positive control cres
+        """
+        Get positive control CREs for a given cell type.
+
+        Parameters
+        ----------
+        cell_type : str
+            Cell type label to find positive control CREs for
+        use : str, optional
+            Method to define positive controls: 'define' (CRE metadata), 'atac-peak',
+            'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a', or 'chromatin-o' (default: 'define')
+
+        Returns
+        -------
+        pd.Index or None
+            Index of CRE IDs expected to be active in the given cell type, or None if unavailable
+
+        Notes
+        -----
+        Positive controls are CREs expected to show activity in the specified cell type based
+        on various epigenomic or experimental evidence sources.
+        """
         if use == 'define':
             cres = self.get_creinfo().copy()
             cres = cres[cres['best_subclass'] == cell_type]
             return cres.index
         elif use == 'atac-peak':
-            cre_atac_peaks = pd.read_csv('Data/cre_atac_peaks.csv', index_col=0)
-            if cell_type not in cre_atac_peaks.index:
-                return None
-            cre_atac_peaks = cre_atac_peaks.loc[cell_type]
-            cres = cre_atac_peaks[cre_atac_peaks > 0.5].index
-            return cres
+            return _load_csv_and_filter(DataPaths.CRE_ATAC_PEAKS, cell_type, axis='row')
         elif use == 'h3k27ac-peak':
-            cre_h3k27ac_peaks = pd.read_csv('Data/cre_h3k27ac_peaks.csv', index_col=0)
-            if cell_type not in cre_h3k27ac_peaks.index:
-                return None
-            cre_h3k27ac_peaks = cre_h3k27ac_peaks.loc[cell_type]
-            cres = cre_h3k27ac_peaks[cre_h3k27ac_peaks > 0.5].index
-            return cres
+            return _load_csv_and_filter(DataPaths.CRE_H3K27AC_PEAKS, cell_type, axis='row')
         elif use == 'h3k4me1-peak':
-            cre_h3k4me1_peaks = pd.read_csv('Data/cre_h3k4me1_peaks.csv', index_col=0)
-            if cell_type not in cre_h3k4me1_peaks.index:
-                return None
-            cre_h3k4me1_peaks = cre_h3k4me1_peaks.loc[cell_type]
-            cres = cre_h3k4me1_peaks[cre_h3k4me1_peaks > 0.5].index
-            return cres
+            return _load_csv_and_filter(DataPaths.CRE_H3K4ME1_PEAKS, cell_type, axis='row')
         elif use == 'chromatin-a':
-            chromatin_a = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
-            # get the chromatin-a cres for the cell type
-            if cell_type not in chromatin_a.index:
-                return None
-            chromatin_a = chromatin_a.loc[cell_type]
-            cres = chromatin_a[chromatin_a > 0.5].index
-            return cres
+            return _load_csv_and_filter(DataPaths.CRE_CHROMATIN_STATE_A, cell_type, axis='row')
         elif use == 'chromatin-o':
-            chromatin_o = pd.read_csv('Data/cre_chromatin_state_o.csv', index_col=0)
-            chromatin_a = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
-            # get the chromatin-o cres for the cell type
-            if cell_type not in chromatin_o.index or cell_type not in chromatin_a.index:
+            cres_o = _load_csv_and_filter(DataPaths.CRE_CHROMATIN_STATE_O, cell_type, axis='row')
+            cres_a = _load_csv_and_filter(DataPaths.CRE_CHROMATIN_STATE_A, cell_type, axis='row')
+            if cres_o is None or cres_a is None:
                 return None
-            chromatin_o = chromatin_o.loc[cell_type]
-            chromatin_a = chromatin_a.loc[cell_type]
-            cres = chromatin_o[chromatin_o > 0.5].index.union(chromatin_a[chromatin_a > 0.5].index)
-            return cres
+            return cres_o.union(cres_a)
     
     def get_positive_control_celltypes(self, cre, use='define') -> pd.Series:
-        # get the positive control cell types
+        """
+        Get positive control cell types for a given CRE.
+
+        Parameters
+        ----------
+        cre : str
+            CRE ID to find positive control cell types for
+        use : str, optional
+            Method to define positive controls: 'define' (CRE metadata), 'atac-peak',
+            'h3k27ac-peak', 'h3k4me1-peak', 'chromatin-a', or 'chromatin-o' (default: 'define')
+
+        Returns
+        -------
+        pd.Series or pd.Index or None
+            Cell type labels where the CRE is expected to be active, or None if unavailable
+
+        Notes
+        -----
+        Returns cell types where the given CRE should show activity based on various
+        epigenomic or experimental evidence sources.
+        """
         if use == 'define':
             cell_types = self.get_creinfo().copy()
             cell_types = cell_types['best_subclass'].loc[cre]
             return pd.Series(cell_types)
         elif use == 'atac-peak':
-            cre_atac_peaks = pd.read_csv('Data/cre_atac_peaks.csv', index_col=0)
-            if cre not in cre_atac_peaks.columns:
-                return None
-            cre_atac_peaks = cre_atac_peaks[cre]
-            cell_types = cre_atac_peaks[cre_atac_peaks > 0.5].index
-            return cell_types
+            return _load_csv_and_filter(DataPaths.CRE_ATAC_PEAKS, cre, axis='col')
         elif use == 'h3k27ac-peak':
-            cre_h3k27ac_peaks = pd.read_csv('Data/cre_h3k27ac_peaks.csv', index_col=0)
-            if cre not in cre_h3k27ac_peaks.columns:
-                return None
-            cre_h3k27ac_peaks = cre_h3k27ac_peaks[cre]
-            cell_types = cre_h3k27ac_peaks[cre_h3k27ac_peaks > 0.5].index
-            return cell_types
+            return _load_csv_and_filter(DataPaths.CRE_H3K27AC_PEAKS, cre, axis='col')
         elif use == 'h3k4me1-peak':
-            cre_h3k4me1_peaks = pd.read_csv('Data/cre_h3k4me1_peaks.csv', index_col=0)
-            if cre not in cre_h3k4me1_peaks.columns:
-                return None
-            cre_h3k4me1_peaks = cre_h3k4me1_peaks[cre]
-            cell_types = cre_h3k4me1_peaks[cre_h3k4me1_peaks > 0.5].index
-            return cell_types
+            return _load_csv_and_filter(DataPaths.CRE_H3K4ME1_PEAKS, cre, axis='col')
         elif use == 'chromatin-a':
-            chromatin_a = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
-            # get the chromatin-a cres for the cell type
-            if cre not in chromatin_a.columns:
-                return None
-            chromatin_a = chromatin_a[cre]
-            cell_types = chromatin_a[chromatin_a > 0.5].index
-            return cell_types
+            return _load_csv_and_filter(DataPaths.CRE_CHROMATIN_STATE_A, cre, axis='col')
         elif use == 'chromatin-o':
-            chromatin_o = pd.read_csv('Data/cre_chromatin_state_o.csv', index_col=0)
-            chromatin_a = pd.read_csv('Data/cre_chromatin_state_a.csv', index_col=0)
-            # get the chromatin-o cres for the cell type
-            if cre not in chromatin_o.columns or cre not in chromatin_a.columns:
+            celltypes_o = _load_csv_and_filter(DataPaths.CRE_CHROMATIN_STATE_O, cre, axis='col')
+            celltypes_a = _load_csv_and_filter(DataPaths.CRE_CHROMATIN_STATE_A, cre, axis='col')
+            if celltypes_o is None or celltypes_a is None:
                 return None
-            chromatin_o = chromatin_o[cre]
-            chromatin_a = chromatin_a[cre]
-            cell_types = chromatin_o[chromatin_o > 0.5].index.union(chromatin_a[chromatin_a > 0.5].index)
-            return cell_types
+            return celltypes_o.union(celltypes_a)
     
     def get_atac_z_cres(self, cell_type, z=2) -> pd.Series:
+        """
+        Get CREs with ATAC-seq signal above z-score threshold for a cell type.
+
+        Parameters
+        ----------
+        cell_type : str
+            Cell type label to query ATAC-seq data for
+        z : float, optional
+            Z-score threshold for ATAC signal (default: 2)
+
+        Returns
+        -------
+        pd.Index or None
+            Index of CRE IDs with ATAC-seq z-score > threshold, or None if cell type not found
+
+        Notes
+        -----
+        Identifies CREs with strong chromatin accessibility in the specified cell type
+        by computing z-scores of log-transformed ATAC CPM values.
+        """
         # get the positive control cres
         atac_cpm_z = self.atac_cpm.copy()
         atac_cpm_z = np.log1p(atac_cpm_z)
@@ -2587,92 +3147,119 @@ class STARRFISH:
         return result
         
     def fisher_exact_test(self, cell_types_to_use: List=None, activate_threshold=2, infect_threshold=1) -> dict:
+        """
+        Perform Fisher's exact test for CRE activation enrichment in cell types.
+
+        Parameters
+        ----------
+        cell_types_to_use : list, optional
+            List of cell types to include in analysis (default: all cell types)
+        activate_threshold : float, optional
+            Expression threshold to consider a CRE as activated (default: 2)
+        infect_threshold : float, optional
+            T7 expression threshold to consider a cell as infected (default: 1)
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'activity': DataFrame with cell type x CRE enrichment p-values
+            - 'config': Configuration parameters used
+            - Additional statistics from the test
+
+        Notes
+        -----
+        Tests whether each CRE shows significant enrichment of activation in each cell type
+        compared to background using Fisher's exact test. Results are cached for reuse.
+        """
         config = {
             'cell_types_to_use': cell_types_to_use,
             'infect_threshold': infect_threshold,
             'activate_threshold': activate_threshold
         }
-        # check if the results already exist
-        if hasattr(self, 'fisher_exact_test_results') and hasattr(self, 'fisher_exact_test_configs'):
-            for stored_config, fisher_exact_test_result in zip(self.fisher_exact_test_configs, self.fisher_exact_test_results):
-                if stored_config == config:
-                    # if the results already exist, return the results
-                    print('Results already exist, return stored results')
-                    return fisher_exact_test_result.copy()
+
+        # Check for cached results
+        cached_result = _check_cached_result(self, 'fisher_exact_test_results', 'fisher_exact_test_configs', config)
+        if cached_result is not None:
+            return cached_result
+
+        # Load data
         if cell_types_to_use is not None:
-            # get the cell types
             cre_celltypes_expression, cell_types_to_use = self.get_cre_celltypes(cell_types_to_use)
         else:
             cre_celltypes_expression = self.get_cre_expression().copy()
             cell_types_to_use = self.get_celltypes()
+
+        # Filter infected cells
         infected = ((cre_celltypes_expression >= infect_threshold).sum(axis=1) > 0)
         cre_celltypes_expression = cre_celltypes_expression[infected]
         cell_types_to_use = cell_types_to_use[infected]
         activated = cre_celltypes_expression >= activate_threshold
+
+        # Initialize result DataFrames
         p_value, q_value, precision, recall, foldchange, precision_n, recall_n = (
             pd.DataFrame(index=cell_types_to_use.unique(), columns=cre_celltypes_expression.columns) for _ in range(7)
         )
+
+        # Run Fisher's exact test for each cell type
         for cell_type in cell_types_to_use.unique():
             celltype_activated = activated.loc[cell_types_to_use == cell_type]
             noncelltype_activated = activated.loc[cell_types_to_use != cell_type]
-            # create contingency table
-            # -------                               | other cells                   | celltype
-            # overall infected but not activated    | FF = ~noncelltype_activated   | FT = ~celltype_activated
-            # activated                             | TF = noncelltype_activated    | TT = celltype_activated
+
+            # Create contingency table components
             FF = (~noncelltype_activated).sum(axis=0)
             FT = (~celltype_activated).sum(axis=0)
             TF = (noncelltype_activated).sum(axis=0)
             TT = (celltype_activated).sum(axis=0)
+
+            # Run Fisher's exact test for each CRE
             for cre in cre_celltypes_expression.columns:
-                # do fisher exact test
                 oddsratio, p = stats.fisher_exact([[int(FF[cre]), int(FT[cre])], [int(TF[cre]), int(TT[cre])]])
                 p_value.loc[cell_type, cre] = p
                 foldchange.loc[cell_type, cre] = oddsratio
+
+            # Calculate precision, recall
             precision.loc[cell_type] = TT / (TT + TF)
             recall.loc[cell_type] = TT / (TT + FT)
             precision_n.loc[cell_type] = TT + TF
             recall_n.loc[cell_type] = TT + FT
             q_value.loc[cell_type] = multitest.multipletests(p_value.loc[cell_type], method='fdr_bh')[1]
-        # for CRE in CRE_info, assign the p, q to best_subclass
+
+        # Assign metrics to cre_info based on best_subclass
         cre_info = self.get_creinfo().copy()
-        for cre in cre_info.index:
-            # get the best subclass
-            best_subclass = cre_info.loc[cre, 'best_subclass']
-            # get the p, q values for the best subclass
-            if best_subclass in p_value.index:
-                cre_info.loc[cre, 'p_value'] = p_value.loc[best_subclass, cre]
-                cre_info.loc[cre, 'q_value'] = q_value.loc[best_subclass, cre]
-                cre_info.loc[cre, 'precision'] = precision.loc[best_subclass, cre]
-                cre_info.loc[cre, 'recall'] = recall.loc[best_subclass, cre]
-                cre_info.loc[cre, 'precision_n'] = precision_n.loc[best_subclass, cre]
-                cre_info.loc[cre, 'recall_n'] = recall_n.loc[best_subclass, cre]
-                cre_info.loc[cre, 'foldchange'] = foldchange.loc[best_subclass, cre]
-            # calculate the entropy for each cre
-            cre_info.loc[cre, 'entropy'] = stats.entropy(precision[cre].astype(float))
-        # save results to attribute
-        fisher_exact_test_result = {
-            'cre_info': cre_info,
-            'p_value': p_value,
-            'q_value': q_value,
-            'precision': precision,
-            'recall': recall,
-            'precision_n': precision_n,
-            'recall_n': recall_n,
+        result_dfs = {
+            'p_value': p_value, 'q_value': q_value, 'precision': precision,
+            'recall': recall, 'precision_n': precision_n, 'recall_n': recall_n,
             'foldchange': foldchange
         }
-        if not hasattr(self, 'fisher_exact_test_results') or not hasattr(self, 'fisher_exact_test_configs'):
-            self.fisher_exact_test_results = []
-            self.fisher_exact_test_configs = []
-        self.fisher_exact_test_results.append(fisher_exact_test_result)
-        self.fisher_exact_test_configs.append(config)
+        cre_info = _assign_cre_info_from_best_subclass(cre_info, result_dfs,
+                                                       ['p_value', 'q_value', 'precision', 'recall',
+                                                        'precision_n', 'recall_n', 'foldchange'])
+
+        # Calculate entropy
+        for cre in cre_info.index:
+            cre_info.loc[cre, 'entropy'] = stats.entropy(precision[cre].astype(float))
+
+        # Store results
+        fisher_exact_test_result = {
+            'cre_info': cre_info, 'p_value': p_value, 'q_value': q_value,
+            'precision': precision, 'recall': recall, 'precision_n': precision_n,
+            'recall_n': recall_n, 'foldchange': foldchange
+        }
+        _store_result(self, 'fisher_exact_test_results', 'fisher_exact_test_configs',
+                     fisher_exact_test_result, config)
+
         return fisher_exact_test_result
     
     def estimate_activate_threshold_array(self, activate_threshold, cre_celltypes_expression, cell_types_to_use) -> np.ndarray:
+        # Pre-compute unique cell types to avoid redundant calls
+        unique_cell_types = cell_types_to_use.unique()
+
         # if activate_threshold is "celltype", then set cell type specific threshold
         if activate_threshold == 'celltype_mean_2std':
-            celltype_activate_threshold = pd.DataFrame(index=cell_types_to_use.unique(), columns=['threshold'])
-            # get the cell type cre_expression flattened
-            for celltype in cell_types_to_use.unique():
+            # Use dictionary for efficient collection of thresholds
+            threshold_dict = {}
+            for celltype in unique_cell_types:
                 # get the cre_expression for the cell type
                 celltype_cre_expr_flattened = cre_celltypes_expression[cell_types_to_use == celltype].values.flatten()
                 # filter out zero, calculate mean and std
@@ -2680,12 +3267,14 @@ class STARRFISH:
                 mean = cell_type_cre_expr_flattened.mean()
                 std = cell_type_cre_expr_flattened.std()
                 # set the threshold
-                celltype_activate_threshold.loc[celltype, 'threshold'] = np.power(10, mean + 2*std)
-            activate_threshold_array = celltype_activate_threshold['threshold'].loc[cell_types_to_use].values
+                threshold_dict[celltype] = np.power(10, mean + 2*std)
+            # Map to original cell types order
+            activate_threshold_array = np.array([threshold_dict[ct] for ct in cell_types_to_use])
+
         elif activate_threshold == 'celltype_top100':
-            celltype_activate_threshold = pd.DataFrame(index=cell_types_to_use.unique(), columns=['threshold'])
-            # get the cell type cre_expression flattened
-            for celltype in cell_types_to_use.unique():
+            # Use dictionary for efficient collection of thresholds
+            threshold_dict = {}
+            for celltype in unique_cell_types:
                 # get the cre_expression for the cell type
                 celltype_cre_expr_flattened = cre_celltypes_expression[cell_types_to_use == celltype].values.flatten()
                 # set the threshold as the top 100 cre value, if less than 2, set to 2
@@ -2694,12 +3283,14 @@ class STARRFISH:
                     thres = 1
                 else:
                     thres = celltype_cre_expr_flattened[100]
-                celltype_activate_threshold.loc[celltype, 'threshold'] = np.maximum(thres, 1)
-            activate_threshold_array = celltype_activate_threshold['threshold'].loc[cell_types_to_use].values
+                threshold_dict[celltype] = np.maximum(thres, 1)
+            # Map to original cell types order
+            activate_threshold_array = np.array([threshold_dict[ct] for ct in cell_types_to_use])
+
         elif activate_threshold == 'celltype_poisson_point_estimate':
-            celltype_activate_threshold = pd.DataFrame(index=cell_types_to_use.unique(), columns=['threshold'])
-            # get the cell type cre_expression flattened
-            for celltype in cell_types_to_use.unique():
+            # Use dictionary for efficient collection of thresholds
+            threshold_dict = {}
+            for celltype in unique_cell_types:
                 # get the cre_expression for the cell type
                 celltype_cre_expr_flattened = cre_celltypes_expression[cell_types_to_use == celltype].values.flatten()
                 # calculate poisson lambda
@@ -2707,10 +3298,11 @@ class STARRFISH:
                 two_count_proportion = (celltype_cre_expr_flattened == 2).sum() / len(celltype_cre_expr_flattened)
                 poisson_lambda = two_count_proportion / one_count_proportion * 2
                 # set the threshold
-                celltype_activate_threshold.loc[celltype, 'threshold'] = stats.poisson.ppf(0.999, mu=poisson_lambda)
-            activate_threshold_array = celltype_activate_threshold['threshold'].loc[cell_types_to_use].values
+                threshold_dict[celltype] = stats.poisson.ppf(0.999, mu=poisson_lambda)
+            # Map to original cell types order
+            activate_threshold_array = np.array([threshold_dict[ct] for ct in cell_types_to_use])
+
         elif activate_threshold == 'celltype_poisson_fit':
-            celltype_activate_threshold = pd.DataFrame(index=cell_types_to_use.unique(), columns=['threshold'])
             def negative_log_likelihood(params, data):
                 pi, lambda1, lambda2 = params
                 pi = np.clip(pi, 0, 1)  # Ensure π ∈ [0,1]
@@ -2718,118 +3310,126 @@ class STARRFISH:
                 lambda2 = max(lambda2, 1e-6)
                 log_likelihood = np.log(pi * stats.poisson.pmf(data, lambda1) + (1 - pi) * stats.poisson.pmf(data, lambda2))
                 return -np.sum(log_likelihood)
+
             def fit(data):
                 # Initial guess and bounds
                 initial_params = [0.5, np.mean(data)/5, np.mean(data)*5]
                 bounds = [(0, 1), (1e-6, None), (1e-6, None)]
                 # Optimize
                 result = optimize.minimize(
-                    negative_log_likelihood, 
-                    initial_params, 
-                    args=(data,), 
-                    bounds=bounds, 
+                    negative_log_likelihood,
+                    initial_params,
+                    args=(data,),
+                    bounds=bounds,
                     method='L-BFGS-B'
                 )
                 pi, lambda1, lambda2 = result.x
                 return pi, lambda1, lambda2
-            # get the cell type cre_expression flattened
-            for celltype in cell_types_to_use.unique():
+
+            # Use dictionary for efficient collection of thresholds
+            threshold_dict = {}
+            for celltype in unique_cell_types:
                 # get the cre_expression for the cell type
                 celltype_cre_expr_flattened = cre_celltypes_expression[cell_types_to_use == celltype].values.flatten()
                 # calculate poisson lambda
                 _, _, lambda2 = fit(celltype_cre_expr_flattened)
                 # set the threshold
-                celltype_activate_threshold.loc[celltype, 'threshold'] = lambda2
-            activate_threshold_array = celltype_activate_threshold['threshold'].loc[cell_types_to_use].values
+                threshold_dict[celltype] = lambda2
+            # Map to original cell types order
+            activate_threshold_array = np.array([threshold_dict[ct] for ct in cell_types_to_use])
         elif isinstance(activate_threshold, (int, float)):
             # is numeric, just use the threshold
             activate_threshold_array = np.full(len(cell_types_to_use), activate_threshold)
         return activate_threshold_array
     
     def fisher_exact_cre_test(self, cell_types_to_use: List=None, activate_threshold=2, infect_threshold=1) -> dict:
+        """Fisher's exact test for CRE activation enrichment (per-CRE analysis)."""
         config = {
             'cell_types_to_use': cell_types_to_use,
             'infect_threshold': infect_threshold,
             'activate_threshold': activate_threshold
         }
-        # check if the results already exist
-        if hasattr(self, 'fisher_exact_cre_test_results') and hasattr(self, 'fisher_exact_cre_test_configs'):
-            for stored_config, fisher_exact_cre_test_result in zip(self.fisher_exact_cre_test_configs, self.fisher_exact_cre_test_results):
-                if stored_config == config:
-                    # if the results already exist, return the results
-                    print('Results already exist, return stored results')
-                    return fisher_exact_cre_test_result.copy()
+
+        # Check for cached results
+        cached_result = _check_cached_result(self, 'fisher_exact_cre_test_results', 'fisher_exact_cre_test_configs', config)
+        if cached_result is not None:
+            return cached_result
+
+        # Load data
         if cell_types_to_use is not None:
-            # get the cell types
             cre_celltypes_expression, cell_types_to_use = self.get_cre_celltypes(cell_types_to_use)
         else:
             cre_celltypes_expression = self.get_cre_expression().copy()
             cell_types_to_use = self.get_celltypes()
+
+        # Pre-compute unique cell types to avoid redundant calls
+        unique_cell_types = cell_types_to_use.unique()
+
+        # Initialize result DataFrames
         p_value, q_value, precision, recall, foldchange, precision_n, recall_n = (
-            pd.DataFrame(index=cell_types_to_use.unique(), columns=cre_celltypes_expression.columns) for _ in range(7)
+            pd.DataFrame(index=unique_cell_types, columns=cre_celltypes_expression.columns) for _ in range(7)
         )
-        # if activate_threshold is "celltype", then set cell type specific threshold
+
+        # Get activation threshold array (may be cell-type specific)
         activate_threshold_array = self.estimate_activate_threshold_array(activate_threshold, cre_celltypes_expression, cell_types_to_use)
+
+        # Run Fisher's exact test for each CRE
         for cre in cre_celltypes_expression.columns:
             cre_infected = cre_celltypes_expression[cre] >= infect_threshold
             cre_infected_expression = cre_celltypes_expression[cre][cre_infected]
             cell_types_infected = cell_types_to_use[cre_infected]
             cre_activated = cre_infected_expression >= activate_threshold_array[cre_infected]
-            # check the number of cells in each cell type that are infected and activated
-            n_celltype_infected = cell_types_infected.value_counts().reindex(cell_types_to_use.unique(), fill_value=0)
-            n_celltype_activated = cell_types_infected[cre_activated].value_counts().reindex(cell_types_to_use.unique(), fill_value=0)
-            # create contingency table
-            # -------       | infected but not activated                                    | activated
-            # other cells   | FF = sum(n_celltype_infected) - sum(n_celltype_activated) - TF| FT = sum(n_celltype_activated) - n_celltype_activated
-            # celltype      | TF = n_celltype_infected - n_celltype_activated               | TT = n_celltype_activated
+
+            # Count infected and activated cells per cell type (use pre-computed unique_cell_types)
+            n_celltype_infected = cell_types_infected.value_counts().reindex(unique_cell_types, fill_value=0)
+            n_celltype_activated = cell_types_infected[cre_activated].value_counts().reindex(unique_cell_types, fill_value=0)
+
+            # Create contingency table components
             TT = n_celltype_activated
             FT = n_celltype_activated.sum() - n_celltype_activated
             TF = n_celltype_infected - n_celltype_activated
             FF = n_celltype_infected.sum() - n_celltype_activated.sum() - TF
-            # do fisher exact test
-            for cell_type in cell_types_to_use.unique():
-                # do fisher exact test
-                oddsratio, p = stats.fisher_exact([[int(FF.loc[cell_type]), int(FT.loc[cell_type])], [int(TF.loc[cell_type]), int(TT.loc[cell_type])]])
+
+            # Run Fisher's exact test for each cell type (use pre-computed unique_cell_types)
+            for cell_type in unique_cell_types:
+                oddsratio, p = stats.fisher_exact([[int(FF.loc[cell_type]), int(FT.loc[cell_type])],
+                                                   [int(TF.loc[cell_type]), int(TT.loc[cell_type])]])
                 p_value.loc[cell_type, cre] = p
                 foldchange.loc[cell_type, cre] = oddsratio
+
+            # Calculate precision, recall
             precision[cre] = TT / (TT + TF)
             recall[cre] = TT / (TT + FT)
             precision_n[cre] = TT + TF
             recall_n[cre] = TT + FT
             q_value[cre] = multitest.multipletests(p_value[cre], method='fdr_bh')[1]
-        # make NaN values to 0 for precision and recall
+
+        # Fill NaN values
         precision = precision.fillna(0)
         recall = recall.fillna(0)
-        # for CRE in CRE_info, assign the p, q to best_subclass
+
+        # Assign metrics to cre_info based on best_subclass
         cre_info = self.get_creinfo().copy()
-        for cre in cre_info.index:
-            # get the best subclass
-            best_subclass = cre_info.loc[cre, 'best_subclass']
-            # get the p, q values for the best subclass
-            if best_subclass in p_value.index:
-                cre_info.loc[cre, 'p_value'] = p_value.loc[best_subclass, cre]
-                cre_info.loc[cre, 'q_value'] = q_value.loc[best_subclass, cre]
-                cre_info.loc[cre, 'precision'] = precision.loc[best_subclass, cre]
-                cre_info.loc[cre, 'recall'] = recall.loc[best_subclass, cre]
-                cre_info.loc[cre, 'foldchange'] = foldchange.loc[best_subclass, cre]
-            # get the entropy for each cre
-            cre_info.loc[cre, 'entropy'] = stats.entropy(recall[cre].astype(float))
-        # save results to attribute
-        fisher_exact_cre_test_result = {
-            'cre_info': cre_info,
-            'p_value': p_value,
-            'q_value': q_value,
-            'precision': precision,
-            'recall': recall,
-            'precision_n': precision_n,
-            'recall_n': recall_n,
-            'foldchange': foldchange
+        result_dfs = {
+            'p_value': p_value, 'q_value': q_value, 'precision': precision,
+            'recall': recall, 'foldchange': foldchange
         }
-        if not hasattr(self, 'fisher_exact_cre_test_results') or not hasattr(self, 'fisher_exact_cre_test_configs'):
-            self.fisher_exact_cre_test_results = []
-            self.fisher_exact_cre_test_configs = []
-        self.fisher_exact_cre_test_results.append(fisher_exact_cre_test_result)
-        self.fisher_exact_cre_test_configs.append(config)
+        cre_info = _assign_cre_info_from_best_subclass(cre_info, result_dfs,
+                                                       ['p_value', 'q_value', 'precision', 'recall', 'foldchange'])
+
+        # Calculate entropy
+        for cre in cre_info.index:
+            cre_info.loc[cre, 'entropy'] = stats.entropy(recall[cre].astype(float))
+
+        # Store results
+        fisher_exact_cre_test_result = {
+            'cre_info': cre_info, 'p_value': p_value, 'q_value': q_value,
+            'precision': precision, 'recall': recall, 'precision_n': precision_n,
+            'recall_n': recall_n, 'foldchange': foldchange
+        }
+        _store_result(self, 'fisher_exact_cre_test_results', 'fisher_exact_cre_test_configs',
+                     fisher_exact_cre_test_result, config)
+
         return fisher_exact_cre_test_result
     
     def atac_ontarget_cre_test(self, cell_types_to_use: List=None, activate_threshold=2, infect_threshold=1, atac_z_score_threshold=2) -> dict:
@@ -2910,7 +3510,7 @@ class STARRFISH:
         self.atac_ontarget_cre_test_configs.append(config)
         return cre_info
     
-    def fold_change_test(self, cell_types_to_use: List=None, 
+    def fold_change_test(self, cell_types_to_use: List=None,
                          normalize_by_cell_rna=False, normalize_by_cell_volume=False, normalize_by_cell_t7=False, filter_by_cell_t7=None,
                          normalize_by_celltype_rna=False, normalize_by_celltype_volume=False,
                          normalize_by_negative_control=False, normalize_by_infected_cell=False,
@@ -2918,6 +3518,76 @@ class STARRFISH:
                          filter_zero_counts=False, log_transform=False, binarize_t7=False, bulk_log_transform=False, rank_transform=None,
                          bootstrap_number=None, bootstrap_to_fixed_sample_size=None, apply_bootstrap_in_observation=False,
                          calculate_fdc=False, fill_nan=True, n_jobs=256, load_stored=True, dry_run=False) -> dict:
+        """
+        Compute fold-change enrichment of CRE activity across cell types with extensive normalization options.
+
+        Parameters
+        ----------
+        cell_types_to_use : list, optional
+            Cell types to include in analysis
+        normalize_by_cell_rna : bool, optional
+            Normalize by RNA content per cell (default: False)
+        normalize_by_cell_volume : bool, optional
+            Normalize by cell volume (default: False)
+        normalize_by_cell_t7 : bool or float, optional
+            Normalize by T7 expression per cell (default: False)
+        filter_by_cell_t7 : float, optional
+            Filter cells with T7 expression below threshold
+        normalize_by_celltype_rna : bool, optional
+            Normalize by median RNA per cell type (default: False)
+        normalize_by_celltype_volume : bool, optional
+            Normalize by median volume per cell type (default: False)
+        normalize_by_negative_control : bool, optional
+            Normalize by negative control CRE expression (default: False)
+        normalize_by_infected_cell : bool, optional
+            Normalize by infected cell fraction (default: False)
+        normalize_by_celltype_t7 : bool, optional
+            Normalize by median T7 per cell type (default: False)
+        normalize_by_total_cre : bool, optional
+            Normalize by total CRE expression (default: False)
+        normalize_by_libsize : bool, optional
+            Normalize by library size (default: False)
+        filter_zero_counts : bool, optional
+            Filter out zero counts (default: False)
+        log_transform : bool, optional
+            Apply log transformation at cell level (default: False)
+        binarize_t7 : bool, optional
+            Convert T7 to binary infected/uninfected (default: False)
+        bulk_log_transform : bool, optional
+            Apply log after aggregation (default: False)
+        rank_transform : str, optional
+            Apply rank transformation ('celltype' or 'cre')
+        bootstrap_number : int, optional
+            Number of bootstrap iterations
+        bootstrap_to_fixed_sample_size : int, optional
+            Resample to fixed sample size
+        apply_bootstrap_in_observation : bool, optional
+            Bootstrap at observation vs aggregated level (default: False)
+        calculate_fdc : bool, optional
+            Calculate fold discovery curve (default: False)
+        fill_nan : bool, optional
+            Fill NaN values with 0 (default: True)
+        n_jobs : int, optional
+            Number of parallel jobs (default: 256)
+        load_stored : bool, optional
+            Load cached results if available (default: True)
+        dry_run : bool, optional
+            Return config without running (default: False)
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'activity': DataFrame with cell type x CRE fold-change values
+            - 'config': Configuration parameters
+            - 'bootstrap_std': Standard deviations from bootstrap (if requested)
+            - Additional statistics
+
+        Notes
+        -----
+        Computes fold-change of each CRE in each cell type relative to other cell types,
+        with extensive normalization and bootstrap options for robustness. Results are cached.
+        """
         config = {
             'cell_types_to_use': cell_types_to_use,
             'normalize_by_cell_rna': normalize_by_cell_rna,
@@ -2985,43 +3655,23 @@ class STARRFISH:
             return fold_change_test_result
         if fold_change_test_result is not None:
             partial_loaded = True
-        if cell_types_to_use is not None:
-            # get the cell types
-            cre_cells_expression, rna_cells_expression, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
-        else:
-            cre_cells_expression = self.get_cre_expression().copy()
-            rna_cells_expression = self.get_rna_expression().copy()
-            cell_types_to_use = self.get_celltypes()
-        volm = self.get_tag('obs:volm').copy()
-        volm = volm.loc[cell_types_to_use.index]
-        # transform rna_celltypes_expression to dataframe
-        rna_cells_expression = pd.DataFrame(rna_cells_expression, index=cell_types_to_use.index)
-        t7_cells_expression = self.get_t7_expression()
-        if t7_cells_expression is not None:
-            t7_cells_expression = t7_cells_expression.loc[cre_cells_expression.index]
-            if binarize_t7:
-                t7_cells_expression = (t7_cells_expression > 0).astype(float)
-        if normalize_by_cell_rna and normalize_by_cell_volume:
-            rna_per_volume = rna_cells_expression / volm.values.reshape(-1, 1)
-            cre_cells_expression = cre_cells_expression / rna_per_volume.mean(axis=1).values.reshape(-1, 1)
-        elif normalize_by_cell_rna and not normalize_by_cell_volume:
-            cre_cells_expression = cre_cells_expression / rna_cells_expression.mean(axis=1).values.reshape(-1, 1)
-        elif normalize_by_cell_volume and not normalize_by_cell_rna:
-            cre_cells_expression = cre_cells_expression / volm.values.reshape(-1, 1)
-        if filter_by_cell_t7 is not None:
-            # filter out the cells that don't have t7 expression above the filter_by_cell_t7 threshold
-            if t7_cells_expression is not None:
-                cre_cells_expression[t7_cells_expression < filter_by_cell_t7] = np.nan
-                t7_cells_expression[t7_cells_expression < filter_by_cell_t7] = np.nan
-        if normalize_by_cell_t7:
-            assert t7_cells_expression is not None, "t7_cells_expression is required when normalize_by_cell_t7 is True"
-            cre_cells_expression = cre_cells_expression / t7_cells_expression
-            # if we encounter NaN or Inf, we will fill them with 0
-            cre_cells_expression = cre_cells_expression.fillna(0).replace([np.inf, -np.inf], 0)
+
+        # Preprocess expressions using common helper
+        cre_cells_expression, rna_cells_expression, cell_types_to_use, volm, t7_cells_expression = \
+            self._preprocess_expressions(
+                cell_types_to_use=cell_types_to_use,
+                normalize_by_cell_rna=normalize_by_cell_rna,
+                normalize_by_cell_volume=normalize_by_cell_volume,
+                normalize_by_cell_t7=normalize_by_cell_t7,
+                filter_by_cell_t7=filter_by_cell_t7,
+                binarize_t7=binarize_t7,
+                log_transform=log_transform
+            )
+
+        # Set t7_cells_expression to None if not needed for celltype-level normalization
         if not normalize_by_cell_t7 and not normalize_by_celltype_t7:
             t7_cells_expression = None
-        if log_transform:
-            cre_cells_expression = np.log1p(cre_cells_expression)
+
         cre_info = self.get_creinfo().copy()
         calculate_fold_change_args = {
             'cre_cells_expression': cre_cells_expression,
@@ -3151,9 +3801,65 @@ class STARRFISH:
     def average_bootstrap_test(self, cell_types_to_use, normalize_by_cell_rna=False, normalize_by_cell_volume=False, normalize_by_cell_t7=False,
                                normalize_by_celltype_rna=False, normalize_by_celltype_volume=False,
                                normalize_by_negative_control=False, normalize_by_celltype_t7=False, filter_by_cell_t7=None,
-                               normalize_by_libsize=False, log_transform=False, 
+                               normalize_by_libsize=False, log_transform=False,
                                bootstrap_number=None, bootstrap_to_fixed_sample_size=None, bootstrap_to_fixed_pct=None,
                                fill_nan=True, n_jobs=256, load_stored=True, dry_run=False) -> dict:
+        """
+        Compute average CRE activity per cell type with bootstrap confidence intervals.
+
+        Parameters
+        ----------
+        cell_types_to_use : list
+            Cell types to include in analysis
+        normalize_by_cell_rna : bool, optional
+            Normalize by RNA content per cell (default: False)
+        normalize_by_cell_volume : bool, optional
+            Normalize by cell volume (default: False)
+        normalize_by_cell_t7 : bool or float, optional
+            Normalize by T7 expression per cell (default: False)
+        normalize_by_celltype_rna : bool, optional
+            Normalize by median RNA per cell type (default: False)
+        normalize_by_celltype_volume : bool, optional
+            Normalize by median volume per cell type (default: False)
+        normalize_by_negative_control : bool, optional
+            Normalize by negative control CRE expression (default: False)
+        normalize_by_celltype_t7 : bool, optional
+            Normalize by median T7 per cell type (default: False)
+        filter_by_cell_t7 : float, optional
+            Filter cells with T7 expression below threshold
+        normalize_by_libsize : bool, optional
+            Normalize by library size (default: False)
+        log_transform : bool, optional
+            Apply log transformation (default: False)
+        bootstrap_number : int, optional
+            Number of bootstrap iterations
+        bootstrap_to_fixed_sample_size : int, optional
+            Resample to fixed sample size
+        bootstrap_to_fixed_pct : float, optional
+            Resample to fixed percentage of cells
+        fill_nan : bool, optional
+            Fill NaN values with 0 (default: True)
+        n_jobs : int, optional
+            Number of parallel jobs (default: 256)
+        load_stored : bool, optional
+            Load cached results if available (default: True)
+        dry_run : bool, optional
+            Return config without running (default: False)
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'activity': DataFrame with cell type x CRE average expression
+            - 'bootstrap_std': Bootstrap standard deviations
+            - 'config': Configuration parameters
+
+        Notes
+        -----
+        Similar to fold_change_test but computes average expression within each cell type
+        rather than fold-changes. Bootstrap resampling is performed within each cell type
+        to estimate uncertainty. Results are cached.
+        """
         # This function is similar to fold_change_test but only do bootstrap within each cell type.
         config = {
             'cell_types_to_use': cell_types_to_use,
@@ -3179,44 +3885,24 @@ class STARRFISH:
                     # if the results already exist, return the results
                     print('Results already exist, return stored results')
                     return stored_result.copy()
-        if cell_types_to_use is not None:
-            # get the cell types
-            cre_cells_expression, rna_cells_expression, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
-        else:
-            cre_cells_expression = self.get_cre_expression().copy()
-            rna_cells_expression = self.get_rna_expression().copy()
-            cell_types_to_use = self.get_celltypes()
-        volm = self.get_tag('obs:volm').copy()
-        volm = volm.loc[cell_types_to_use.index]
-        # transform rna_celltypes_expression to dataframe
-        rna_cells_expression = pd.DataFrame(rna_cells_expression, index=cell_types_to_use.index)
-        t7_cells_expression = self.get_t7_expression()
-        if t7_cells_expression is not None:
-            t7_cells_expression = t7_cells_expression.loc[cre_cells_expression.index]
-        if normalize_by_cell_rna and normalize_by_cell_volume:
-            rna_per_volume = rna_cells_expression / volm.values.reshape(-1, 1)
-            cre_cells_expression = cre_cells_expression / rna_per_volume.mean(axis=1).values.reshape(-1, 1)
-        elif normalize_by_cell_rna and not normalize_by_cell_volume:
-            cre_cells_expression = cre_cells_expression / rna_cells_expression.mean(axis=1).values.reshape(-1, 1)
-        elif normalize_by_cell_volume and not normalize_by_cell_rna:
-            cre_cells_expression = cre_cells_expression / volm.values.reshape(-1, 1)
-        if normalize_by_cell_t7:
-            assert t7_cells_expression is not None, "t7_cells_expression is required when normalize_by_cell_t7 is True"
-            cre_cells_expression = cre_cells_expression / t7_cells_expression
-            # fill inf values with nan
-            cre_cells_expression[np.isinf(cre_cells_expression)] = np.nan
-            # if normalize_by_cell_t7 is a numeric value, fill nan for cells with t7 smaller than that value
-            if isinstance(normalize_by_cell_t7, (int, float)):
-                cre_cells_expression[t7_cells_expression < normalize_by_cell_t7] = np.nan
-        if filter_by_cell_t7 is not None:
-            # filter the cells with t7 expression smaller than filter_by_cell_t7
-            if t7_cells_expression is not None:
-                cre_cells_expression[t7_cells_expression < filter_by_cell_t7] = np.nan
-                t7_cells_expression[t7_cells_expression < filter_by_cell_t7] = np.nan
+
+        # Preprocess expressions using common helper
+        cre_cells_expression, rna_cells_expression, cell_types_to_use, volm, t7_cells_expression = \
+            self._preprocess_expressions(
+                cell_types_to_use=cell_types_to_use,
+                normalize_by_cell_rna=normalize_by_cell_rna,
+                normalize_by_cell_volume=normalize_by_cell_volume,
+                normalize_by_cell_t7=normalize_by_cell_t7,
+                filter_by_cell_t7=filter_by_cell_t7,
+                binarize_t7=False,
+                log_transform=log_transform,
+                log_func='log'  # average_bootstrap_test uses np.log instead of np.log1p
+            )
+
+        # Set t7_cells_expression to None if not needed for celltype-level normalization
         if not normalize_by_cell_t7 and not normalize_by_celltype_t7:
             t7_cells_expression = None
-        if log_transform:
-            cre_cells_expression = np.log(cre_cells_expression)
+
         cre_info = self.get_creinfo().copy()
         # Prepare kwargs for calculate_fold_change
         calc_kwargs = {
@@ -3646,6 +4332,12 @@ class STARRFISH:
 
     def glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, fov_covariate=False, rna_covariate=False, size_covariate=False,
                  filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None, fix_intercept=None, multiprocess_threads=256) -> dict:
+        # Initialize cache attributes if needed
+        if not hasattr(self, 'glm_test_results'):
+            self.glm_test_results = []
+            self.glm_test_configs = []
+
+        # Create config for caching
         config = {
             'variate': variate,
             'norm_by_volm': norm_by_volm,
@@ -3660,38 +4352,42 @@ class STARRFISH:
             'transform_x_y': transform_x_y,
             'fix_intercept': fix_intercept
         }
-        # if the results already exist, return the results
-        if hasattr(self, 'glm_test_results') and hasattr(self, 'glm_test_configs'):
-            for stored_config, glm_result in zip(self.glm_test_configs, self.glm_test_results):
-                if stored_config == config:
-                    # if the results already exist, return the results
-                    print('Results already exist, return stored results')
-                    return glm_result.copy()
-        result = glm(self.adata, variate=variate, cell_types_to_use=cell_types_to_use, norm_by_volm=norm_by_volm, 
+
+        # Check cache for existing results
+        for stored_config, glm_result in zip(self.glm_test_configs, self.glm_test_results):
+            if stored_config == config:
+                print('Results already exist, return stored results')
+                return glm_result.copy()
+
+        # Compute new result
+        result = glm(self.adata, variate=variate, cell_types_to_use=cell_types_to_use, norm_by_volm=norm_by_volm,
                      volm_covariate=volm_covariate, fov_covariate=fov_covariate, rna_covariate=rna_covariate, size_covariate=size_covariate,
-                     filter_infected_cells=filter_infected_cells, 
+                     filter_infected_cells=filter_infected_cells,
                      positive_x_or_y=positive_x_or_y,
                      only_keep_positive_x=only_keep_positive_x,
                      only_keep_positive_y=only_keep_positive_y,
                      transform_x_y=transform_x_y,
                      fix_intercept=fix_intercept,
                      multiprocess_threads=multiprocess_threads)
-        # add results to attribute
-        if not hasattr(self, 'glm_test_results') or not hasattr(self, 'glm_test_configs'):
-            self.glm_test_results = []
-            self.glm_test_configs = []
+
+        # Cache result
         self.glm_test_results.append(result)
         self.glm_test_configs.append(config)
         return result
 
     def pseudo_bulk_glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, rna_covariate=False, size_covariate=False,
                              filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None, fix_intercept=None,
-                             pseudo_bulk_size=[50], pseudo_bulk_percentage=None, pseudo_bulk_number=[1000], replace=True, 
+                             pseudo_bulk_size=[50], pseudo_bulk_percentage=None, pseudo_bulk_number=[1000], replace=True,
                              multiprocess_threads=256) -> dict:
-        # check if the results already exist
-        config = {'cell_types_to_use': cell_types_to_use, 
+        # Initialize cache attributes if needed
+        if not hasattr(self, 'pseudo_bulk_glm_test_results'):
+            self.pseudo_bulk_glm_test_results = []
+            self.pseudo_bulk_glm_test_configs = []
+
+        # Create config for caching
+        config = {'cell_types_to_use': cell_types_to_use,
                   'variate': variate,
-                  'norm_by_volm': norm_by_volm, 
+                  'norm_by_volm': norm_by_volm,
                   'volm_covariate': volm_covariate,
                   'rna_covariate': rna_covariate,
                   'size_covariate': size_covariate,
@@ -3705,20 +4401,23 @@ class STARRFISH:
                   'pseudo_bulk_percentage': pseudo_bulk_percentage,
                   'pseudo_bulk_number': pseudo_bulk_number,
                   'replace': replace}
-        pseudo_bulk_keys = ['cell_types_to_use', 'filter_infected_cells', 'replace', 
+
+        pseudo_bulk_keys = ['cell_types_to_use', 'filter_infected_cells', 'replace',
                             'pseudo_bulk_size', 'pseudo_bulk_percentage', 'pseudo_bulk_number']
         partial_load = False
-        if hasattr(self, 'pseudo_bulk_glm_test_results') and hasattr(self, 'pseudo_bulk_glm_test_configs'):
-            for stored_config, pseudo_bulk_glm_test_result in zip(self.pseudo_bulk_glm_test_configs, self.pseudo_bulk_glm_test_results):
-                # check if partially matched all pseudo_bulk_keys
-                if all(stored_config.get(key) == config.get(key) for key in pseudo_bulk_keys):
-                    print('Partially load pseudo bulk adata')
-                    pseudo_bulk_adata = pseudo_bulk_glm_test_result['pseudo_bulk_adata'].copy()
-                    partial_load = True
-                if stored_config == config:
-                    # if the results already exist, return the results
-                    print('Results already exist, return stored results')
-                    return pseudo_bulk_glm_test_result.copy()
+
+        # Check cache for existing results
+        for stored_config, pseudo_bulk_glm_test_result in zip(self.pseudo_bulk_glm_test_configs, self.pseudo_bulk_glm_test_results):
+            # Check for exact match
+            if stored_config == config:
+                print('Results already exist, return stored results')
+                return pseudo_bulk_glm_test_result.copy()
+            # Check for partial match (can reuse pseudo bulk adata)
+            if all(stored_config.get(key) == config.get(key) for key in pseudo_bulk_keys):
+                print('Partially load pseudo bulk adata')
+                pseudo_bulk_adata = pseudo_bulk_glm_test_result['pseudo_bulk_adata'].copy()
+                partial_load = True
+
         if not partial_load:
             # for each cell type to use, create a pseudo bulk
             celltypes = self.get_celltypes()
@@ -3779,20 +4478,22 @@ class STARRFISH:
                     )
                     results.append(df_result)
                 return results
-            pseudo_bulk = pd.DataFrame()
-            pseudo_bulk_obs = pd.DataFrame()
-            # if we have t7 expression, we will also create a pseudo bulk for t7
-            pseudo_bulk_t7 = pd.DataFrame()
+            # Prepare lists to collect dataframes (avoid repeated concatenations)
+            pseudo_bulk_list = []
+            pseudo_bulk_t7_list = []
+            pseudo_bulk_obs_list = []
+
             if pseudo_bulk_size is None:
                 assert pseudo_bulk_percentage is not None, 'pseudo_bulk_size or pseudo_bulk_percentage must be set'
                 pseudo_bulk_size = [None] * len(pseudo_bulk_percentage)
             if pseudo_bulk_percentage is None:
                 assert pseudo_bulk_size is not None, 'pseudo_bulk_size or pseudo_bulk_percentage must be set'
                 pseudo_bulk_percentage = [None] * len(pseudo_bulk_size)
+
             for i, (size, percentage, number) in enumerate(zip(pseudo_bulk_size, pseudo_bulk_percentage, pseudo_bulk_number)):
                 for s in range(number):
                     cre_expression_pseudo_bulk, t7_expression_pseudo_bulk, volumes_pseudo_bulk = sample_aggregate(
-                        celltypes, [cre_expression, t7_expression, volumes], 
+                        celltypes, [cre_expression, t7_expression, volumes],
                         n_samples=size, percentage=percentage, random_state=s
                     )
                     # change the index to reflect the celltype, i and s
@@ -3800,55 +4501,67 @@ class STARRFISH:
                     cre_expression_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
                     t7_expression_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
                     volumes_pseudo_bulk.index = cell_types.astype(str) + f'_pseudo_bulk_{i}_{s}'
-                    pseudo_bulk = pd.concat([pseudo_bulk, cre_expression_pseudo_bulk])
-                    pseudo_bulk_t7 = pd.concat([pseudo_bulk_t7, t7_expression_pseudo_bulk])
+
+                    # Collect dataframes
+                    pseudo_bulk_list.append(cre_expression_pseudo_bulk)
+                    pseudo_bulk_t7_list.append(t7_expression_pseudo_bulk)
+
                     sample_obs = pd.DataFrame(volumes_pseudo_bulk, columns=['volm'])
                     sample_obs['subclass'] = cell_types.astype(str)
                     sample_obs['fov'] = cell_types.astype(str)
                     sample_obs['size'] = size
                     sample_obs['percentage'] = percentage
                     sample_obs['seed'] = s
-                    pseudo_bulk_obs = pd.concat([pseudo_bulk_obs, sample_obs])
+                    pseudo_bulk_obs_list.append(sample_obs)
+
+            # Concatenate all at once (much more efficient)
+            pseudo_bulk = pd.concat(pseudo_bulk_list, axis=0)
+            pseudo_bulk_t7 = pd.concat(pseudo_bulk_t7_list, axis=0)
+            pseudo_bulk_obs = pd.concat(pseudo_bulk_obs_list, axis=0)
             # create a new AnnData object for the pseudo bulk
             pseudo_bulk_adata = sc.AnnData(pseudo_bulk, obs=pseudo_bulk_obs)
             pseudo_bulk_adata.obsm['X_raw'] = pseudo_bulk
             pseudo_bulk_adata.obsm['CRE'] = pseudo_bulk
             if t7_expression is not None:
                 pseudo_bulk_adata.obsm['T7CRE'] = pseudo_bulk_t7
-        # perform glm test on the pseudo bulk
+        # Perform glm test on the pseudo bulk
         result = glm(pseudo_bulk_adata, variate=variate, cell_types_to_use=cell_types_to_use, CREs=pseudo_bulk_adata.var.index,
                      norm_by_volm=norm_by_volm, volm_covariate=volm_covariate, rna_covariate=rna_covariate, size_covariate=size_covariate,
-                     fov_covariate=False, filter_infected_cells=False, 
+                     fov_covariate=False, filter_infected_cells=False,
                      positive_x_or_y=positive_x_or_y,
                      only_keep_positive_x=only_keep_positive_x,
                      only_keep_positive_y=only_keep_positive_y,
                      transform_x_y=transform_x_y,
                      fix_intercept=fix_intercept,
                      multiprocess_threads=multiprocess_threads)
+
         pseudo_bulk_glm_test_result = {'pseudo_bulk_adata': pseudo_bulk_adata,
                                        'result': result}
-        # add results to attribute
-        if not hasattr(self, 'pseudo_bulk_glm_test_results') or not hasattr(self, 'pseudo_bulk_glm_test_configs'):
-            self.pseudo_bulk_glm_test_results = []
-            self.pseudo_bulk_glm_test_configs = []
+
+        # Cache result
         self.pseudo_bulk_glm_test_results.append(pseudo_bulk_glm_test_result)
         self.pseudo_bulk_glm_test_configs.append(config)
         return pseudo_bulk_glm_test_result
     
-    def pseudo_bulk_t7_sum_test(self, cell_types_to_use: List=None, t7_pseudo_bulk_size=100, 
+    def pseudo_bulk_t7_sum_test(self, cell_types_to_use: List=None, t7_pseudo_bulk_size=100,
                                 pseudo_bulk_number=1000, infected_cells_threshold=None, replace=True, multiprocess_threads=256) -> dict:
-        # check if the results already exist
+        # Initialize cache attributes if needed
+        if not hasattr(self, 'pseudo_bulk_t7_sum_test_results'):
+            self.pseudo_bulk_t7_sum_test_results = []
+            self.pseudo_bulk_t7_sum_test_configs = []
+
+        # Create config for caching
         config = {'cell_types_to_use': cell_types_to_use,
                   't7_pseudo_bulk_size': t7_pseudo_bulk_size,
                   'pseudo_bulk_number': pseudo_bulk_number,
                   'infected_cells_threshold': infected_cells_threshold,
                   'replace': replace}
-        if hasattr(self, 'pseudo_bulk_glm_test_results') and hasattr(self, 'pseudo_bulk_glm_test_configs'):
-            for stored_config, pseudo_bulk_glm_test_result in zip(self.pseudo_bulk_glm_test_configs, self.pseudo_bulk_glm_test_results):
-                if stored_config == config:
-                    # if the results already exist, return the results
-                    print('Results already exist, return stored results')
-                    return pseudo_bulk_glm_test_result.copy()
+
+        # Check cache for existing results
+        for stored_config, pseudo_bulk_t7_sum_test_result in zip(self.pseudo_bulk_t7_sum_test_configs, self.pseudo_bulk_t7_sum_test_results):
+            if stored_config == config:
+                print('Results already exist, return stored results')
+                return pseudo_bulk_t7_sum_test_result.copy()
         # for each cell type to use, create a pseudo bulk
         celltypes = self.get_celltypes()
         cre_expression = self.get_cre_expression()
@@ -3902,64 +4615,109 @@ class STARRFISH:
         # Prepare all combinations
         n_cres = cre_expression.shape[1]
         n_cell_types = len(cell_types_to_use)
-        combinations = []
-        for pseudo_bulk_idx in range(pseudo_bulk_number):
+
+        # Pre-filter cell type-CRE combinations if threshold is set
+        if infected_cells_threshold is not None:
+            valid_combinations = set()
             for cell_type_idx in range(n_cell_types):
+                if isinstance(celltypes, pd.DataFrame):
+                    cell_mask = (celltypes.iloc[:, 0] == cell_types_to_use[cell_type_idx]).values
+                else:
+                    cell_mask = (celltypes == cell_types_to_use[cell_type_idx]).values
                 for cre_idx in range(n_cres):
-                    if infected_cells_threshold is not None:
-                        # check if the cell type has enough infected cells
-                        cell_mask = (celltypes == cell_types_to_use[cell_type_idx]).values
-                        cre_data = cre_expression.iloc[cell_mask, cre_idx].values
-                        n_infected_cells = (cre_data > 0).sum()
-                        if n_infected_cells < infected_cells_threshold:
-                            continue
-                    combinations.append((pseudo_bulk_idx, cell_type_idx, cre_idx))
+                    cre_data = cre_expression.iloc[cell_mask, cre_idx].values
+                    if (cre_data > 0).sum() >= infected_cells_threshold:
+                        valid_combinations.add((cell_type_idx, cre_idx))
+
+            # Build combinations using pre-filtered set
+            combinations = [
+                (pseudo_bulk_idx, cell_type_idx, cre_idx)
+                for pseudo_bulk_idx in range(pseudo_bulk_number)
+                for cell_type_idx, cre_idx in valid_combinations
+            ]
+        else:
+            # Build all combinations directly
+            combinations = [
+                (pseudo_bulk_idx, cell_type_idx, cre_idx)
+                for pseudo_bulk_idx in range(pseudo_bulk_number)
+                for cell_type_idx in range(n_cell_types)
+                for cre_idx in range(n_cres)
+            ]
         # Run in parallel
         results = Parallel(n_jobs=min(multiprocess_threads, int(multiprocessing.cpu_count() * 0.8)), verbose=10)(
             delayed(sample_single_combination)(combo) for combo in combinations
         )
-        # Initialize arrays
-        pseudo_bulk_t7_array = np.zeros((pseudo_bulk_number, n_cell_types, n_cres))
-        pseudo_bulk_t7_array.fill(np.nan)
-        pseudo_bulk_cre_array = np.zeros((pseudo_bulk_number, n_cell_types, n_cres))
-        pseudo_bulk_cre_array.fill(np.nan)
-        pseudo_bulk_n_array = np.zeros((pseudo_bulk_number, n_cell_types, n_cres))
-        pseudo_bulk_n_array.fill(np.nan)
+        # Initialize arrays with NaN (more efficient than zeros + fill)
+        array_shape = (pseudo_bulk_number, n_cell_types, n_cres)
+        pseudo_bulk_t7_array = np.full(array_shape, np.nan)
+        pseudo_bulk_cre_array = np.full(array_shape, np.nan)
+        pseudo_bulk_n_array = np.full(array_shape, np.nan)
+
         # Fill arrays with results
         for pseudo_bulk_idx, cell_type_idx, cre_idx, t7_sum, cre_sum, n_samples in results:
             pseudo_bulk_t7_array[pseudo_bulk_idx, cell_type_idx, cre_idx] = t7_sum
             pseudo_bulk_cre_array[pseudo_bulk_idx, cell_type_idx, cre_idx] = cre_sum
             pseudo_bulk_n_array[pseudo_bulk_idx, cell_type_idx, cre_idx] = n_samples
+
         pseudo_bulk_t7_sum_test_result = {
             'pseudo_bulk_t7': pseudo_bulk_t7_array,
             'pseudo_bulk_cre': pseudo_bulk_cre_array,
             'pseudo_bulk_n': pseudo_bulk_n_array,
         }
-        # add results to attribute
-        if not hasattr(self, 'pseudo_bulk_t7_sum_test_results') or not hasattr(self, 'pseudo_bulk_t7_sum_test_configs'):
-            self.pseudo_bulk_t7_sum_test_results = []
-            self.pseudo_bulk_t7_sum_test_configs = []
+
+        # Cache result
         self.pseudo_bulk_t7_sum_test_results.append(pseudo_bulk_t7_sum_test_result)
         self.pseudo_bulk_t7_sum_test_configs.append(config)
         return pseudo_bulk_t7_sum_test_result
 
     def scvi(self, use_model: Literal['STARRFISHVI', 'SCVI'] = 'STARRFISHVI', model_args: dict = None, train_args: dict = None) -> dict:
-        # use scvi to denoise the data
+        """
+        Run single-cell variational inference (scVI) to model CRE activity.
+
+        Parameters
+        ----------
+        use_model : {'STARRFISHVI', 'SCVI'}, optional
+            Model to use: 'STARRFISHVI' for STARR-FISH-specific model or 'SCVI' for standard
+            scVI (default: 'STARRFISHVI')
+        model_args : dict, optional
+            Arguments to pass to model initialization
+        train_args : dict, optional
+            Arguments to pass to model training
+
+        Returns
+        -------
+        dict
+            Dictionary containing:
+            - 'model': Trained scVI model
+            - 'latent': Latent representations
+            - 'config': Configuration parameters
+
+        Notes
+        -----
+        Uses variational inference to learn low-dimensional representations of CRE activity
+        while accounting for technical variation. STARRFISHVI is optimized for STARR-FISH data.
+        """
+        # Initialize cache attributes if needed
+        if not hasattr(self, 'scvi_results'):
+            self.scvi_results = []
+            self.scvi_configs = []
+
+        # Select model
         if use_model == 'STARRFISHVI':
             SCVIMODEL = STARRFISHVI
         elif use_model == 'SCVI':
             SCVIMODEL = scvi.model.SCVI
-        # infer infection rate prior
+
+        # Infer infection rate prior
         if 'T7CRE' in self.adata.obsm.keys():
             non_infected_cells = ((self.adata.obsm['T7CRE'] > 0).sum(axis=1) == 0).sum()
         else:
             non_infected_cells = ((self.adata.obsm['CRE'] > 0).sum(axis=1) == 0).sum()
         infection_rate = -np.log(non_infected_cells / self.adata.shape[0]).item()
-        # first set the default arguments
+
+        # Set default model arguments
         if model_args is None:
-            # set default model args
-            model_args = {'n_latent': 10, 
-                          'n_hidden': 128}
+            model_args = {'n_latent': 10, 'n_hidden': 128}
             if use_model == 'STARRFISHVI':
                 model_args.update({
                     'gene_likelihood': "nb",
@@ -3973,35 +4731,29 @@ class STARRFISH:
                 })
             elif use_model == 'SCVI':
                 model_args.update({'n_layers': 2})
+
+        # Set default training arguments
         if train_args is None:
-            # set default train args
             train_args = {
                 'max_epochs': 500,
                 'batch_size': 1280,
-                'accelerator': 'auto'
+                'accelerator': 'gpu' if torch.cuda.is_available() else 'auto'
             }
-            # if gpu is available, use gpu
             if torch.cuda.is_available():
-                train_args['accelerator'] = 'gpu'
                 train_args['devices'] = 1
-        # create a global config to save
-        config = {'use_model': use_model,
-                  'model_args': model_args.copy(),
-                  'train_args': train_args.copy()}
-        # drop config['train_args']['accelerator'] from config only
-        if 'accelerator' in config['train_args']:
-            config['train_args'].pop('accelerator')
-        if 'devices' in config['train_args']:
-            config['train_args'].pop('devices')
-        if 'infection_rate_library_size' in config['model_args']:
-            config['model_args'].pop('infection_rate_library_size')
-        # check if the results already exist
-        if hasattr(self, 'scvi_results') and hasattr(self, 'scvi_configs'):
-            for stored_config, scvi_result in zip(self.scvi_configs, self.scvi_results):
-                if stored_config == config:
-                    # if the results already exist, return the results
-                    print('Results already exist, return stored results')
-                    return scvi_result.copy()
+
+        # Create config for caching (exclude non-deterministic parameters)
+        config = {
+            'use_model': use_model,
+            'model_args': {k: v for k, v in model_args.items() if k != 'infection_rate_library_size'},
+            'train_args': {k: v for k, v in train_args.items() if k not in ['accelerator', 'devices']}
+        }
+
+        # Check cache for existing results
+        for stored_config, scvi_result in zip(self.scvi_configs, self.scvi_results):
+            if stored_config == config:
+                print('Results already exist, return stored results')
+                return scvi_result.copy()
         # prepare adata_mvi for scvi
         # RNA info
         gene_info = self.adata.var.copy()
@@ -4063,20 +4815,51 @@ class STARRFISH:
         for k, v in self.adata.obsm.items():
             if k not in adata_mvi.obsm.keys() and k not in ['X_raw', 'CRE']:
                 adata_mvi.obsm[k] = v.copy()
-        # save to attribute
-        if not hasattr(self, 'scvi_results') or not hasattr(self, 'scvi_configs'):
-            self.scvi_results = []
-            self.scvi_configs = []
+        # Cache result
         self.scvi_results.append(adata_mvi)
         self.scvi_configs.append(config)
         return adata_mvi
 
     def corr_atac_cpm(self, cell_types_to_use: Union[List, pd.Series]=None, cres_to_use: Union[List, pd.Series]=None,
-                      acvitity_df: pd.DataFrame = None, log_atac=False, log_activity=False, 
+                      acvitity_df: pd.DataFrame = None, log_atac=False, log_activity=False,
                       filter_by_atac_z_threshold=None,
                       filter_by_atac_raw_threshold=None,
                       filter_by_negative_control_z_threshold=None,
                       attr_to_use='atac_cpm') -> tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Compute correlation between STARR-FISH activity and ATAC-seq chromatin accessibility.
+
+        Parameters
+        ----------
+        cell_types_to_use : list or pd.Series, optional
+            Cell types to include in correlation
+        cres_to_use : list or pd.Series, optional
+            CREs to include in correlation
+        acvitity_df : pd.DataFrame, optional
+            Custom activity matrix (default: uses stored results)
+        log_atac : bool, optional
+            Log-transform ATAC-seq values (default: False)
+        log_activity : bool, optional
+            Log-transform activity values (default: False)
+        filter_by_atac_z_threshold : float, optional
+            Filter CREs by ATAC-seq z-score threshold
+        filter_by_atac_raw_threshold : float, optional
+            Filter CREs by raw ATAC-seq threshold
+        filter_by_negative_control_z_threshold : float, optional
+            Filter by negative control z-score threshold
+        attr_to_use : str, optional
+            Attribute name for ATAC data (default: 'atac_cpm')
+
+        Returns
+        -------
+        tuple of (pd.DataFrame, pd.DataFrame)
+            Correlation matrix and p-value matrix (cell types x CREs)
+
+        Notes
+        -----
+        Computes Pearson correlation between STARR-FISH measured enhancer activity and
+        ATAC-seq chromatin accessibility across cell types to validate CRE activity predictions.
+        """
         # filter atac_cpm and activity_df by cell_types_to_use
         if cell_types_to_use is not None:
             # first transform the cell_types_to_use as np.array
@@ -4138,19 +4921,24 @@ class STARRFISH:
     def cross_talk_test(self, cell_types_to_use: List=None, normalize_by_cell_rna=False, normalize_by_volume=False,
                         method: Literal['pearson', 'spearman', 'fisher_exact'] = 'fisher_exact',
                         n_jobs=256) -> dict:
+        # Initialize cache attributes if needed
+        if not hasattr(self, 'cross_talk_test_results'):
+            self.cross_talk_test_results = []
+            self.cross_talk_test_configs = []
+
+        # Create config for caching
         config = {
             'cell_types_to_use': cell_types_to_use,
             'normalize_by_cell_rna': normalize_by_cell_rna,
             'normalize_by_volume': normalize_by_volume,
             'method': method
         }
-        # check if the results already exist
-        if hasattr(self, 'cross_talk_test_results') and hasattr(self, 'cross_talk_test_configs'):
-            for stored_config, cross_talk_test_result in zip(self.cross_talk_test_configs, self.cross_talk_test_results):
-                if stored_config == config:
-                    # if the results already exist, return the results
-                    print('Results already exist, return stored results')
-                    return cross_talk_test_result.copy()
+
+        # Check cache for existing results
+        for stored_config, cross_talk_test_result in zip(self.cross_talk_test_configs, self.cross_talk_test_results):
+            if stored_config == config:
+                print('Results already exist, return stored results')
+                return cross_talk_test_result.copy()
         # for each cell type, calculate the correlation between CREs
         # first only keep cell types in cell_types_to_use
         if cell_types_to_use is not None and cell_types_to_use != ['ALL']:
@@ -4203,10 +4991,7 @@ class STARRFISH:
             p_value_all = cross_talk_corr_test(cre_celltypes_expression.to_numpy(), method)
             result = {'by_cell_type': {'p_value': p_value, 'corr': corr},
                       'all': {'p_value': p_value_all[0], 'corr': p_value_all[1]}}
-        # save results to attribute
-        if not hasattr(self, 'cross_talk_test_results') or not hasattr(self, 'cross_talk_test_configs'):
-            self.cross_talk_test_results = []
-            self.cross_talk_test_configs = []
+        # Cache result
         self.cross_talk_test_results.append(result)
         self.cross_talk_test_configs.append(config)
         return result
@@ -4573,8 +5358,33 @@ file_type = bed""")
     
     @staticmethod
     def corr_starrfish(activity_df1: pd.DataFrame, activity_df2: pd.DataFrame,
-                       cell_types_to_use: Union[List, pd.Series]=None, 
+                       cell_types_to_use: Union[List, pd.Series]=None,
                        log_activity=False) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Compute correlation between two STARR-FISH activity matrices.
+
+        Parameters
+        ----------
+        activity_df1 : pd.DataFrame
+            First activity matrix (cell types x CREs)
+        activity_df2 : pd.DataFrame
+            Second activity matrix (cell types x CREs) to correlate with first
+        cell_types_to_use : list or pd.Series, optional
+            Cell types to include in correlation
+        log_activity : bool, optional
+            Log-transform activity values before correlation (default: False)
+
+        Returns
+        -------
+        tuple of (pd.DataFrame, pd.DataFrame)
+            Correlation matrix and p-value matrix (CREs x CREs)
+
+        Notes
+        -----
+        Static method to compare CRE activity patterns between different STARR-FISH
+        experiments or analysis methods. Useful for validating reproducibility or
+        comparing different normalization strategies.
+        """
         # filter atac_cpm and activity_df by cell_types_to_use
         if cell_types_to_use is not None:
             # first transform the cell_types_to_use as np.array
@@ -4598,17 +5408,17 @@ file_type = bed""")
         row_result = row_corr(activity_df1, activity_df2)
         return col_result, row_result
     
-    def negbiom_cmdstanpy(self, cell_types_to_use, cres_to_use, 
+    def negbiom_cmdstanpy(self, cell_types_to_use, cres_to_use,
                          stan_model_bg='NegBinom.stan', stan_model_main='NegBinom2.stan',
-                         chains=1, iter_warmup=1000, iter_sampling=2000, 
+                         chains=1, iter_warmup=1000, iter_sampling=2000,
                          n_jobs=None):
         """
         Negative binomial Bayesian analysis using CmdStanPy (Python port of R cmdstanr workflow)
-        
+
         Parameters:
         -----------
         rna_file : str, path to RNA transcript counts CSV
-        df_file : str, path to negative control transcript counts CSV  
+        df_file : str, path to negative control transcript counts CSV
         lib_file : str, path to library size CSV
         df_all_file : str, path to all element transcript counts CSV
         lib_all_file : str, path to all element library sizes CSV
@@ -4621,8 +5431,15 @@ file_type = bed""")
         n_jobs : int, number of parallel jobs (None = all cores)
         output_file : str, output pickle file path
         """
+        # Initialize cache attributes if needed
+        if not hasattr(self, 'negbiom_results'):
+            self.negbiom_results = []
+            self.negbiom_configs = []
+
         if n_jobs is None:
             n_jobs = os.cpu_count() * 0.8  # Use 80% of available cores
+
+        # Create config for caching
         config = {
             'cell_types_to_use': cell_types_to_use,
             'cres_to_use': cres_to_use,
@@ -4632,13 +5449,12 @@ file_type = bed""")
             'iter_warmup': iter_warmup,
             'iter_sampling': iter_sampling,
         }
-        # Check if results already exist
-        if hasattr(self, 'negbiom_results') and hasattr(self, 'negbiom_configs'):
-            for stored_config, negbiom_result in zip(self.negbiom_configs, self.negbiom_results):
-                if stored_config == config:
-                    # If results already exist, return them
-                    print('Results already exist, returning stored results')
-                    return negbiom_result.copy()
+
+        # Check cache for existing results
+        for stored_config, negbiom_result in zip(self.negbiom_configs, self.negbiom_results):
+            if stored_config == config:
+                print('Results already exist, returning stored results')
+                return negbiom_result.copy()
         # Load data
         if cell_types_to_use is not None:
             cre_cells_expression, rna_cells_expression, cell_types_to_use = self.get_cre_rna_celltypes(cell_types_to_use)
@@ -4819,10 +5635,7 @@ file_type = bed""")
             'background_results': background_results,
             'results': results
         }
-        # save results to attribute
-        if not hasattr(self, 'negbiom_results') or not hasattr(self, 'negbiom_configs'):
-            self.negbiom_results = []
-            self.negbiom_configs = []
+        # Cache result
         self.negbiom_results.append(res)
         self.negbiom_configs.append(config)
         return res
