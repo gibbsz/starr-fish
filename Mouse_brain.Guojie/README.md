@@ -63,20 +63,23 @@ starrfish = STARRFISH(
 cre_expr = starrfish.get_cre_expression()
 
 # Run fold-change test with normalization
-results = starrfish.fold_change_test(
-    normalize_by_cell_rna=True,
-    normalize_by_cell_volume=True,
-    bootstrap_number=1000
+results = starrfish.average_bootstrap_test(
+    cell_types_to_use=None, # use all cell types
+    normalize_by_celltype_t7=True,  # Normalize by T7 at cell type level
+    bootstrap_number=1000,
+    bootstrap_to_fixed_pct=1,
 )
 
+res_q, res_df, _ = starrfish.average_bootstrap_test_q(
+    results, threshold='neg_control_mean', 
+    norm='T7', tail='both', 
+    to_filter=None, calibrate=None) # calculate q-value, please refer to analysis.figure_4.cCRE_activity.ipynb
+
 # Get activity matrix
-activity = results['activity']
+activity = res_df
 
 # Correlate with ATAC-seq
 corr, pval = starrfish.corr_atac_cpm(acvitity_df=activity)
-
-# Save analysis
-starrfish.save('starrfish_analysis.pkl')
 ```
 
 ## Package Structure
@@ -181,7 +184,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 For questions, issues, or contributions:
 - **Author**: Guojie Zhong
 - **Lab**: Ren Lab
-- **Institution**: The Jackson Laboratory / Columbia University
+- **Institution**: New York Genome Center / Columbia University
 - **Issues**: Please report bugs and feature requests via GitHub Issues
 
 ## Version History
