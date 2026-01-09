@@ -1,7 +1,5 @@
 # STARRFISH Package
 
-**S**ingle-cell **T**ranscriptomic **A**nd **R**egulatory **R**egion **R**eadout **F**or **I**dentifying **S**pecificity of cis-regulatory elements and their combinatorial signatures in cells at **H**igh-resolution
-
 A comprehensive Python package for analyzing STARR-FISH data to measure cis-regulatory element (CRE) activity at single-cell resolution.
 
 ## Features
