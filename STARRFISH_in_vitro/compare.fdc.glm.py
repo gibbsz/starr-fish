@@ -4,8 +4,8 @@ import sys
 try:
     PWD = os.path.dirname(os.path.abspath(__file__))
 except:
-    PWD = '/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/HCT116.Guojie/'
-sys.path.append(f'{PWD}/../Mouse_brain.Guojie/')
+    PWD = '/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/STARRFISH_in_vitro/'
+sys.path.append(f'{PWD}/../STARRFISH_in_vivo/')
 sys.path.append(f'{PWD}/')
 os.chdir(PWD)
 from fdc import preprocess_experiment as preprocess_experiment_fdc

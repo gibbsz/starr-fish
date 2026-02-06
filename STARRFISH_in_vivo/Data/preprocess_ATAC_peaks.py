@@ -48,7 +48,7 @@ def preprocess(adata_path):
     adata.obsm['CRE'] = adata.obsm['CRE'][adata.uns['CRE_info'].index]
     return adata
 # %% preprocess and load data
-adata = preprocess(f'/share/vault/Users/gz2294/starr-fish/Mouse_brain.Guojie/Data/scdata_03_14_BRBB500gn_withCRE_final.h5ad')
+adata = preprocess(f'/share/vault/Users/gz2294/starr-fish/STARRFISH_in_vivo/Data/scdata_03_14_BRBB500gn_withCRE_final.h5ad')
 # %%
 # Prepare CRE info
 creinfo = adata.uns['CRE_info'].copy()

@@ -198,14 +198,14 @@ cython_debug/
 # data folder
 .vscode/
 zgibbs_local/
-Mouse_brain.Guojie/Data/ATAC/wmb_bigwig
-Mouse_brain.Guojie/.genomespy_shared
-Mouse_brain.Guojie/Data/Histone/DNAbw
-Mouse_brain.Guojie/Data/Histone_peaks/
-Mouse_brain.Guojie/Data/abc_atlas/
-Mouse_brain.Guojie/Data/annotation/my_cre_annot_final.tsv
-Mouse_brain.Guojie/results/homer_motif
-Mouse_brain.Guojie/results/full_stats
-Mouse_brain.Guojie/archive*/
-Mouse_brain.Guojie/runs/
-Mouse_brain.Guojie/Data/abc_atlas20CRE_T7_July_2024/20CRE_July_2024_analysis.ipynb
+STARRFISH_in_vivo/Data/ATAC/wmb_bigwig
+STARRFISH_in_vivo/.genomespy_shared
+STARRFISH_in_vivo/Data/Histone/DNAbw
+STARRFISH_in_vivo/Data/Histone_peaks/
+STARRFISH_in_vivo/Data/abc_atlas/
+STARRFISH_in_vivo/Data/annotation/my_cre_annot_final.tsv
+STARRFISH_in_vivo/results/homer_motif
+STARRFISH_in_vivo/results/full_stats
+STARRFISH_in_vivo/archive*/
+STARRFISH_in_vivo/runs/
+STARRFISH_in_vivo/Data/abc_atlas20CRE_T7_July_2024/20CRE_July_2024_analysis.ipynb

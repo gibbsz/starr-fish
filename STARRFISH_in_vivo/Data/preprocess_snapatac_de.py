@@ -37,7 +37,7 @@ def preprocess(adata_path):
     adata.obsm['CRE'] = adata.obsm['CRE'][adata.uns['CRE_info'].index]
     return adata
 # %% preprocess and load data
-adata = preprocess(f'/share/vault/Users/gz2294/starr-fish/Mouse_brain.Guojie/Data/scdata_03_14_BRBB500gn_withCRE_final.h5ad')
+adata = preprocess(f'/share/vault/Users/gz2294/starr-fish/STARRFISH_in_vivo/Data/scdata_03_14_BRBB500gn_withCRE_final.h5ad')
 # %%
 # Prepare CRE info
 creinfo = adata.uns['CRE_info'].copy()
@@ -45,7 +45,7 @@ creinfo['cre'] = creinfo.index
 # %%
 celltypes = []
 # list all de files
-de_files = os.listdir('/share/vault/Users/gz2294/starr-fish/Mouse_brain.Guojie/Data/snapatac2_de/')
+de_files = os.listdir('/share/vault/Users/gz2294/starr-fish/STARRFISH_in_vivo/Data/snapatac2_de/')
 for f in de_files:
     if f.endswith('.csv'):
         # get the cell type name from cluster_annotation_term
@@ -57,7 +57,7 @@ for f in de_files:
     if f.endswith('.csv'):
         celltype = f.replace('.csv', '').replace('_', ' ')
         try:
-            de = pd.read_csv('/share/vault/Users/gz2294/starr-fish/Mouse_brain.Guojie/Data/snapatac2_de/' + f, sep='\t')
+            de = pd.read_csv('/share/vault/Users/gz2294/starr-fish/STARRFISH_in_vivo/Data/snapatac2_de/' + f, sep='\t')
             # rename de index
             de.index = creinfo['cre'].groupby(creinfo['enh']).first().loc[de['feature name']].values
             # assign pval and fc to the de_pval_df and de_fc_df
@@ -71,6 +71,6 @@ for f in de_files:
 de_fc_df = de_fc_df.fillna(0)
 de_pval_df = de_pval_df.fillna(1)
 # %%
-de_fc_df.T.to_csv('/share/vault/Users/gz2294/starr-fish/Mouse_brain.Guojie/Data/snapatac2_de_fc.csv')
-de_pval_df.T.to_csv('/share/vault/Users/gz2294/starr-fish/Mouse_brain.Guojie/Data/snapatac2_de_pval.csv')
+de_fc_df.T.to_csv('/share/vault/Users/gz2294/starr-fish/STARRFISH_in_vivo/Data/snapatac2_de_fc.csv')
+de_pval_df.T.to_csv('/share/vault/Users/gz2294/starr-fish/STARRFISH_in_vivo/Data/snapatac2_de_pval.csv')
 # %%

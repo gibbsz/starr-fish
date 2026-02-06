@@ -69,7 +69,7 @@ def preprocess(adata_path):
     adata.obsm['CRE'] = adata.obsm['CRE'][adata.uns['CRE_info'].index]
     return adata
 # %% preprocess and load data
-adata2 = preprocess(f'/share/vault/Users/gz2294/starr-fish/Mouse_brain.Guojie/Data/scdata_03_14_BRBB500gn_withCRE_final.h5ad')
+adata2 = preprocess(f'/share/vault/Users/gz2294/starr-fish/STARRFISH_in_vivo/Data/scdata_03_14_BRBB500gn_withCRE_final.h5ad')
 cres = adata2.uns['CRE_info'].index[adata2.uns['CRE_info']['Start'] != '']
 # %%
 # cluster names

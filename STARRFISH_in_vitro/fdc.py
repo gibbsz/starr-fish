@@ -9,11 +9,11 @@ import scipy
 import scanpy as sc
 import warnings
 warnings.filterwarnings('ignore')
-# prepare the utils.py from Mouse_brain.Guojie
+# prepare the utils.py from STARRFISH_in_vivo
 import sys
 import os
 PWD = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(f'{PWD}/../Mouse_brain.Guojie/')
+sys.path.append(f'{PWD}/../STARRFISH_in_vivo/')
 from utils import STARRFISH
 # %%
 def preprocess_experiment(enhancer_file, vector_file=None, nanopore_file=None, rna_seq_file=None, dna_seq_file=None, bed_file=None):
