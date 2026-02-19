@@ -206,6 +206,8 @@ STARRFISH_in_vivo/Data/abc_atlas/
 STARRFISH_in_vivo/Data/annotation/my_cre_annot_final.tsv
 STARRFISH_in_vivo/results/homer_motif
 STARRFISH_in_vivo/results/full_stats
+STARRFISH_in_vivo/results/barcode_motif_scan
 STARRFISH_in_vivo/archive*/
 STARRFISH_in_vivo/runs/
 STARRFISH_in_vivo/Data/abc_atlas20CRE_T7_July_2024/20CRE_July_2024_analysis.ipynb
+STARRFISH_in_vivo/barcode_enhancer_decomposition/results/
