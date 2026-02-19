@@ -40,16 +40,16 @@ def plot_variance_decomposition(df_plot, variance=False, fig=None, ax=None):
     }
 
     # --- 2. Plotting with Seaborn ---
-    # We enforce 'order' to ensure bars don't get shuffled
-    sns.barplot(
+    # We enforce 'order' to ensure lines are in the correct order
+    sns.lineplot(
         data=df_long,
         x="construct",
         y="Proportion",
         hue="Component",
-        order=df_plot["construct"],  # Keep your rank order
         palette=palette,
-        edgecolor="black",
-        linewidth=0.5,
+        marker="o",
+        markersize=8,
+        linewidth=2,
         alpha=0.9,
         ax=ax
     )
@@ -158,18 +158,18 @@ def plot_variance_qc(df, output_prefix="qc_plot", show=True, figsize=(12, 6)):
     fig1, ax1 = plt.subplots(figsize=figsize)
     
     # Bottom: Enhancer (Green)
-    p1 = ax1.bar(df_sorted['cell_type'], df_sorted['prop_enhancer'], 
+    p1 = ax1.bar(df_sorted['cell_type'], df_sorted['prop_enhancer'],
                  label='Enhancer', color='#2ca02c', alpha=0.9, width=0.8)
-    
+
     # Middle: Barcode (Red)
-    p2 = ax1.bar(df_sorted['cell_type'], df_sorted['prop_barcode'], 
-                 bottom=df_sorted['prop_enhancer'], 
+    p2 = ax1.bar(df_sorted['cell_type'], df_sorted['prop_barcode'],
+                 bottom=df_sorted['prop_enhancer'],
                  label='Barcode', color='#d62728', alpha=0.8, width=0.8)
-    
+
     # Top: Noise (Grey)
     bottom_noise = df_sorted['prop_enhancer'] + df_sorted['prop_barcode']
-    p3 = ax1.bar(df_sorted['cell_type'], df_sorted['prop_noise'], 
-                 bottom=bottom_noise, 
+    p3 = ax1.bar(df_sorted['cell_type'], df_sorted['prop_noise'],
+                 bottom=bottom_noise,
                  label='Noise', color='#7f7f7f', alpha=0.5, width=0.8)
     
     ax1.set_ylabel('Proportion of Variance')
