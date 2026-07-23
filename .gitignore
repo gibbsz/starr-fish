@@ -211,3 +211,18 @@ STARRFISH_in_vivo/archive*/
 STARRFISH_in_vivo/runs/
 STARRFISH_in_vivo/Data/abc_atlas20CRE_T7_July_2024/20CRE_July_2024_analysis.ipynb
 STARRFISH_in_vivo/barcode_enhancer_decomposition/results/
+
+# working folder
+working/
+
+# other
+.claude/
+.codegraph/
+
+# revision
+revision/archive/
+*logs*
+*csv*
+*meme*
+*fa*
+*fimo*

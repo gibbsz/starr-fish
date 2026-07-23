@@ -4330,6 +4330,95 @@ class STARRFISH:
         self.mixture_model_test_configs.append(config)
         return res
 
+    def bayesian_activity_test(self, level: Literal['class', 'subclass'] = 'class',
+                               channel: Literal['t7', 'joint'] = 'joint',
+                               method: Literal['svi', 'nuts'] = 'svi',
+                               infection_model: Literal['copy_number', 'binary'] = 'copy_number',
+                               subclass_tag: str = 'obs:subclass', class_tag: str = 'obs:class',
+                               kmax: int = None, init: Literal['moments'] = 'moments',
+                               num_steps: int = 20000, lr: float = 5e-3, guide: str = 'AutoNormal',
+                               num_warmup: int = 1000, num_samples: int = 1000, num_chains: int = 2,
+                               num_posterior: int = 1000, seed: int = 0, load_stored: bool = True) -> dict:
+        """Fit a Bayesian hierarchical infection model (see ``bayesian_hierarchical``).
+
+        Stages, per the design: ``(level='class', channel='t7')`` calibrates infection from
+        T7 alone; ``(level='class', channel='joint')`` adds CRE activity at class granularity;
+        ``(level='subclass', channel='joint')`` is the full subclass-nested-in-class model.
+
+        Parameters
+        ----------
+        level : 'class' | 'subclass'
+            Cell-type granularity of ``rho`` / ``gamma``. 'subclass' nests within 'class'.
+        channel : 't7' | 'joint'
+            't7' = T7-only infection calibration; 'joint' = T7 + CRE.
+        method : 'svi' | 'nuts'
+            SVI (scales to full data) or NUTS (use at class level / calibration only).
+        infection_model : 'copy_number' | 'binary'
+            'copy_number' marginalizes a latent Poisson virus-copy count. 'binary'
+            marginalizes a shared infected/not-infected gate followed by NB channels.
+        kmax : int, optional
+            Latent copy-number truncation. If None, chosen adaptively from the data and
+            validated against the posterior Poisson tail. Ignored by the binary model.
+        ... : inference hyperparameters passed through to ``fit_svi`` / ``fit_nuts``.
+
+        Returns
+        -------
+        dict with keys ``summary`` (rho/gamma/delta DataFrames with evidence + CI widths),
+        ``evidence`` (pre-fit audit), ``ppc`` (posterior-predictive checks), ``diagnostics``,
+        ``scalar_samples`` (global parameter draws), ``kmax``, ``group_names``, ``cre_names``,
+        and ``config``.
+        """
+        from . import bayesian_hierarchical as bh
+
+        if infection_model not in bh.MODEL_FAMILIES:
+            raise ValueError(f"unsupported infection_model={infection_model}; "
+                             f"available: {sorted(bh.MODEL_FAMILIES)}")
+        if (level, channel) not in bh.MODEL_FAMILIES[infection_model]:
+            raise ValueError(f"unsupported (level, channel)=({level}, {channel}); "
+                             f"available: {sorted(bh.MODEL_FAMILIES[infection_model].keys())}")
+
+        config = dict(level=level, channel=channel, method=method, infection_model=infection_model,
+                      subclass_tag=subclass_tag,
+                      class_tag=class_tag, kmax=kmax, init=init, num_steps=num_steps, lr=lr,
+                      guide=guide, num_warmup=num_warmup, num_samples=num_samples,
+                      num_chains=num_chains, seed=seed,
+                      blacklist_cre=list(self.blacklist_cre))
+        if load_stored:
+            cached = _check_cached_result(self, 'bayesian_activity_test_results',
+                                          'bayesian_activity_test_configs', config)
+            if cached is not None:
+                return cached
+
+        # --- assemble arrays and delegate to the array-level core ---
+        if not hasattr(self, 'lib_size') or self.lib_size is None:
+            raise ValueError("self.lib_size is required (call load_libsize first)")
+        cre_names = [cre for cre in list(self.lib_size.index) if cre not in set(self.blacklist_cre)]
+        cre_info = self.get_creinfo().reindex(cre_names)
+        negative_control_mask = cre_info['labeling_type'].astype(str).eq('negative control').to_numpy()
+        config['negative_control_cre'] = np.asarray(cre_names)[negative_control_mask].tolist()
+        t7_df = self.get_t7_expression()
+        cre_df = self.get_cre_expression()
+        if t7_df is None:
+            raise ValueError("T7 expression unavailable (t7_tag not set)")
+        t7 = t7_df.reindex(columns=cre_names).to_numpy()
+        cre = cre_df.reindex(columns=cre_names).to_numpy()
+        lib_size_log = self.lib_size['counts'].reindex(cre_names).to_numpy().astype(np.float64)
+        sub = self.get_celltypes(subclass_tag).astype(str).to_numpy()
+        cls = self.get_celltypes(class_tag).astype(str).to_numpy()
+
+        res = bh.run_model(t7, cre, sub, cls, lib_size_log, cre_names,
+                           level=level, channel=channel, method=method, kmax=kmax,
+                           num_steps=num_steps, lr=lr, guide=guide, num_warmup=num_warmup,
+                           num_samples=num_samples, num_chains=num_chains,
+                           num_posterior=num_posterior, seed=seed,
+                           negative_control_mask=negative_control_mask,
+                           infection_model=infection_model)
+        res['config'] = config
+        res['config']['blacklist_cre'] = list(self.blacklist_cre)
+        _store_result(self, 'bayesian_activity_test_results', 'bayesian_activity_test_configs',
+                      res, config)
+        return res
+
     def glm_test(self, variate='T7', cell_types_to_use: List=None, norm_by_volm=False, volm_covariate=False, fov_covariate=False, rna_covariate=False, size_covariate=False,
                  filter_infected_cells=False, positive_x_or_y=False, only_keep_positive_x=False, only_keep_positive_y=False, transform_x_y=None, fix_intercept=None, multiprocess_threads=256) -> dict:
         # Initialize cache attributes if needed
