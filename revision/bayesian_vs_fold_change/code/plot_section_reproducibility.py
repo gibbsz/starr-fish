@@ -21,10 +21,10 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from scipy.stats import pearsonr, spearmanr
-from statsmodels.stats.multitest import multipletests
 
 from analysis_utils import ANALYSIS_DIR, DEFAULT_H5AD, log, write_json
 from plot_results import bayesian_significance
+from baystarrfish.stats import bh_fdr
 from plot_section_reproducibility_research_filters import (
     bayesian_uncalibrated,
     bootstrap_uncalibrated,
@@ -163,13 +163,6 @@ def normalize_labels(values: np.ndarray) -> np.ndarray:
     )
 
 
-def bh_fdr(pvalues: np.ndarray) -> np.ndarray:
-    values = np.asarray(pvalues, dtype=float)
-    output = np.full(values.shape, np.nan, dtype=float)
-    valid = np.isfinite(values)
-    if valid.any():
-        output[valid] = multipletests(values[valid], method="fdr_bh")[1]
-    return output
 
 
 def posterior_mean_control_centered_activity(

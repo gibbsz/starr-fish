@@ -15,10 +15,10 @@ import pandas as pd
 import seaborn as sns
 from scipy.stats import fisher_exact
 from sklearn.metrics import average_precision_score, precision_recall_curve
-from statsmodels.stats.multitest import multipletests
 
 from analysis_utils import ANALYSIS_DIR, STARRFISH_DATA, write_json
 from test_individual_negative_control_loo_empirical_fdr import assign_empirical_fdr
+from baystarrfish.stats import bh_fdr
 
 
 METHODS = (
@@ -324,13 +324,6 @@ def assay_positive_for_tests(tests: pd.DataFrame, assay: pd.DataFrame) -> np.nda
     return assay_stack.reindex(index, fill_value=False).to_numpy(bool)
 
 
-def bh_fdr(pvalues: pd.Series) -> np.ndarray:
-    values = pvalues.to_numpy(float)
-    qvalues = np.full(values.shape, np.nan, dtype=float)
-    valid = np.isfinite(values)
-    if valid.any():
-        qvalues[valid] = multipletests(values[valid], method="fdr_bh")[1]
-    return qvalues
 
 
 def restrict_to_common_pairs(

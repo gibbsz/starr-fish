@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test raw cCRE activity against the draw-wise mean ordinary control."""
+"""Test raw cCRE activity against a draw-wise ordinary-control reference."""
 
 from __future__ import annotations
 
@@ -9,10 +9,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from statsmodels.stats.multitest import multipletests
 
+from baystarrfish.stats import negative_control_test as compute_tests
 from analysis_utils import ANALYSIS_DIR, DEFAULT_H5AD, write_json
-from plot_method_activity_correlation import read_cre_blacklist
 from test_individual_negative_control_loo_empirical_fdr import (
     POOLED_NAME,
     load_grouped_t7,
@@ -21,6 +20,13 @@ from test_individual_negative_control_loo_empirical_fdr import (
 
 METHOD = "Joint+dropout mean controls"
 FILTERED_METHOD = "Joint+dropout mean controls (control T7>=50)"
+
+
+def read_cre_blacklist(root: Path) -> set[str]:
+    path = root / "cre_blacklist.csv"
+    if not path.exists():
+        return set()
+    return set(pd.read_csv(path).iloc[:, 0].astype(str))
 
 
 def parse_args() -> argparse.Namespace:
@@ -33,6 +39,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--h5ad", type=Path, default=DEFAULT_H5AD)
     parser.add_argument("--t7-threshold", type=float, default=50.0)
     parser.add_argument("--effect-threshold", type=float, default=0.0)
+    parser.add_argument(
+        "--control-sd-multiplier",
+        type=float,
+        default=0.0,
+        help=(
+            "Add this many sample SDs across the selected controls to their "
+            "draw-wise mean (default: 0)."
+        ),
+    )
     parser.add_argument(
         "--individual-control-t7-threshold",
         type=float,
@@ -52,92 +67,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def bh_fdr(pvalues: np.ndarray) -> np.ndarray:
-    values = np.asarray(pvalues, dtype=float)
-    output = np.full(values.shape, np.nan, dtype=float)
-    valid = np.isfinite(values)
-    if valid.any():
-        output[valid] = multipletests(values[valid], method="fdr_bh")[1]
-    return output
-
-
-def compute_tests(
-    log_gamma: np.ndarray,
-    groups: np.ndarray,
-    cre_names: np.ndarray,
-    target_indices: np.ndarray,
-    control_indices: np.ndarray,
-    t7_totals: np.ndarray,
-    group_classes: np.ndarray,
-    group_cell_counts: np.ndarray,
-    t7_threshold: float,
-    effect_threshold: float,
-    individual_control_t7_threshold: float | None,
-    method: str,
-) -> pd.DataFrame:
-    records = []
-    for group_idx, group in enumerate(groups):
-        control_t7 = t7_totals[group_idx, control_indices]
-        if individual_control_t7_threshold is None:
-            selected_control_indices = control_indices
-            control_reference_passes = float(control_t7.sum()) >= t7_threshold
-        else:
-            selected_control_indices = control_indices[
-                control_t7 >= individual_control_t7_threshold
-            ]
-            control_reference_passes = len(selected_control_indices) > 0
-        if not control_reference_passes:
-            continue
-
-        control_draws = log_gamma[:, group_idx, selected_control_indices].astype(
-            np.float64, copy=False
-        )
-        mean_control_draws = control_draws.mean(axis=1)
-        control_t7_total = float(control_t7.sum())
-        eligible = t7_totals[group_idx, target_indices] >= t7_threshold
-        selected_indices = target_indices[eligible]
-        if len(selected_indices) == 0:
-            continue
-
-        target_draws = log_gamma[:, group_idx, selected_indices].astype(
-            np.float64, copy=False
-        )
-        contrasts = target_draws - mean_control_draws[:, None] - effect_threshold
-        contrast_lo, contrast_hi = np.quantile(contrasts, [0.05, 0.95], axis=0)
-        records.append(
-            pd.DataFrame(
-                {
-                    "t7_threshold": float(t7_threshold),
-                    "method": method,
-                    "group": group,
-                    "class": group_classes[group_idx],
-                    "cre": cre_names[selected_indices],
-                    "n_cells": int(group_cell_counts[group_idx]),
-                    "target_t7_total": t7_totals[group_idx, selected_indices],
-                    "negative_control_t7_total": control_t7_total,
-                    "n_negative_controls": len(selected_control_indices),
-                    "negative_controls_used": ",".join(
-                        cre_names[selected_control_indices]
-                    ),
-                    "activity_mean": target_draws.mean(axis=0),
-                    "mean_negative_control_activity_mean": float(
-                        mean_control_draws.mean()
-                    ),
-                    "effect_vs_mean_control_mean": contrasts.mean(axis=0),
-                    "effect_vs_mean_control_lo90": contrast_lo,
-                    "effect_vs_mean_control_hi90": contrast_hi,
-                    "posterior_probability_above_mean_control": (
-                        contrasts > 0.0
-                    ).mean(axis=0),
-                    "p_right": (contrasts <= 0.0).mean(axis=0),
-                }
-            )
-        )
-    if not records:
-        raise ValueError("No cCRE-cell-type pairs passed the T7 filters")
-    output = pd.concat(records, ignore_index=True)
-    output["q_right"] = bh_fdr(output["p_right"].to_numpy(float))
-    return output
 
 
 def main() -> None:
@@ -167,6 +96,13 @@ def main() -> None:
     t7_totals, group_classes, group_cell_counts = load_grouped_t7(
         args.h5ad, groups, cre_names
     )
+    method = (
+        f"Joint+dropout mean+{args.control_sd_multiplier:g} SD controls"
+        if args.control_sd_multiplier > 0
+        else FILTERED_METHOD
+        if args.individual_control_t7_threshold is not None
+        else METHOD
+    )
     tests = compute_tests(
         log_gamma,
         groups,
@@ -179,11 +115,8 @@ def main() -> None:
         args.t7_threshold,
         args.effect_threshold,
         args.individual_control_t7_threshold,
-        (
-            FILTERED_METHOD
-            if args.individual_control_t7_threshold is not None
-            else METHOD
-        ),
+        method,
+        args.control_sd_multiplier,
     )
     tests["significant_q"] = tests["q_right"].le(args.q_cutoff)
 
@@ -201,8 +134,9 @@ def main() -> None:
             "negative_controls": negative_controls,
             "activity_definition": "raw posterior log_gamma; alpha is not subtracted",
             "contrast_definition": (
-                "target log_gamma minus the mean of seven ordinary negative-control "
-                "log_gamma values within each posterior draw"
+                "target log_gamma minus (the mean plus "
+                f"{args.control_sd_multiplier:g} sample SD across selected ordinary "
+                "negative-control log_gamma values) within each posterior draw"
             ),
             "p_right_definition": "posterior fraction of draw-wise contrasts <= 0",
             "multiple_testing": "BH across all eligible target-cell-type pairs",
@@ -217,6 +151,7 @@ def main() -> None:
                 )
             ),
             "individual_control_t7_threshold": args.individual_control_t7_threshold,
+            "control_sd_multiplier": args.control_sd_multiplier,
             "q_cutoff": args.q_cutoff,
             "counts": {
                 "eligible_tests": int(len(tests)),

@@ -9,10 +9,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from statsmodels.stats.multitest import multipletests
 
 from analysis_utils import ANALYSIS_DIR, DEFAULT_H5AD, write_json
 from plot_method_activity_correlation import read_cre_blacklist
+from baystarrfish.stats import bh_fdr
 from test_individual_negative_control_loo_empirical_fdr import (
     POOLED_NAME,
     load_grouped_t7,
@@ -45,13 +45,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def bh_fdr(pvalues: np.ndarray) -> np.ndarray:
-    values = np.asarray(pvalues, dtype=float)
-    output = np.full(values.shape, np.nan, dtype=float)
-    valid = np.isfinite(values)
-    if valid.any():
-        output[valid] = multipletests(values[valid], method="fdr_bh")[1]
-    return output
 
 
 def compute_tests(

@@ -15,9 +15,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from statsmodels.stats.multitest import multipletests
 
 from analysis_utils import ANALYSIS_DIR, log, write_json
+from baystarrfish.stats import bh_fdr as _bh_fdr
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,12 +38,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def bh_fdr(frame: pd.DataFrame) -> pd.DataFrame:
-    values = frame.to_numpy(dtype=float)
-    output = np.full(values.shape, np.nan, dtype=float)
-    valid = np.isfinite(values)
-    if valid.any():
-        output[valid] = multipletests(values[valid], method="fdr_bh")[1]
-    return pd.DataFrame(output, index=frame.index, columns=frame.columns)
+    """BH over every finite entry of the frame, jointly."""
+    return pd.DataFrame(
+        _bh_fdr(frame.to_numpy(dtype=float)), index=frame.index, columns=frame.columns
+    )
 
 
 def log_chunk(array: np.ndarray) -> np.ndarray:

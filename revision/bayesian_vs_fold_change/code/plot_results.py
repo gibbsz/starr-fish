@@ -15,9 +15,9 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from scipy.stats import spearmanr
-from statsmodels.stats.multitest import multipletests
 
 from analysis_utils import ANALYSIS_DIR, log, write_json
+from baystarrfish.stats import bh_fdr
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,13 +55,6 @@ def discover_bayes_tag(bayes_dir: Path, requested: str | None) -> str:
     return str(manifest["tag"])
 
 
-def bh_fdr(values: np.ndarray) -> np.ndarray:
-    values = np.asarray(values, dtype=float)
-    output = np.full(values.shape, np.nan)
-    valid = np.isfinite(values)
-    if valid.any():
-        output[valid] = multipletests(values[valid], method="fdr_bh")[1]
-    return output
 
 
 def bayesian_significance(

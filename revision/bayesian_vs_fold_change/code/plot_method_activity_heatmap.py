@@ -55,6 +55,9 @@ METHOD_SPECS = {
 DEFAULT_METHOD_KEYS = ("bayesian_decoupled", "bayesian_joint", "bootstrap")
 FILTER_VARIANTS = ("complete", "t7_gt_threshold", "t7_ge_threshold")
 NEGATIVE_CONTROL_COLUMN = "Negative control"
+DENSE_AXIS_LIMIT = 60
+SPARSE_AXIS_SIZE = 0.22
+SPARSE_AXIS_FONTSIZE = 7.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -79,6 +82,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--figures-dir", type=Path, default=ANALYSIS_DIR / "results" / "figures"
+    )
+    parser.add_argument(
+        "--tables-dir", type=Path, default=ANALYSIS_DIR / "results" / "tables"
     )
     parser.add_argument("--h5ad", type=Path, default=DEFAULT_H5AD)
     parser.add_argument(
@@ -137,6 +143,15 @@ def parse_args() -> argparse.Namespace:
             "for pairs present in --significance-tests."
         ),
     )
+    parser.add_argument(
+        "--restrict-to-on-target",
+        action="store_true",
+        help=(
+            "Keep only on-target cCREs (any visible subclass with both an ATAC "
+            "peak and a significant test) and then only the on-target subclasses "
+            "within those cCREs. Requires --significance-tests and --atac-peaks."
+        ),
+    )
     parser.add_argument("--bootstrap-log-chunk-size", type=int, default=250)
     parser.add_argument("--t7-threshold", type=float, default=100.0)
     parser.add_argument(
@@ -154,6 +169,15 @@ def parse_args() -> argparse.Namespace:
         help="Filtering variants to plot.",
     )
     parser.add_argument("--stem", default="section_activity_heatmap")
+    parser.add_argument(
+        "--dump-values",
+        action="store_true",
+        help=(
+            "Write the exact plotted matrix of each PDF to "
+            "<tables-dir>/<pdf stem>_values.csv (rows and columns in plot "
+            "order; blank cells are the grey masked pairs)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -473,6 +497,50 @@ def trim_empty_axes(
     return trimmed, row_order, col_order, present.loc[row_order, col_order]
 
 
+def axis_scale(
+    n_ticks: int,
+    dense_size: float,
+    dense_fontsize: float,
+) -> tuple[float, float]:
+    """Inches per cell and tick fontsize for one heatmap axis.
+
+    Dense axes keep the historical compact sizing; sparse axes (on-target
+    subsets) get larger cells and readable tick labels.
+    """
+    if n_ticks > DENSE_AXIS_LIMIT:
+        return dense_size, dense_fontsize
+    return SPARSE_AXIS_SIZE, SPARSE_AXIS_FONTSIZE
+
+
+def on_target_axes(
+    significance: pd.DataFrame,
+    atac_peaks: pd.DataFrame,
+    present: pd.DataFrame,
+    rows: list[str],
+    cols: list[str],
+) -> tuple[list[str], list[str], pd.DataFrame]:
+    """Select cCREs then subclasses that are ATAC-positive and significant.
+
+    ``present`` marks visible (finite, filter-passing) pairs and is indexed by
+    ``rows`` x ``cols``. Columns are kept when any visible pair in them is both
+    ATAC-positive and significant; rows are then kept when any of their visible
+    pairs in the surviving columns qualify.
+    """
+    on_target = (
+        significance.reindex(index=rows, columns=cols, fill_value=False)
+        & atac_peaks.reindex(index=rows, columns=cols, fill_value=False)
+        & present.reindex(index=rows, columns=cols, fill_value=False)
+    )
+    keep_cols = [cre for cre in cols if bool(on_target[cre].any())]
+    if not keep_cols:
+        raise ValueError("no on-target cCREs survive the ATAC-and-significance filter")
+    on_target = on_target.loc[:, keep_cols]
+    keep_rows = [group for group in rows if bool(on_target.loc[group].any())]
+    if not keep_rows:
+        raise ValueError("no on-target subclasses survive the ATAC-and-significance filter")
+    return keep_rows, keep_cols, on_target.loc[keep_rows, keep_cols]
+
+
 def safe_stem(label: str) -> str:
     return (
         label.lower()
@@ -536,12 +604,18 @@ def plot_one_pdf(
     significance: pd.DataFrame | None = None,
     significance_q_cutoff: float = 0.05,
     atac_peaks: pd.DataFrame | None = None,
+    values_csv: Path | None = None,
 ) -> None:
     ordered = matrix.reindex(index=row_order, columns=col_order)
+    if values_csv is not None:
+        values_csv.parent.mkdir(parents=True, exist_ok=True)
+        ordered.rename_axis(index="subclass", columns="cre").to_csv(values_csv)
+    col_size, col_fontsize = axis_scale(len(col_order), 0.06, 3.0)
+    row_size, row_fontsize = axis_scale(len(row_order), 0.09, 4.0)
     fig = plt.figure(
         figsize=(
-            max(12, 0.06 * len(col_order) + 4),
-            max(13, 0.09 * len(row_order) + 4),
+            4.0 + col_size * len(col_order),
+            4.0 + row_size * len(row_order),
         ),
         constrained_layout=True,
     )
@@ -604,14 +678,14 @@ def plot_one_pdf(
             marked_cols,
             marked_rows,
             marker="*",
-            s=8,
+            s=8 if len(col_order) > DENSE_AXIS_LIMIT else 45,
             facecolors="white",
             edgecolors="black",
             linewidths=0.2,
             zorder=5,
         )
     ax.set_yticks(np.arange(len(row_order)))
-    ax.set_yticklabels(row_order, fontsize=4)
+    ax.set_yticklabels(row_order, fontsize=row_fontsize)
     ax.tick_params(axis="x", bottom=False, labelbottom=False)
     control_columns = list(individual_negative_controls or [])
     has_pooled_negative_control = (
@@ -642,7 +716,7 @@ def plot_one_pdf(
         ["Nanopore library size", "T7 total counts"], fontsize=6
     )
     count_ax.set_xticks(np.arange(len(col_order)))
-    count_ax.set_xticklabels(col_order, rotation=90, fontsize=3)
+    count_ax.set_xticklabels(col_order, rotation=90, fontsize=col_fontsize)
     count_ax.set_xlabel(
         f"cCRE ordered by total T7 counts, high to low (n={n_target_cres})"
         + (
@@ -698,6 +772,10 @@ def plot_heatmaps(args: argparse.Namespace) -> dict:
         raise ValueError("--significance-q-cutoff must be between 0 and 1")
     if args.atac_peaks is not None and args.significance_tests is None:
         raise ValueError("--atac-peaks requires --significance-tests")
+    if args.restrict_to_on_target and args.atac_peaks is None:
+        raise ValueError(
+            "--restrict-to-on-target requires --atac-peaks and --significance-tests"
+        )
     plt.rcParams.update({
         "axes.facecolor": "white",
         "figure.facecolor": "white",
@@ -825,6 +903,7 @@ def plot_heatmaps(args: argparse.Namespace) -> dict:
         fill_value=0.0,
     )
     outputs = {}
+    value_tables = {}
     variant_shapes = {}
     for variant, spec in variants.items():
         masked_matrices = {
@@ -834,6 +913,20 @@ def plot_heatmaps(args: argparse.Namespace) -> dict:
         variant_matrices, variant_rows, variant_cols, present = trim_empty_axes(
             masked_matrices
         )
+        on_target_pairs = None
+        if args.restrict_to_on_target:
+            variant_rows, variant_cols, on_target_pairs = on_target_axes(
+                significance,
+                atac_peaks,
+                present,
+                variant_rows,
+                variant_cols,
+            )
+            variant_matrices = {
+                label: matrix.reindex(index=variant_rows, columns=variant_cols)
+                for label, matrix in variant_matrices.items()
+            }
+            present = present.reindex(index=variant_rows, columns=variant_cols)
         display_cols = list(variant_cols)
         if args.append_negative_control:
             display_cols.append(NEGATIVE_CONTROL_COLUMN)
@@ -893,8 +986,14 @@ def plot_heatmaps(args: argparse.Namespace) -> dict:
                 else (0.0, 1.0)
             )
         outputs[variant] = {}
+        value_tables[variant] = {}
         for label, matrix in variant_matrices.items():
             out = args.figures_dir / f"{args.stem}_{variant}_{safe_stem(label)}.pdf"
+            values_csv = (
+                args.tables_dir / f"{out.stem}_values.csv"
+                if args.dump_values
+                else None
+            )
             plot_one_pdf(
                 matrix,
                 label,
@@ -915,8 +1014,11 @@ def plot_heatmaps(args: argparse.Namespace) -> dict:
                 significance,
                 args.significance_q_cutoff,
                 atac_peaks,
+                values_csv=values_csv,
             )
             outputs[variant][label] = str(out)
+            if values_csv is not None:
+                value_tables[variant][label] = str(values_csv)
         variant_shapes[variant] = {
             "rows": int(len(variant_rows)),
             "columns": int(len(variant_cols)),
@@ -981,6 +1083,9 @@ def plot_heatmaps(args: argparse.Namespace) -> dict:
                 ).sum()
             )
             if atac_peaks is not None
+            else None,
+            "on_target_pairs": int(on_target_pairs.to_numpy(bool).sum())
+            if on_target_pairs is not None
             else None,
             "removed_empty_rows": int(len(row_order) - len(variant_rows)),
             "removed_empty_columns": int(len(col_order) - len(variant_cols)),
@@ -1064,6 +1169,20 @@ def plot_heatmaps(args: argparse.Namespace) -> dict:
             if args.append_individual_negative_controls
             else None
         ),
+        "restrict_to_on_target": (
+            {
+                "cre_rule": (
+                    "keep cCREs with at least one visible ATAC-positive significant "
+                    "subclass"
+                ),
+                "subclass_rule": (
+                    "then keep subclasses with at least one visible ATAC-positive "
+                    "significant pair among the retained cCREs"
+                ),
+            }
+            if args.restrict_to_on_target
+            else None
+        ),
         "negative_control_cres_removed": sorted(negative_controls),
         "posterior_sources": posterior_sources,
         "library_size_annotation": {
@@ -1102,6 +1221,7 @@ def plot_heatmaps(args: argparse.Namespace) -> dict:
         "methods": list(matrices),
         "method_keys": list(args.methods),
         "outputs": outputs,
+        "value_tables": value_tables if args.dump_values else None,
         "variants": variant_shapes,
         "t7_threshold": args.t7_threshold,
         "filter_variants": list(args.filter_variants),

@@ -1,0 +1,166 @@
+"""The negative-control contrast that turns a posterior into calls.
+
+A fitted ``log_gamma`` is not directly a claim about activity: it is on an
+arbitrary scale set jointly by the infection rate and the library abundance.
+What is interpretable is the *contrast* between a target cCRE and the negative
+controls in the same cell type, evaluated draw by draw so the uncertainty in
+both terms is carried through::
+
+    contrast_d = log_gamma[d, s, j] - mean_{j' in controls} log_gamma[d, s, j']
+                 - effect_threshold
+
+    p_right = P(contrast <= 0)          # posterior tail probability
+    q_right = BH(p_right)
+
+Because the contrast is formed inside each posterior draw, the control mean's
+own uncertainty is subtracted correctly rather than being treated as a fixed
+offset.
+
+Eligibility is a T7 filter, not a cCRE filter: a (cell type, cCRE) pair with too
+little constitutive signal has no evidence either way, and including it would
+report the prior as a result. Cell types whose controls collectively fail the
+filter are dropped entirely -- there is no reference to contrast against.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+from .fdr import bh_fdr
+
+__all__ = ["negative_control_test"]
+
+
+def negative_control_test(
+    log_gamma: np.ndarray,
+    groups: np.ndarray,
+    cre_names: np.ndarray,
+    target_indices: np.ndarray,
+    control_indices: np.ndarray,
+    t7_totals: np.ndarray,
+    group_classes: np.ndarray,
+    group_cell_counts: np.ndarray,
+    t7_threshold: float,
+    effect_threshold: float,
+    individual_control_t7_threshold: float | None,
+    method: str,
+    control_sd_multiplier: float = 0.0,
+) -> pd.DataFrame:
+    """Contrast every eligible target cCRE against the negative-control mean.
+
+    Parameters
+    ----------
+    log_gamma : (n_draws, n_groups, n_cre)
+        Posterior draws of log activity.
+    target_indices, control_indices : int arrays
+        Columns of ``log_gamma`` to test and to use as the reference.
+    t7_totals : (n_groups, n_cre)
+        Per-pair constitutive-channel totals driving the eligibility filter.
+    t7_threshold
+        Minimum T7 total for a target pair, and for the pooled control total
+        when ``individual_control_t7_threshold`` is None.
+    effect_threshold
+        Minimum log-fold effect over the control reference to call; shifts the
+        null rather than filtering after the fact.
+    individual_control_t7_threshold
+        If given, controls are filtered individually at this threshold and the
+        reference is the mean over the survivors, instead of requiring the pooled
+        control total to pass ``t7_threshold``.
+    control_sd_multiplier
+        Raise the reference by ``k`` control standard deviations (per draw) for a
+        stricter null. Requires at least two surviving controls.
+
+    Returns a tidy frame with one row per tested (cell type, cCRE) pair.
+    """
+    if control_sd_multiplier < 0:
+        raise ValueError("control_sd_multiplier must be non-negative")
+    records = []
+    for group_idx, group in enumerate(groups):
+        control_t7 = t7_totals[group_idx, control_indices]
+        if individual_control_t7_threshold is None:
+            selected_control_indices = control_indices
+            control_reference_passes = float(control_t7.sum()) >= t7_threshold
+        else:
+            selected_control_indices = control_indices[
+                control_t7 >= individual_control_t7_threshold
+            ]
+            control_reference_passes = len(selected_control_indices) > 0
+        if not control_reference_passes:
+            continue
+
+        control_draws = log_gamma[:, group_idx, selected_control_indices].astype(
+            np.float64, copy=False
+        )
+        mean_control_draws = control_draws.mean(axis=1)
+        if control_sd_multiplier > 0 and control_draws.shape[1] < 2:
+            raise ValueError(
+                "At least two selected negative controls are required for an SD reference"
+            )
+        control_sd_draws = (
+            control_draws.std(axis=1, ddof=1)
+            if control_draws.shape[1] >= 2
+            else np.zeros(control_draws.shape[0], dtype=np.float64)
+        )
+        control_reference_draws = (
+            mean_control_draws + control_sd_multiplier * control_sd_draws
+        )
+        control_t7_total = float(control_t7.sum())
+        eligible = t7_totals[group_idx, target_indices] >= t7_threshold
+        selected_indices = target_indices[eligible]
+        if len(selected_indices) == 0:
+            continue
+
+        target_draws = log_gamma[:, group_idx, selected_indices].astype(
+            np.float64, copy=False
+        )
+        contrasts = target_draws - control_reference_draws[:, None] - effect_threshold
+        contrast_lo, contrast_hi = np.quantile(contrasts, [0.05, 0.95], axis=0)
+        records.append(
+            pd.DataFrame(
+                {
+                    "t7_threshold": float(t7_threshold),
+                    "method": method,
+                    "group": group,
+                    "class": group_classes[group_idx],
+                    "cre": cre_names[selected_indices],
+                    "n_cells": int(group_cell_counts[group_idx]),
+                    "target_t7_total": t7_totals[group_idx, selected_indices],
+                    "negative_control_t7_total": control_t7_total,
+                    "n_negative_controls": len(selected_control_indices),
+                    "negative_controls_used": ",".join(
+                        cre_names[selected_control_indices]
+                    ),
+                    "control_sd_multiplier": float(control_sd_multiplier),
+                    "activity_mean": target_draws.mean(axis=0),
+                    "mean_negative_control_activity_mean": float(
+                        mean_control_draws.mean()
+                    ),
+                    "negative_control_activity_sd_mean": float(
+                        control_sd_draws.mean()
+                    ),
+                    "control_reference_activity_mean": float(
+                        control_reference_draws.mean()
+                    ),
+                    "effect_vs_control_reference_mean": contrasts.mean(axis=0),
+                    "effect_vs_control_reference_lo90": contrast_lo,
+                    "effect_vs_control_reference_hi90": contrast_hi,
+                    "posterior_probability_above_control_reference": (
+                        contrasts > 0.0
+                    ).mean(axis=0),
+                    # Backward-compatible aliases used by existing comparison code.
+                    "effect_vs_mean_control_mean": contrasts.mean(axis=0),
+                    "effect_vs_mean_control_lo90": contrast_lo,
+                    "effect_vs_mean_control_hi90": contrast_hi,
+                    "posterior_probability_above_mean_control": (
+                        contrasts > 0.0
+                    ).mean(axis=0),
+                    "p_right": (contrasts <= 0.0).mean(axis=0),
+                }
+            )
+        )
+    if not records:
+        raise ValueError("No cCRE-cell-type pairs passed the T7 filters")
+    output = pd.concat(records, ignore_index=True)
+    output["q_right"] = bh_fdr(output["p_right"].to_numpy(float))
+    return output

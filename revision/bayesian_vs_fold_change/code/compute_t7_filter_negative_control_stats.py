@@ -9,9 +9,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from statsmodels.stats.multitest import multipletests
 
 from analysis_utils import ANALYSIS_DIR, DEFAULT_H5AD, log, write_json
+from baystarrfish.stats import bh_fdr
 from plot_method_activity_correlation import (
     pair_count_totals,
     read_cre_blacklist,
@@ -115,13 +115,6 @@ def read_negative_controls(root: Path) -> list[str]:
     return pd.read_csv(root / "negative_controls.csv").iloc[:, 0].astype(str).tolist()
 
 
-def bh_fdr(pvalues: np.ndarray) -> np.ndarray:
-    pvalues = np.asarray(pvalues, dtype=float)
-    qvalues = np.full(pvalues.shape, np.nan, dtype=float)
-    valid = np.isfinite(pvalues)
-    if valid.any():
-        qvalues[valid] = multipletests(pvalues[valid], method="fdr_bh")[1]
-    return qvalues
 
 
 def threshold_suffix(threshold: float) -> str:

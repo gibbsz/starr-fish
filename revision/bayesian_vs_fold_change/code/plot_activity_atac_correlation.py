@@ -588,12 +588,14 @@ def scatter_matrix_figure(
     correlations: pd.DataFrame,
     threshold: float,
     methods: tuple[str, ...],
+    correlation_column: str = "spearman_atac_cpm",
+    signal_label: str = "ATAC",
 ) -> plt.Figure:
     sns.set_theme(context="paper", style="white")
     frame = correlations[
         np.isclose(correlations["t7_threshold"].to_numpy(float), float(threshold))
     ].copy()
-    wide = frame.pivot(index="group", columns="method", values="spearman_atac_cpm")
+    wide = frame.pivot(index="group", columns="method", values=correlation_column)
     wide = wide.reindex(columns=methods)
     counts_wide = frame.pivot(index="group", columns="method", values="n_pairs")
     counts_wide = counts_wide.reindex(index=wide.index, columns=methods)
@@ -686,7 +688,7 @@ def scatter_matrix_figure(
                 ax.set_ylabel("")
                 ax.set_yticklabels([])
     fig.suptitle(
-        f"ATAC Spearman rho model comparison, T7 >= {threshold:g}\n"
+        f"{signal_label} Spearman rho model comparison, T7 >= {threshold:g}\n"
         "Each dot is one subclass; color is cCRE pairs used; black line is y = x.",
         fontsize=12,
     )
@@ -707,13 +709,21 @@ def plot_threshold_scatter_matrices(
     figures_dir: Path,
     stem: str,
     methods: tuple[str, ...],
+    correlation_column: str = "spearman_atac_cpm",
+    signal_label: str = "ATAC",
 ) -> dict[str, str]:
     figures_dir.mkdir(parents=True, exist_ok=True)
     outputs = {}
     combined_output = figures_dir / f"{stem}_spearman_scatter.pdf"
     with PdfPages(combined_output) as pdf:
         for threshold in thresholds:
-            fig = scatter_matrix_figure(correlations, threshold, methods)
+            fig = scatter_matrix_figure(
+                correlations,
+                threshold,
+                methods,
+                correlation_column=correlation_column,
+                signal_label=signal_label,
+            )
             key = f"t7_ge{threshold_suffix(threshold)}"
             output = figures_dir / f"{stem}_spearman_scatter_{key}.pdf"
             fig.savefig(output, bbox_inches="tight")
