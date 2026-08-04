@@ -7,8 +7,8 @@ infection/activity parameters fall inside their posterior 90% credible intervals
 
 Run (fast, simulated data only -- not the real 188k-cell dataset)::
 
-    python -m STARRFISH.bayesian_hierarchical_smoke --classes 3 --cres 5 --cells 400 --steps 4000
-    python -m STARRFISH.bayesian_hierarchical_smoke --classes 3 --cres 5 --nuts
+    python -m baystarrfish.simulate.recovery --classes 3 --cres 5 --cells 400 --steps 4000
+    python -m baystarrfish.simulate.recovery --classes 3 --cres 5 --nuts
 
 This is the script referenced in the plan's verification section; it does not
 touch any STARRFISH object.
@@ -21,10 +21,7 @@ from functools import partial
 
 import numpy as np
 
-try:
-    import bayesian_hierarchical as bh
-except ModuleNotFoundError:
-    from STARRFISH import bayesian_hierarchical as bh
+from . import _bayesian_hierarchical as bh
 
 
 def simulate(n_class=3, sub_per_class=2, n_cre=5, cells_per_sub=400,

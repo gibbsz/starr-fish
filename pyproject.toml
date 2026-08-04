@@ -1,0 +1,90 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "baystarrfish"
+dynamic = ["version"]
+description = "BAYSTARRFISH: Bayesian hierarchical inference of cis-regulatory element activity from single-cell STARR-FISH data"
+readme = "README_BAYSTARRFISH.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Zachary Gibbs" },
+    { name = "Guojie Zhong" },
+]
+keywords = [
+    "STARR-FISH",
+    "enhancer activity",
+    "single cell",
+    "bayesian hierarchical model",
+    "numpyro",
+    "spatial transcriptomics",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "anndata>=0.10",
+    "jax>=0.4.35",
+    "numpyro>=0.17",
+]
+
+[project.optional-dependencies]
+# CUDA wheels for GPU fitting. See envs/baystarrfish-gpu.yml for the exact
+# environment that produced the published fits.
+gpu = ["jax[cuda12]>=0.4.35"]
+# Exact provenance pins of the published STARR-FISH manuscript fits.
+repro = [
+    "jax[cuda12]==0.10.1",
+    "numpyro==0.21.0",
+    "numpy==2.4.6",
+    "pandas==2.3.3",
+    "scipy==1.17.1",
+    "anndata==0.12.16",
+]
+plots = ["matplotlib>=3.7", "seaborn>=0.13"]
+dev = ["pytest>=7.0", "pytest-cov>=4.0", "statsmodels>=0.14"]
+
+[project.urls]
+Homepage = "https://github.com/gibbsz/starr-fish"
+Data = "https://doi.org/10.5061/dryad.3bk3j9m0p"
+
+[tool.setuptools]
+# Explicit include: the repo root also holds STARRFISH_in_vivo/, revision/ and
+# working/, none of which are part of this distribution.
+packages = { find = { include = ["baystarrfish", "baystarrfish.*"] } }
+
+[tool.setuptools.dynamic]
+version = { attr = "baystarrfish._version.__version__" }
+
+[tool.pytest.ini_options]
+# testpaths is load-bearing: revision/bayesian_vs_fold_change/code/ contains
+# seven files named test_*.py, six of which are analysis entry points that
+# launch long jobs, not tests. Never let pytest discover them.
+testpaths = ["tests"]
+norecursedirs = [
+    "revision",
+    "working",
+    "STARRFISH_in_vivo",
+    "STARRFISH_in_vitro",
+    "image_processing",
+    "STARR-FISH_manuscript",
+    ".history",
+    "build",
+    "dist",
+]
+addopts = "-ra --strict-markers"
+markers = [
+    "slow: end-to-end fits and simulation-recovery runs (deselect with -m 'not slow')",
+]

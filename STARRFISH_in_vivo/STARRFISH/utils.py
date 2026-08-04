@@ -4368,7 +4368,7 @@ class STARRFISH:
         ``scalar_samples`` (global parameter draws), ``kmax``, ``group_names``, ``cre_names``,
         and ``config``.
         """
-        from . import bayesian_hierarchical as bh
+        import baystarrfish as bh
 
         if infection_model not in bh.MODEL_FAMILIES:
             raise ValueError(f"unsupported infection_model={infection_model}; "
