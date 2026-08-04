@@ -220,8 +220,11 @@ def _coverage(samples, truth, level):
           f"CI [{lo[0]:.4f}, {hi[0]:.4f}]")
 
 
-def main():
-    ap = argparse.ArgumentParser()
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="python -m baystarrfish recovery",
+        description=__doc__.split(chr(10))[0],
+    )
     ap.add_argument("--classes", type=int, default=3)
     ap.add_argument("--sub-per-class", type=int, default=2)
     ap.add_argument("--cres", type=int, default=5)
@@ -242,7 +245,7 @@ def main():
     ap.add_argument("--nuts", action="store_true")
     ap.add_argument("--selfcheck", action="store_true", help="only run pure-math regression guards")
     ap.add_argument("--seed", type=int, default=0)
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     selfcheck()
     if args.selfcheck:

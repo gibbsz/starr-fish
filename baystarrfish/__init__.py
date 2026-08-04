@@ -90,6 +90,14 @@ _EXPORTS: dict[str, str] = {
     "posterior_predictive_check_decoupled": ".inference.ppc",
     "run_model": ".inference.run",
     "run_decoupled_model": ".inference.run",
+    # --- latent copy number, recovered after fitting ----------------------- #
+    "CopyNumberMatrix": ".inference.copy_number",
+    "MissingPosteriorSites": ".inference.copy_number",
+    "infer_copy_number": ".inference.copy_number",
+    "infer_copy_number_from_fit": ".inference.copy_number",
+    "load_copy_number_draws": ".inference.copy_number",
+    "posterior_k_moments": ".inference.posterior_k",
+    "posterior_k_expectation": ".inference.posterior_k",
     # --- data, statistics and serialisation (no JAX, no NumPyro) ----------- #
     "CountData": ".data.counts",
     "read_and_prepare_adata": ".data.anndata",

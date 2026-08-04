@@ -21,12 +21,25 @@ duplication cannot drift.
 
 from __future__ import annotations
 
-from typing import Mapping
+from typing import Mapping, NamedTuple
 
 import numpy as np
 from scipy.special import gammaln
 
-__all__ = ["channel_logprob", "nb2_logpmf", "posterior_k_expectation"]
+__all__ = [
+    "PosteriorKMoments",
+    "channel_logprob",
+    "nb2_logpmf",
+    "posterior_k_expectation",
+    "posterior_k_moments",
+]
+
+
+class PosteriorKMoments(NamedTuple):
+    """Posterior mean and sd of the latent copy number, per observation."""
+
+    mean: np.ndarray
+    sd: np.ndarray
 
 
 def nb2_logpmf(count, mean, conc):
@@ -62,7 +75,7 @@ def channel_logprob(obs, k, per_copy, phi, p_drop=None):
     return np.where(k == 0, point_mass, nb)
 
 
-def posterior_k_expectation(
+def posterior_k_moments(
     t7,
     cre,
     group_idx,
@@ -71,8 +84,16 @@ def posterior_k_expectation(
     kmax: int,
     *,
     chunk: int = 400,
-) -> np.ndarray:
-    """``E[k | observed counts]`` per (cell, cCRE) pair, averaged over draws.
+) -> PosteriorKMoments:
+    """Posterior mean and sd of ``k`` per observation, marginal over draws.
+
+    The sd combines both sources of uncertainty by the law of total variance::
+
+        Var[k | obs] = E_theta[ Var(k | obs, theta) ] + Var_theta[ E(k | obs, theta) ]
+
+    i.e. the spread of the copy number given a fixed parameter draw, plus the
+    spread induced by not knowing the parameters. Reporting only the first would
+    understate the uncertainty of a rarely-observed cCRE.
 
     Parameters
     ----------
@@ -91,22 +112,22 @@ def posterior_k_expectation(
     """
     rho, a, log_gamma = draws["rho"], draws["a"], draws["log_gamma"]
     beta, phi_t7, phi_cre = draws["beta_t7"], draws["phi_t7"], draws["phi_cre"]
-    p_drop_t7 = draws.get("p_drop_t7")
-    p_drop_cre = draws.get("p_drop_cre")
 
     group_idx = np.asarray(group_idx)
     cre_idx = np.asarray(cre_idx)
+    n_pairs = len(group_idx)
     k = np.arange(0, kmax + 1, dtype=np.float64)
     log_k_factorial = gammaln(k + 1)
-    out = np.empty(len(group_idx), dtype=np.float64)
+    mean = np.empty(n_pairs, dtype=np.float64)
+    sd = np.empty(n_pairs, dtype=np.float64)
 
     def _per_draw(value):
         return None if value is None else np.asarray(value)[:, None, None]
 
-    drop_t7 = _per_draw(p_drop_t7)
-    drop_cre = _per_draw(p_drop_cre)
+    drop_t7 = _per_draw(draws.get("p_drop_t7"))
+    drop_cre = _per_draw(draws.get("p_drop_cre"))
 
-    for start in range(0, len(group_idx), chunk):
+    for start in range(0, n_pairs, chunk):
         block = slice(start, start + chunk)
         s, j = group_idx[block], cre_idx[block]
         t7_block = np.asarray(t7[block], dtype=np.float64)[None, :, None]
@@ -122,5 +143,27 @@ def posterior_k_expectation(
         )
         weights = np.exp(log_posterior - log_posterior.max(axis=-1, keepdims=True))
         weights /= weights.sum(axis=-1, keepdims=True)
-        out[block] = (weights * k).sum(axis=-1).mean(axis=0)
-    return out
+
+        first = (weights * k).sum(axis=-1)                      # (D, C)
+        second = (weights * k**2).sum(axis=-1)                  # (D, C)
+        mean[block] = first.mean(axis=0)
+        within = (second - first**2).mean(axis=0)
+        between = first.var(axis=0)
+        sd[block] = np.sqrt(np.maximum(within + between, 0.0))
+    return PosteriorKMoments(mean=mean, sd=sd)
+
+
+def posterior_k_expectation(
+    t7,
+    cre,
+    group_idx,
+    cre_idx,
+    draws: Mapping[str, np.ndarray],
+    kmax: int,
+    *,
+    chunk: int = 400,
+) -> np.ndarray:
+    """``E[k | observed counts]`` per (cell, cCRE) pair, averaged over draws."""
+    return posterior_k_moments(
+        t7, cre, group_idx, cre_idx, draws, kmax, chunk=chunk
+    ).mean

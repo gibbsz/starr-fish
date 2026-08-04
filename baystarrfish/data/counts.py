@@ -67,6 +67,9 @@ class CountData:
     pooled_negative_control: dict | None = None
     section: str = "all"
     source: str | None = None
+    #: Cell barcodes, carried so per-cell outputs (e.g. the copy-number matrix)
+    #: can be traced back to the input rather than being positional.
+    obs_names: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         n_cells, n_cre = self.t7.shape
@@ -93,6 +96,10 @@ class CountData:
                     "negative_control_mask has shape "
                     f"{self.negative_control_mask.shape}, expected {(n_cre,)}"
                 )
+        if self.obs_names is not None and len(self.obs_names) != n_cells:
+            raise ValueError(
+                f"{len(self.obs_names)} obs_names for {n_cells} cells"
+            )
         if self.negative_control_mode not in NEGATIVE_CONTROL_MODES:
             raise ValueError(
                 f"unsupported negative_control_mode={self.negative_control_mode}; "
@@ -220,6 +227,7 @@ class CountData:
             pooled_negative_control=pooled,
             section=section,
             source=source,
+            obs_names=adata.obs_names.to_numpy(dtype=object),
         )
 
     @classmethod

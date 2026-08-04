@@ -105,6 +105,81 @@ controls **inside each posterior draw**, so the reference's own uncertainty is
 subtracted rather than treated as a fixed offset, then reports `p_right` (the
 posterior tail probability) and its BH-adjusted `q_right`.
 
+## Recovering the copy number: how many AAV genomes reached each cell
+
+`k_ij` is what the model is built around and the one thing it never samples — it
+is marginalised so inference stays in continuous parameters. It is recoverable
+exactly afterwards, because the grid the fit summed over renormalises into a
+distribution:
+
+```python
+from baystarrfish.data import CountData
+from baystarrfish.inference import infer_copy_number_from_fit
+
+data = CountData.from_h5ad(section="all", negative_control_mode="ordinary")
+copies = infer_copy_number_from_fit(data, "results/bayesian_full_posterior", return_sd=True)
+
+copies.copies            # (n_cells, n_cre) float32: E[k_ij | t7_ij, cre_ij]
+copies.sd                # same shape: posterior sd
+copies.total_per_cell()  # expected genomes per cell, summed over cCREs
+copies.to_frame()        # labelled DataFrame (dense — 1.3 GB at full size)
+copies.write_npz("results/copies.npz")
+```
+
+or from the command line, which is what you want for the full matrix:
+
+```bash
+python -m baystarrfish copy-number \
+    --fit-dir results/ablation/bayesian_full_posterior \
+    --out results/copy_number.npz --with-sd
+```
+
+`kmax`, the cell-type granularity and the infection model are read from the fit's
+manifest, so the reconstruction cannot silently disagree with the posterior it
+came from.
+
+**This is not the counts.** A cell reading `t7 = 0, cre = 0` is not known to be
+uninfected — under dropout, or simply a low per-copy rate, an infected cell often
+reads zero, so those pairs get a nonzero baseline that depends on the cell type's
+infection rate and that cCRE's library abundance. A cell reading `t7 = 12` did
+not receive twelve genomes. And `copies` is a posterior **mean over an integer**:
+`0.02` means "almost certainly zero copies", not a fiftieth of a virus.
+Thresholding it is not an infection call — `P(k >= 1)` is a different quantity.
+
+**It needs `log_rho` and `log_a`, which the production fit did not save.** The
+copy number depends on infection and abundance, not just activity, and those
+sites cannot be reconstructed after the fact. `results/bayesian/` stores only
+`log_gamma`; `results/ablation/bayesian_full_posterior/` has everything. To make
+a dropout fit usable here, refit asking for them — three sites, not `all`, which
+would also write the 500 MB `alpha`/`delta`/`eta` blocks:
+
+```bash
+python revision/bayesian_vs_fold_change/code/run_bayes.py \
+    --posterior-sites log_gamma log_rho log_a   # ...otherwise unchanged
+```
+
+**Sanity-check the scale before trusting absolute copy numbers.** `k` and
+`beta_t7` are only weakly separated by the likelihood — "many copies, tiny
+per-copy rate" fits about as well as "few copies, large rate", and the
+mean-centering of `log a` fixes the `rho`–`a` scale but not this one. On the
+`bayesian_full_posterior` ablation the fit sits at `beta_t7 = 0.03`, i.e. one
+genome yields 0.03 T7 transcripts, which lets `rho * a` reach 39 while the data
+stays 99.2% zeros; `E[k]` there is ~5 copies per cell with no counts to show for
+it. Ratios and rankings across cells are far more robust than the absolute level.
+`infer_copy_number` warns when `rho * a` approaches `kmax`, where the truncation
+additionally biases `E[k]` low.
+
+**Cost.** `P(k | obs)` depends on the observation only through
+`(cell type, cCRE, t7, cre)`, so the 99.85% all-zero pairs collapse to one
+baseline per (cell type, cCRE) and the rest to ~10⁶ unique patterns instead of
+1.6 × 10⁸ evaluations. The result is exact, not sampled or approximated.
+
+Even so, the all-zero baseline alone is 328 × 389 = 128k patterns, and that cost
+is paid whatever the cell count — the work scales with the *posterior*, not the
+data. Runtime is linear in the number of draws, so `--max-draws 200` is the main
+lever; a posterior **mean** over 200 evenly-spaced draws is within Monte Carlo
+error of one over 1,000. Run it on a compute node, not a login node.
+
 ## Layout
 
 ```
@@ -112,7 +187,8 @@ baystarrfish/
   model/       priors, collapsed statistics, likelihood, sampling blocks,
                the twelve model functions, the registry, the forward sampler
   inference/   moment initialisation, SVI/NUTS, summaries, posterior predictive
-               checks, E[k | obs], and the run_model / run_decoupled_model drivers
+               checks, the run_model / run_decoupled_model drivers, and the
+               latent copy-number reconstruction (posterior_k, copy_number)
   data/        AnnData -> arrays: paths, label standardisation, blacklisting,
                negative-control modes, nanopore library prior, CountData
   stats/       BH-FDR and the negative-control contrast
@@ -161,9 +237,9 @@ such. The same eligibility logic drives the T7 filter in
 ## Tests
 
 ```bash
-pytest tests -m 'not slow'    # 108 tests, ~35 s
+pytest tests -m 'not slow'    # 127 tests, ~55 s
 pytest tests -m slow          # end-to-end SVI recovery, ~60 s
-python -m baystarrfish.simulate.recovery --classes 3 --cres 5 --cells 400 --steps 4000
+python -m baystarrfish recovery --classes 3 --cres 5 --cells 400 --steps 4000
 ```
 
 The suite checks the model against outside references rather than against itself:

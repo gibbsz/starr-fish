@@ -103,3 +103,27 @@ def test_analysis_utils_shim_still_exposes_what_the_scripts_import():
                 wanted |= {alias.name for alias in node.names}
     missing = sorted(name for name in wanted if not hasattr(analysis_utils, name))
     assert not missing, f"analysis_utils shim lost: {missing}"
+
+
+def test_the_package_cli_dispatches_to_both_commands():
+    from baystarrfish.__main__ import COMMANDS
+
+    assert set(COMMANDS) == {"copy-number", "recovery"}
+    for command in COMMANDS:
+        out = subprocess.run(
+            [PYTHON, "-m", "baystarrfish", command, "--help"],
+            capture_output=True, text=True, timeout=300,
+        )
+        assert out.returncode == 0, out.stderr[-1000:]
+        assert f"python -m baystarrfish {command}" in out.stdout
+        # runpy warns when a module its package already imported is run with -m;
+        # the dispatcher exists precisely so that does not happen.
+        assert "RuntimeWarning" not in out.stderr
+
+
+def test_the_cli_reports_an_unknown_command():
+    out = subprocess.run(
+        [PYTHON, "-m", "baystarrfish", "nonsense"], capture_output=True, text=True, timeout=300
+    )
+    assert out.returncode != 0
+    assert "invalid choice" in out.stderr
