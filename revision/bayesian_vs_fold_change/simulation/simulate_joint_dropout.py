@@ -229,6 +229,14 @@ def load_truth(
     return truth, meta
 
 
+# NOTE: baystarrfish.model.forward.sample_channel is the canonical encoding of
+# this draw and is what the model, the posterior predictive check and the
+# recovery test all use. These two are distributionally identical but consume the
+# rng in a different order -- dropout first here, NB2 first there -- and this one
+# samples NB2 only for the surviving entries. Switching would therefore change
+# the dataset this script produces for a fixed seed and invalidate the archived
+# simulation outputs, so it is kept deliberately. Do not "fix" the duplication
+# without re-running the simulation study.
 def nb2_sample(rng: np.random.Generator, mean: np.ndarray, conc: float) -> np.ndarray:
     out = np.zeros(mean.shape, dtype=np.int32)
     mask = mean > 0

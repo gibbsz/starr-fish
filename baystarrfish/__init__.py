@@ -38,10 +38,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-# Eager, and it must stay eager: this sets jax_enable_x64 process-wide. Deferring
-# it behind the lazy __getattr__ below would leave float32 as the default dtype
-# for any array created between `import baystarrfish` and the first model call.
-# It imports `jax` only -- never `numpyro` -- so the data/stats layers stay light.
+# Eager, and it must stay eager: it requests jax_enable_x64 process-wide before
+# anything can create a float32 array. It imports no JAX itself (see the module
+# docstring), so the data / stats / io layers stay free of the inference stack.
 from . import _jax_setup as _jax_setup  # noqa: F401
 from ._version import __version__
 

@@ -5,30 +5,18 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
-import json
 import os
-import pickle
-import sys
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
+# Importing baystarrfish costs nothing: the facade is lazy and pulls in neither
+# JAX nor NumPyro until a model symbol is touched, which is what lets --cpu set
+# JAX_PLATFORMS below before the backend is chosen.
+import baystarrfish as bsf
+from baystarrfish.data import CountData
+from baystarrfish.data.controls import POOLED_NEGATIVE_CONTROL_NAME  # noqa: F401
+from baystarrfish.io import input_fingerprint, write_fit
 
-from analysis_utils import (
-    ANALYSIS_DIR,
-    DEFAULT_H5AD,
-    LIBSIZE_CSV,
-    STARRFISH_ROOT,
-    cre_blacklist,
-    input_fingerprint,
-    log,
-    negative_control_names,
-    read_and_prepare_adata,
-    write_json,
-)
-
-
-POOLED_NEGATIVE_CONTROL_NAME = "NEGATIVE_CONTROL_POOL"
+from analysis_utils import ANALYSIS_DIR, DEFAULT_H5AD, log
 
 
 def parse_args() -> argparse.Namespace:
@@ -146,17 +134,6 @@ def method_variant(args: argparse.Namespace) -> str:
     return base + control_suffix[args.negative_control_mode]
 
 
-def jsonable(obj):
-    if isinstance(obj, dict):
-        return {key: jsonable(value) for key, value in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [jsonable(value) for value in obj]
-    if isinstance(obj, (np.floating, np.integer)):
-        return obj.item()
-    if isinstance(obj, np.ndarray):
-        return obj.tolist()
-    return obj
-
 
 def main() -> None:
     args = parse_args()
@@ -167,111 +144,38 @@ def main() -> None:
     if args.outdir is None:
         args.outdir = default_outdir(args)
     if args.cpu:
+        # Must precede the first touch of a model symbol, which is what triggers
+        # the JAX import and therefore the backend choice.
         os.environ["JAX_PLATFORMS"] = "cpu"
 
-    # Import the standalone module directly, avoiding STARRFISH/__init__.py and
-    # its unrelated torch/scvi/cmdstanpy imports.
-    sys.path.insert(0, str(STARRFISH_ROOT / "STARRFISH"))
-    import bayesian_hierarchical as bh
-
     priors = dataclasses.replace(
-        bh.ModelPriors(),
+        bsf.ModelPriors(),
         p_drop_t7_alpha=args.p_drop_t7_alpha,
         p_drop_t7_beta=args.p_drop_t7_beta,
         p_drop_cre_alpha=args.p_drop_cre_alpha,
         p_drop_cre_beta=args.p_drop_cre_beta,
     )
 
-    adata = read_and_prepare_adata(
+    data = CountData.from_h5ad(
         args.h5ad,
         section=args.section,
         max_cells=args.max_cells,
         max_cres=args.max_cres,
         seed=args.seed,
-    )
-    cre_info = adata.uns["CRE_info"].copy()
-    blacklist = cre_blacklist(cre_info.index)
-    cre_names = [name for name in cre_info.index.astype(str) if name not in blacklist]
-    negative_controls = negative_control_names(cre_info, blacklist)
-    negative_control_mask = np.isin(cre_names, negative_controls)
-
-    t7 = adata.obsm["T7CRE"].loc[:, cre_names].to_numpy()
-    cre = adata.obsm["CRE"].loc[:, cre_names].to_numpy()
-    subclasses = adata.obs["subclass"].astype(str).to_numpy()
-    classes = adata.obs["class"].astype(str).to_numpy()
-
-    raw_libsize = pd.read_csv(LIBSIZE_CSV, index_col=0)
-    raw_libsize.index = raw_libsize.index.astype(str)
-    raw_libsize = raw_libsize.reindex(cre_names, fill_value=0)
-    library_counts = raw_libsize["counts"].to_numpy(dtype=np.float64)
-
-    pooled_negative_control = None
-    if args.negative_control_mode == "pooled":
-        model_negative_control_mask = negative_control_mask
-    elif args.negative_control_mode == "ordinary":
-        model_negative_control_mask = None
-    else:
-        if not negative_control_mask.any():
-            raise ValueError("cannot append a pooled cCRE without negative controls")
-        if POOLED_NEGATIVE_CONTROL_NAME in cre_names:
-            raise ValueError(
-                f"reserved pooled cCRE name already exists: {POOLED_NEGATIVE_CONTROL_NAME}"
-            )
-        pooled_t7 = t7[:, negative_control_mask].sum(axis=1, keepdims=True)
-        pooled_cre = cre[:, negative_control_mask].sum(axis=1, keepdims=True)
-        pooled_library_count = float(library_counts[negative_control_mask].sum())
-        t7 = np.concatenate([t7, pooled_t7], axis=1)
-        cre = np.concatenate([cre, pooled_cre], axis=1)
-        library_counts = np.concatenate(
-            [library_counts, np.asarray([pooled_library_count], dtype=np.float64)]
-        )
-        cre_names = [*cre_names, POOLED_NEGATIVE_CONTROL_NAME]
-        model_negative_control_mask = np.zeros(len(cre_names), dtype=bool)
-        model_negative_control_mask[-1] = True
-        pooled_negative_control = {
-            "name": POOLED_NEGATIVE_CONTROL_NAME,
-            "constituent_cre": negative_controls,
-            "nanopore_count": pooled_library_count,
-            "construction": "per-cell sums of T7 and CRE counts across constituents",
-        }
-
-    lib_size_log = np.log1p(library_counts)
-
-    args.outdir.mkdir(parents=True, exist_ok=True)
-    cre_info.to_csv(args.outdir / "cre_info.csv")
-    pd.Series(blacklist, name="cre").to_csv(
-        args.outdir / "cre_blacklist.csv", index=False
-    )
-    pd.Series(negative_controls, name="cre").to_csv(
-        args.outdir / "negative_controls.csv", index=False
-    )
-    if pooled_negative_control is not None:
-        pd.DataFrame(
-            {
-                "pooled_cre": POOLED_NEGATIVE_CONTROL_NAME,
-                "constituent_cre": negative_controls,
-            }
-        ).to_csv(args.outdir / "pooled_negative_control_definition.csv", index=False)
-    pd.Series(adata.obs["subclass"].value_counts(), name="n_cells").to_csv(
-        args.outdir / "subclass_cell_counts.csv"
+        negative_control_mode=args.negative_control_mode.replace("-", "_"),
     )
 
     tag = f"{args.level}_{args.channel}_{args.infection_model}_{args.method}"
     log(
-        f"[bayesian] fitting {len(cre_names)} cCREs, "
-        f"{len(np.unique(subclasses))} subclasses, tag={tag}"
+        f"[bayesian] fitting {data.n_cre} cCREs, "
+        f"{data.n_subclasses} subclasses, tag={tag}"
     )
     posterior_sites = (
         ["all"] if any(site.lower() == "all" for site in args.posterior_sites)
         else args.posterior_sites
     )
-    result = bh.run_model(
-        t7,
-        cre,
-        subclasses,
-        classes,
-        lib_size_log,
-        cre_names,
+    result = bsf.fit(
+        **data.to_run_kwargs(),
         level=args.level,
         channel=args.channel,
         method=args.method,
@@ -284,7 +188,6 @@ def main() -> None:
         num_chains=args.num_chains,
         num_posterior=args.num_posterior,
         seed=args.seed,
-        negative_control_mask=model_negative_control_mask,
         infection_model=args.infection_model,
         activity_model=args.activity_model,
         priors=priors,
@@ -293,7 +196,7 @@ def main() -> None:
     result["config"].update(
         {
             "input": input_fingerprint(args.h5ad),
-            "blacklist_cre": blacklist,
+            "blacklist_cre": data.blacklist,
             "max_cells": args.max_cells,
             "max_cres": args.max_cres,
             "section": args.section,
@@ -306,75 +209,21 @@ def main() -> None:
             "dropout_prior": dropout_prior_config(args),
             "negative_control_mode": args.negative_control_mode,
             "activity_model": args.activity_model,
-            "annotated_negative_control_cre": negative_controls,
-            "pooled_negative_control": pooled_negative_control,
+            "annotated_negative_control_cre": data.negative_controls,
+            "pooled_negative_control": data.pooled_negative_control,
         }
     )
 
-    prefix = args.outdir / tag
-    summary = result["summary"]
-    for key in ("rho", "infection", "gamma"):
-        if key in summary:
-            summary[key].to_csv(f"{prefix}_{key}.csv", index=False)
-    if "delta_mean" in summary:
-        summary["delta_mean"].to_csv(f"{prefix}_delta_mean.csv")
-    result["evidence"]["per_pair"].to_csv(
-        f"{prefix}_evidence_per_pair.csv", index=False
-    )
-    write_json(
-        Path(f"{prefix}_evidence_totals.json"),
-        jsonable(result["evidence"]["totals"]),
-    )
-    write_json(Path(f"{prefix}_ppc.json"), jsonable(result["ppc"]))
-
-    diagnostics = {
-        key: value for key, value in result["diagnostics"].items() if key != "losses"
-    }
-    if "losses" in result["diagnostics"]:
-        losses = np.asarray(result["diagnostics"]["losses"])
-        diagnostics.update(
-            {
-                "loss_start": float(losses[0]),
-                "loss_end": float(losses[-1]),
-                "loss_all_finite": bool(np.isfinite(losses).all()),
-            }
-        )
-        np.save(f"{prefix}_losses.npy", losses)
-    write_json(Path(f"{prefix}_diagnostics.json"), jsonable(diagnostics))
-    np.savez(f"{prefix}_scalar_samples.npz", **result["scalar_samples"])
-
-    posterior = result.pop("posterior_samples")
-    posterior = {
-        key: np.asarray(value, dtype=np.float32)
-        if np.issubdtype(np.asarray(value).dtype, np.floating)
-        else np.asarray(value)
-        for key, value in posterior.items()
-    }
-    posterior["group_names"] = np.asarray(result["group_names"], dtype=object)
-    posterior["cre_names"] = np.asarray(result["cre_names"], dtype=object)
-    np.savez_compressed(f"{prefix}_posterior_samples.npz", **posterior)
-
-    with Path(f"{prefix}_result.pkl").open("wb") as handle:
-        pickle.dump(result, handle)
-    write_json(
-        args.outdir / "run_manifest.json",
-        {
-            "tag": tag,
-            "input": input_fingerprint(args.h5ad),
-            "n_cells": int(adata.n_obs),
-            "n_cres_mapped": int(len(cre_info)),
-            "n_cres_fitted": int(len(cre_names)),
-            "n_subclasses": int(adata.obs["subclass"].nunique()),
-            "n_classes": int(adata.obs["class"].nunique()),
-            "section": args.section,
-            "blacklist": blacklist,
-            "negative_controls": negative_controls,
-            "negative_control_mode": args.negative_control_mode,
-            "activity_model": args.activity_model,
-            "pooled_negative_control": pooled_negative_control,
+    write_fit(
+        result,
+        args.outdir,
+        tag,
+        data=data,
+        input_path=args.h5ad,
+        manifest_extra={
             "method_variant": method_variant(args),
+            "activity_model": args.activity_model,
             "dropout_prior": dropout_prior_config(args),
-            "config": result["config"],
         },
     )
     log(f"[bayesian] wrote intermediates to {args.outdir}")
