@@ -12,15 +12,8 @@ from typing import Mapping
 import numpy as np
 
 from ..model.collapse import CollapsedStats
+from ..model.forward import sample_channel, sample_latent_multiplier
 from .summarize import _ci
-
-
-def _nb2_sample(rng, mean, conc):
-    """Sample NB2(mean, conc) via Gamma-Poisson; ``mean`` array, ``conc`` scalar."""
-    mean = np.where(mean <= 0, 1e-9, mean)
-    rate = conc / mean
-    lam = rng.gamma(shape=conc, scale=1.0 / rate)
-    return rng.poisson(lam)
 
 
 def posterior_predictive_check(samples: Mapping[str, np.ndarray], stats: CollapsedStats,
@@ -54,23 +47,15 @@ def posterior_predictive_check(samples: Mapping[str, np.ndarray], stats: Collaps
     rep = {name: {"zero_fraction": [], "mean_nonzero": []} for name in stats.channels}
     for d in draw_ids:
         infection_rate = np.exp(log_rho[d][grp] + log_a[d][cre_idx])
-        if infection_model in {"copy_number", "copy_number_dropout"}:
-            latent_multiplier = rng.poisson(infection_rate)
-        else:
-            p_infected = -np.expm1(-infection_rate)
-            latent_multiplier = rng.binomial(1, p_infected)
+        latent_multiplier = sample_latent_multiplier(rng, infection_rate, infection_model)
         for name in stats.channels:
             if name == "t7":
-                mean = beta[d] * latent_multiplier; phi = phi_t7[d]
+                per_copy = beta[d]; phi = phi_t7[d]
                 p_drop = None if p_drop_t7 is None else p_drop_t7[d]
             else:
-                mean = np.exp(log_gamma[d][grp, cre_idx]) * latent_multiplier; phi = phi_cre[d]
+                per_copy = np.exp(log_gamma[d][grp, cre_idx]); phi = phi_cre[d]
                 p_drop = None if p_drop_cre is None else p_drop_cre[d]
-            sim = _nb2_sample(rng, mean, phi)
-            if p_drop is not None:
-                drop = rng.binomial(1, p_drop, size=sim.shape).astype(bool)
-                sim = np.where((latent_multiplier > 0) & drop, 0, sim)
-            sim = np.where(latent_multiplier == 0, 0, sim)
+            sim = sample_channel(rng, latent_multiplier, per_copy, phi, p_drop)
             rep[name]["zero_fraction"].append(w[sim == 0].sum() / n_total)
             nz = sim > 0
             rep[name]["mean_nonzero"].append(np.average(sim[nz], weights=w[nz]) if nz.any() else 0.0)
@@ -153,18 +138,15 @@ def posterior_predictive_check_decoupled(
         k_t7 = rng.poisson(lam)
         k_cre = rng.poisson(lam)
 
-        sim_t7 = _nb2_sample(rng, beta[d_t7] * k_t7, phi_t7[d_t7])
-        if p_drop_t7 is not None:
-            drop_t7 = rng.binomial(1, p_drop_t7[d_t7], size=sim_t7.shape).astype(bool)
-            sim_t7 = np.where((k_t7 > 0) & drop_t7, 0, sim_t7)
-        sim_t7 = np.where(k_t7 == 0, 0, sim_t7)
-
+        sim_t7 = sample_channel(
+            rng, k_t7, beta[d_t7], phi_t7[d_t7],
+            None if p_drop_t7 is None else p_drop_t7[d_t7],
+        )
         gamma = np.exp(log_gamma[d_cre][grp, cre_idx])
-        sim_cre = _nb2_sample(rng, gamma * k_cre, phi_cre[d_cre])
-        if p_drop_cre is not None:
-            drop_cre = rng.binomial(1, p_drop_cre[d_cre], size=sim_cre.shape).astype(bool)
-            sim_cre = np.where((k_cre > 0) & drop_cre, 0, sim_cre)
-        sim_cre = np.where(k_cre == 0, 0, sim_cre)
+        sim_cre = sample_channel(
+            rng, k_cre, gamma, phi_cre[d_cre],
+            None if p_drop_cre is None else p_drop_cre[d_cre],
+        )
 
         for name, sim in (("t7", sim_t7), ("cre", sim_cre)):
             summary = _weighted_channel_summary(sim, weight)

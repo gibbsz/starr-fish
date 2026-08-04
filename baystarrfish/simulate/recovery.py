@@ -21,7 +21,10 @@ from functools import partial
 
 import numpy as np
 
-from . import _bayesian_hierarchical as bh
+from .. import model as _model
+from ..inference import fit as _fit
+from ..inference import initialize as _initialize
+from ..model.forward import sample_channel
 
 
 def simulate(n_class=3, sub_per_class=2, n_cre=5, cells_per_sub=400,
@@ -51,8 +54,8 @@ def simulate(n_class=3, sub_per_class=2, n_cre=5, cells_per_sub=400,
     lam = rho[sub_idx][:, None] * a_j[None, :]           # (n_cells, n_cre)
     k = rng.poisson(lam)
 
-    t7 = np.where(k == 0, 0, bh._nb2_sample(rng, beta_t7 * k, phi_t7))
-    cre = np.where(k == 0, 0, bh._nb2_sample(rng, gamma[sub_idx] * k, phi_cre))
+    t7 = sample_channel(rng, k, beta_t7, phi_t7)
+    cre = sample_channel(rng, k, gamma[sub_idx], phi_cre)
 
     truth = dict(beta_t7=beta_t7, phi_t7=phi_t7, phi_cre=phi_cre,
                  rho_sub=rho, rho_class=np.exp(mu_rho + u),
@@ -113,18 +116,18 @@ def selfcheck():
 
     kmax, beta, pt, pc = 25, 4.0, 3.0, 2.5
     rows = [(0, 0, 0.05, 6.0), (5, 0, 0.2, 3.0), (0, 4, 0.1, 8.0), (12, 7, 0.5, 5.0)]
-    st = bh.CollapsedStats(group=np.zeros(len(rows), int), cre=np.arange(len(rows)),
+    st = _model.CollapsedStats(group=np.zeros(len(rows), int), cre=np.arange(len(rows)),
                            counts={"t7": np.array([r[0] for r in rows]),
                                    "cre": np.array([r[1] for r in rows])},
                            weight=np.ones(len(rows)), n_per_group=np.array([len(rows)]),
                            n_group=1, n_cre=len(rows), channels=("t7", "cre")).to_jax()
     lam = np.array([r[2] for r in rows]); gam = np.array([r[3] for r in rows])
-    got = np.asarray(bh.marginal_loglik(st, lam, beta, pt, gam, pc, kmax))
+    got = np.asarray(_model.marginal_loglik(st, lam, beta, pt, gam, pc, kmax))
     exp = np.array([brute(*r[:2], r[2], beta, pt, r[3], pc, kmax) for r in rows])
     assert np.max(np.abs(got - exp)) < 1e-5, (got, exp)
 
     got_drop = np.asarray(
-        bh.marginal_loglik(
+        _model.marginal_loglik(
             st, lam, beta, pt, gam, pc, kmax, p_drop_t7=0.2, p_drop_cre=0.3
         )
     )
@@ -134,7 +137,7 @@ def selfcheck():
     ])
     assert np.max(np.abs(got_drop - exp_drop)) < 1e-5, (got_drop, exp_drop)
 
-    cre_st = bh.CollapsedStats(
+    cre_st = _model.CollapsedStats(
         group=np.zeros(len(rows), int),
         cre=np.arange(len(rows)),
         counts={"cre": np.array([r[1] for r in rows])},
@@ -144,9 +147,9 @@ def selfcheck():
         n_cre=len(rows),
         channels=("cre",),
     ).to_jax()
-    gh_nodes, gh_log_weights = bh.gauss_hermite_rule(5)
+    gh_nodes, gh_log_weights = _model.gauss_hermite_rule(5)
     got_cre = np.asarray(
-        bh.cre_marginal_loglik(
+        _model.cre_marginal_loglik(
             cre_st,
             np.log(lam),
             np.zeros_like(lam),
@@ -171,32 +174,32 @@ def selfcheck():
         np.where(np.array([(r[0] == 0 and r[1] == 0) for r in rows]), np.log1p(-p), -np.inf),
         np.log(p) + infected,
     )
-    got_binary = np.asarray(bh.binary_infection_loglik(st, lam, beta, pt, gam, pc))
+    got_binary = np.asarray(_model.binary_infection_loglik(st, lam, beta, pt, gam, pc))
     assert np.max(np.abs(got_binary - expected_binary)) < 1e-5, (got_binary, expected_binary)
 
     rng = np.random.default_rng(2)
     n, j, g = 300, 4, 3
     t7 = rng.poisson(0.1, (n, j)); cre = rng.poisson(0.05, (n, j)); gi = rng.integers(0, g, n)
-    s = bh.build_sufficient_stats({"t7": t7, "cre": cre}, gi, g, j)
+    s = _model.build_sufficient_stats({"t7": t7, "cre": cre}, gi, g, j)
     assert int(s.weight.sum()) == n * j
     rho = np.exp(rng.normal(-1, .3, g)); a = np.exp(rng.normal(0, .3, j))
     gam_gj = np.exp(rng.normal(1, .3, (g, j)))
     sj = s.to_jax()
-    ll = np.asarray(bh.marginal_loglik(sj, rho[np.asarray(sj.group)] * a[np.asarray(sj.cre)],
+    ll = np.asarray(_model.marginal_loglik(sj, rho[np.asarray(sj.group)] * a[np.asarray(sj.cre)],
                                        3., 2., gam_gj[np.asarray(sj.group), np.asarray(sj.cre)], 2., 30))
     collapsed = float((np.asarray(sj.weight) * ll).sum())
-    fk = bh.CollapsedStats(group=gi.repeat(j), cre=np.tile(np.arange(j), n),
+    fk = _model.CollapsedStats(group=gi.repeat(j), cre=np.tile(np.arange(j), n),
                            counts={"t7": t7.reshape(-1), "cre": cre.reshape(-1)},
                            weight=np.ones(n * j), n_per_group=s.n_per_group, n_group=g,
                            n_cre=j, channels=("t7", "cre")).to_jax()
-    lln = np.asarray(bh.marginal_loglik(fk, rho[np.asarray(fk.group)] * a[np.asarray(fk.cre)],
+    lln = np.asarray(_model.marginal_loglik(fk, rho[np.asarray(fk.group)] * a[np.asarray(fk.cre)],
                                         3., 2., gam_gj[np.asarray(fk.group), np.asarray(fk.cre)], 2., 30))
     assert abs(collapsed - float(lln.sum())) < 1e-5
-    binary_ll = np.asarray(bh.binary_infection_loglik(
+    binary_ll = np.asarray(_model.binary_infection_loglik(
         sj, rho[np.asarray(sj.group)] * a[np.asarray(sj.cre)],
         3., 2., gam_gj[np.asarray(sj.group), np.asarray(sj.cre)], 2.))
     binary_collapsed = float((np.asarray(sj.weight) * binary_ll).sum())
-    binary_lln = np.asarray(bh.binary_infection_loglik(
+    binary_lln = np.asarray(_model.binary_infection_loglik(
         fk, rho[np.asarray(fk.group)] * a[np.asarray(fk.cre)],
         3., 2., gam_gj[np.asarray(fk.group), np.asarray(fk.cre)], 2.))
     assert abs(binary_collapsed - float(binary_lln.sum())) < 1e-5
@@ -256,24 +259,24 @@ def main():
         group_idx = sub_idx; n_group = truth["n_sub"]; cog = class_of_sub; ncl = args.classes
 
     channels = {"t7": t7} if args.channel == "t7" else {"t7": t7, "cre": cre}
-    stats = bh.build_sufficient_stats(channels, group_idx, n_group, args.cres,
+    stats = _model.build_sufficient_stats(channels, group_idx, n_group, args.cres,
                                       class_of_group=cog, n_class=ncl)
-    ev = bh.summarize_evidence(stats)
+    ev = _model.summarize_evidence(stats)
     print("evidence totals:", {k: ev["totals"][k] for k in list(ev["totals"])[:8]})
     print(f"collapsed rows: {len(stats.weight)}  (naive cells*cre = {t7.size})")
 
     lam_max = float(np.exp(truth["log_gamma_sub"].max()))  # rough
-    kmax = bh.choose_kmax(lam_max=truth["rho_sub"].max() * truth["a_j"].max(),
+    kmax = _model.choose_kmax(lam_max=truth["rho_sub"].max() * truth["a_j"].max(),
                           max_count=int(max(t7.max(), cre.max())), beta_t7=truth["beta_t7"])
     print("Kmax:", kmax)
 
-    priors = bh.ModelPriors()
-    model = bh.MODEL_FAMILIES[args.infection_model][(args.level, args.channel)]
+    priors = _model.ModelPriors()
+    model = _model.MODEL_FAMILIES[args.infection_model][(args.level, args.channel)]
     if args.channel == "joint":
         model = partial(model, activity_model=args.activity_model)
     sj = stats.to_jax()
     lib_j = lib
-    init = bh.init_from_moments(
+    init = _initialize.init_from_moments(
         stats,
         lib,
         priors,
@@ -293,10 +296,10 @@ def main():
             )
 
     if args.nuts:
-        samples, info = bh.fit_nuts(model, sj, lib_j, kmax, priors, init_values=init,
+        samples, info = _fit.fit_nuts(model, sj, lib_j, kmax, priors, init_values=init,
                                     num_warmup=500, num_samples=500, num_chains=1, seed=args.seed)
     else:
-        samples, info = bh.fit_svi(model, sj, lib_j, kmax, priors, init_values=init,
+        samples, info = _fit.fit_svi(model, sj, lib_j, kmax, priors, init_values=init,
                                    num_steps=args.steps, seed=args.seed)
         losses = info["losses"]
         print(f"ELBO loss: start {losses[0]:.1f} -> end {losses[-1]:.1f}  "
