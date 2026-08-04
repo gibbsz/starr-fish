@@ -90,7 +90,22 @@ _EXPORTS: dict[str, str] = {
     "posterior_predictive_check_decoupled": ".inference.ppc",
     "run_model": ".inference.run",
     "run_decoupled_model": ".inference.run",
+    # --- data, statistics and serialisation (no JAX, no NumPyro) ----------- #
+    "CountData": ".data.counts",
+    "read_and_prepare_adata": ".data.anndata",
+    "bh_fdr": ".stats.fdr",
+    "negative_control_test": ".stats.negative_control",
+    "write_fit": ".io.results",
+    "read_fit": ".io.results",
+    "load_gamma": ".io.results",
+    "load_posterior_samples": ".io.results",
+    "log": "._log",
 }
+
+# Subpackages, resolvable as attributes without being imported up front:
+# `import baystarrfish as bsf` then `bsf.data.CountData` works, and `bsf.data`
+# alone still costs no JAX import.
+_SUBMODULES = ("data", "inference", "io", "model", "simulate", "stats")
 
 # Documented public aliases for the two entry points.
 _ALIASES: dict[str, str] = {
@@ -98,7 +113,7 @@ _ALIASES: dict[str, str] = {
     "fit_decoupled": "run_decoupled_model",
 }
 
-__all__ = ["__version__", *sorted(_EXPORTS), *sorted(_ALIASES)]
+__all__ = ["__version__", *sorted(_EXPORTS), *sorted(_ALIASES), *_SUBMODULES]
 
 if TYPE_CHECKING:  # pragma: no cover - import-time cost avoided at runtime
     from .inference import (  # noqa: F401
@@ -147,14 +162,17 @@ if TYPE_CHECKING:  # pragma: no cover - import-time cost avoided at runtime
 
 
 def __getattr__(name: str) -> object:
-    """Resolve public names on first access (PEP 562)."""
-    target = _ALIASES.get(name, name)
-    module_path = _EXPORTS.get(target)
-    if module_path is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    """Resolve public names and subpackages on first access (PEP 562)."""
     from importlib import import_module
 
-    value = getattr(import_module(module_path, __name__), target)
+    if name in _SUBMODULES:
+        value = import_module(f".{name}", __name__)
+    else:
+        target = _ALIASES.get(name, name)
+        module_path = _EXPORTS.get(target)
+        if module_path is None:
+            raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+        value = getattr(import_module(module_path, __name__), target)
     globals()[name] = value
     return value
 
