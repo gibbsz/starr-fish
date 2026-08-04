@@ -7,7 +7,7 @@ data and compares estimates with the known simulation truth.
 
 The default truth source is:
 
-`revision/bayesian_vs_fold_change/results/bayesian_joint_dropout/`
+`revision/bayesian_vs_fold_change/results/ablation/bayesian_joint_dropout/`
 
 The current production fit saved `log_gamma` draws and scalar draws, but not
 `log_rho` or `log_a` draws. When those infection posterior draws are absent,

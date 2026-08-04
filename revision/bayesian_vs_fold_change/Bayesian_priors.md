@@ -1,7 +1,8 @@
 # Bayesian Priors
 
 This note documents the priors used by the decoupled Bayesian model in
-`STARRFISH_in_vivo/STARRFISH/bayesian_hierarchical.py` and the sensitivity
+`baystarrfish/model/priors.py` (formerly
+`STARRFISH_in_vivo/STARRFISH/bayesian_hierarchical.py`) and the sensitivity
 checks that are most relevant for interpreting the current results.
 
 ## Current Model
