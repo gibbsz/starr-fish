@@ -43,6 +43,12 @@ setup(
         "stan": [
             "pystan>=3.0.0",
         ],
+        # STARRFISH.bayesian_activity_test delegates to the baystarrfish package,
+        # which lives at the repository root and carries the jax/numpyro
+        # dependencies this distribution deliberately does not.
+        "bayes": [
+            "baystarrfish>=0.1.0",
+        ],
         "dev": [
             "pytest>=6.0",
             "pytest-cov>=2.12",
