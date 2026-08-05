@@ -147,26 +147,33 @@ not receive twelve genomes. And `copies` is a posterior **mean over an integer**
 Thresholding it is not an infection call — `P(k >= 1)` is a different quantity.
 
 **It needs `log_rho` and `log_a`, which fits before 2026-08 did not save.** The
-copy number depends on infection and abundance, not just activity. `run_bayes.py`
-now requests all three by default — they add ~3 MB to a 444 MB file — but the
-existing runs predate that: of the 25 fit directories under
-`revision/bayesian_vs_fold_change/results/`, only
-`results/ablation/bayesian_full_posterior/` has them. The production fit behind
-the joint+dropout figures, `results/bayesian/`, stores `log_gamma` alone.
+copy number depends on infection and abundance, not just activity, and neither
+site can be reconstructed after the fact: `rho` survives as a per-subclass
+summary in `<tag>_rho.csv`, but `log_a = centre(lib_size_centered + tau_a *
+eps_a_raw)` and `eps_a_raw` was not stored. With `tau_a = 1.48` the posterior
+abundance sits within a factor of ~19 of its nanopore prior mean, so substituting
+the prior is not an approximation of `a`, it is a different `a`.
 
-They cannot be reconstructed after the fact. `rho` survives as a per-subclass
-summary in `<tag>_rho.csv` (mean and 90% CI, relative width ~11%), but `a` does
-not: `log_a = centre(lib_size_centered + tau_a * eps_a_raw)` and `eps_a_raw` was
-not saved. With `tau_a = 1.48` the posterior abundance sits within a factor of
-~19 of its nanopore prior mean, so substituting the prior is not an
-approximation, it is a different `a`. Refitting is the only route:
+`run_bayes.py` now requests all three by default — they add ~3 MB to a 444 MB
+file. Fits that carry them:
+
+| fit | dataset | model |
+|---|---|---|
+| `revision/origin_vs_new/results/origin/bayesian_copy_number/` | 5/28 NEWNEW | joint+dropout, direct activity |
+| `revision/origin_vs_new/results/new/bayesian_copy_number/` | 07/29 SFv8 low dose | joint+dropout, direct activity |
+| `revision/bayesian_vs_fold_change/results/ablation/bayesian_full_posterior/` | 5/28 NEWNEW | no dropout |
+
+The first two replicate the published fits exactly — same settings, same seed —
+and reproduce their activity tables to 1e-12 relative, differing only in what was
+written out. The published `results/bayesian/` and `results/new/bayesian/` are
+untouched and still store `log_gamma` alone.
+
+A production fit is ~13 minutes on an L40S (the collapsed representation is only
+~300k rows), so regenerating one is cheap:
 
 ```bash
-python revision/bayesian_vs_fold_change/code/run_bayes.py \
-    --level subclass --channel joint \
-    --infection-model copy_number_dropout \
-    --activity-model direct --negative-control-mode ordinary
-    # --posterior-sites now defaults to log_gamma log_rho log_a
+sbatch --job-name=bayes_cn_origin \
+    revision/origin_vs_new/code/submit_bayesian_copy_number.slurm origin
 ```
 
 **Sanity-check the scale before trusting absolute copy numbers.** `k` and
