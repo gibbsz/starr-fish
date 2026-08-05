@@ -146,28 +146,52 @@ not receive twelve genomes. And `copies` is a posterior **mean over an integer**
 `0.02` means "almost certainly zero copies", not a fiftieth of a virus.
 Thresholding it is not an infection call — `P(k >= 1)` is a different quantity.
 
-**It needs `log_rho` and `log_a`, which the production fit did not save.** The
-copy number depends on infection and abundance, not just activity, and those
-sites cannot be reconstructed after the fact. `results/bayesian/` stores only
-`log_gamma`; `results/ablation/bayesian_full_posterior/` has everything. To make
-a dropout fit usable here, refit asking for them — three sites, not `all`, which
-would also write the 500 MB `alpha`/`delta`/`eta` blocks:
+**It needs `log_rho` and `log_a`, which fits before 2026-08 did not save.** The
+copy number depends on infection and abundance, not just activity. `run_bayes.py`
+now requests all three by default — they add ~3 MB to a 444 MB file — but the
+existing runs predate that: of the 25 fit directories under
+`revision/bayesian_vs_fold_change/results/`, only
+`results/ablation/bayesian_full_posterior/` has them. The production fit behind
+the joint+dropout figures, `results/bayesian/`, stores `log_gamma` alone.
+
+They cannot be reconstructed after the fact. `rho` survives as a per-subclass
+summary in `<tag>_rho.csv` (mean and 90% CI, relative width ~11%), but `a` does
+not: `log_a = centre(lib_size_centered + tau_a * eps_a_raw)` and `eps_a_raw` was
+not saved. With `tau_a = 1.48` the posterior abundance sits within a factor of
+~19 of its nanopore prior mean, so substituting the prior is not an
+approximation, it is a different `a`. Refitting is the only route:
 
 ```bash
 python revision/bayesian_vs_fold_change/code/run_bayes.py \
-    --posterior-sites log_gamma log_rho log_a   # ...otherwise unchanged
+    --level subclass --channel joint \
+    --infection-model copy_number_dropout \
+    --activity-model direct --negative-control-mode ordinary
+    # --posterior-sites now defaults to log_gamma log_rho log_a
 ```
 
 **Sanity-check the scale before trusting absolute copy numbers.** `k` and
 `beta_t7` are only weakly separated by the likelihood — "many copies, tiny
 per-copy rate" fits about as well as "few copies, large rate", and the
-mean-centering of `log a` fixes the `rho`–`a` scale but not this one. On the
-`bayesian_full_posterior` ablation the fit sits at `beta_t7 = 0.03`, i.e. one
-genome yields 0.03 T7 transcripts, which lets `rho * a` reach 39 while the data
-stays 99.2% zeros; `E[k]` there is ~5 copies per cell with no counts to show for
-it. Ratios and rankings across cells are far more robust than the absolute level.
-`infer_copy_number` warns when `rho * a` approaches `kmax`, where the truncation
-additionally biases `E[k]` low.
+mean-centering of `log a` fixes the `rho`–`a` scale but not this one. Both fits
+land in the many-copies corner:
+
+| | `bayesian_full_posterior` (no dropout) | `results/bayesian` (production, joint+dropout) |
+|---|---|---|
+| `beta_t7` | 0.03 | 0.034 |
+| `phi_cre` | 0.01 | 0.012 |
+| `p_drop_t7` / `p_drop_cre` | — | 0.0004 / 0.0006 |
+| max `rho * a` | 39.5 | 37.5 |
+| rows truncated at `kmax=60` | — | 2,686 (tail mass 2.6e-4) |
+
+One genome yielding 0.03 T7 transcripts is what lets `rho * a` reach ~38 while
+the data stays 99.2% zeros. Note the production model **had** dropout available
+and drove it to ~0.0005: it did not use dropout to explain the zeros, it used
+many copies at a tiny per-copy rate, exactly as the no-dropout ablation did. So
+this is a property of the model and data, not of one fit's configuration.
+
+Treat ratios and rankings across cells as far more robust than the absolute
+level. `infer_copy_number` warns when `rho * a` approaches `kmax`, where
+truncation biases `E[k]` low on top of this.
 
 **Cost.** `P(k | obs)` depends on the observation only through
 `(cell type, cCRE, t7, cre)`, so the 99.85% all-zero pairs collapse to one

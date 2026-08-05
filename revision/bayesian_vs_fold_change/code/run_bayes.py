@@ -73,10 +73,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--posterior-sites",
         nargs="+",
-        default=["log_gamma"],
+        default=["log_gamma", "log_rho", "log_a"],
         help=(
             "Posterior sites to save in *_posterior_samples.npz. "
-            "Use 'all' to save every sampled and deterministic posterior site."
+            "Use 'all' to save every sampled and deterministic posterior site. "
+            "log_rho and log_a are in the default because the latent copy number "
+            "cannot be recovered without them and they cannot be reconstructed "
+            "after the fact; together they add ~3 MB to a 444 MB file."
         ),
     )
     parser.add_argument("--seed", type=int, default=0)
