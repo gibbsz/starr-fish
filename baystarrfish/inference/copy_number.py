@@ -97,10 +97,15 @@ class CopyNumberMatrix:
     sd : (n_cells, n_cre) or None
         Posterior sd of the same quantity, combining the spread of ``k`` at fixed
         parameters with the spread induced by parameter uncertainty.
+    p_infected : (n_cells, n_cre) or None
+        ``P(k >= 1 | obs)`` -- the posterior probability that the cell received
+        *any* copy of that construct. This is the probability; ``copies`` is the
+        expected count. They answer different questions.
     """
 
     copies: np.ndarray
     sd: np.ndarray | None
+    p_infected: np.ndarray | None
     obs_names: np.ndarray | None
     cre_names: list[str]
     kmax: int
@@ -115,13 +120,55 @@ class CopyNumberMatrix:
     def n_cre(self) -> int:
         return int(self.copies.shape[1])
 
-    def to_frame(self) -> pd.DataFrame:
-        """Dense DataFrame of copies, cells x cCREs.
+    def matrix(self, which: str = "copies") -> np.ndarray:
+        """One of ``"copies"``, ``"sd"`` or ``"p_infected"``, or raise."""
+        if which not in {"copies", "sd", "p_infected"}:
+            raise ValueError(
+                f"unknown matrix {which!r}; expected 'copies', 'sd' or 'p_infected'"
+            )
+        value = getattr(self, which)
+        if value is None:
+            raise ValueError(
+                f"{which!r} was not computed; pass return_sd/return_probability to "
+                "infer_copy_number"
+            )
+        return value
+
+    def to_frame(self, which: str = "copies") -> pd.DataFrame:
+        """Dense DataFrame, cells x cCREs.
 
         Materialises the whole matrix as float64 -- roughly 1.3 GB for the full
-        dataset. Prefer :attr:`copies` and :attr:`cre_names` for anything large.
+        dataset. Prefer :meth:`matrix` and :attr:`cre_names` for anything large.
         """
-        return pd.DataFrame(self.copies, index=self.obs_names, columns=self.cre_names)
+        return pd.DataFrame(
+            self.matrix(which), index=self.obs_names, columns=self.cre_names
+        )
+
+    def write_csv(
+        self, path: Path | str, which: str = "copies", *, decimals: int = 5
+    ) -> Path:
+        """Write one matrix as CSV, gzipped when the path ends in ``.gz``.
+
+        Rounded to ``decimals`` because the full matrix is 159 million values:
+        at 5 decimals it is ~1 GB of text, and the posterior is nowhere near that
+        sharp. Written in row blocks so the text never exists in memory at once.
+        """
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        values = np.round(self.matrix(which), decimals)
+        index = (
+            self.obs_names if self.obs_names is not None
+            else np.arange(values.shape[0]).astype(str)
+        )
+        chunk = max(1, 2_000_000 // max(1, values.shape[1]))
+        mode, header = "w", True
+        for start in range(0, values.shape[0], chunk):
+            block = slice(start, start + chunk)
+            pd.DataFrame(
+                values[block], index=index[block], columns=self.cre_names
+            ).to_csv(path, mode=mode, header=header, index_label="cell")
+            mode, header = "a", False
+        return path
 
     def total_per_cell(self) -> np.ndarray:
         """Expected AAV genomes per cell, summed over cCREs."""
@@ -140,6 +187,8 @@ class CopyNumberMatrix:
         }
         if self.sd is not None:
             payload["sd"] = np.asarray(self.sd, dtype=np.float32)
+        if self.p_infected is not None:
+            payload["p_infected"] = np.asarray(self.p_infected, dtype=np.float32)
         if self.obs_names is not None:
             payload["obs_names"] = np.asarray(self.obs_names, dtype=object)
         np.savez_compressed(path, **payload)
@@ -295,6 +344,7 @@ def infer_copy_number(
     cre_names: Sequence[str],
     obs_names: Sequence[str] | None = None,
     return_sd: bool = False,
+    return_probability: bool = False,
     chunk: int = 400,
     max_draws: int | None = None,
     dtype=np.float32,
@@ -322,6 +372,10 @@ def infer_copy_number(
         is within Monte Carlo error of one over 1,000, so this is usually the
         difference between minutes and an hour. Evenly spaced rather than random
         so the result is reproducible without a seed.
+    return_probability
+        Also return ``P(k >= 1 | obs)`` -- the posterior probability the cell
+        received any copy. Free to compute (same posterior weights), but each
+        extra matrix is another ``n_cells x n_cre`` array.
     dtype
         Output dtype. float32 halves a 636 MB matrix and is far finer than the
         posterior is sharp.
@@ -369,6 +423,10 @@ def infer_copy_number(
     # 2. Broadcast it, then correct only where something was actually observed.
     copies = baseline_mean[np.ix_(group_slot, cre_slot)].astype(dtype, copy=True)
     sd = baseline_sd[np.ix_(group_slot, cre_slot)].astype(dtype, copy=True) if return_sd else None
+    p_infected = (
+        baseline.p_infected.reshape(shape)[np.ix_(group_slot, cre_slot)].astype(dtype, copy=True)
+        if return_probability else None
+    )
 
     rows, cols = np.nonzero((t7 > 0) | (cre > 0))
     if len(rows):
@@ -387,6 +445,8 @@ def infer_copy_number(
         copies[rows, cols] = moments.mean[inverse].astype(dtype)
         if sd is not None:
             sd[rows, cols] = moments.sd[inverse].astype(dtype)
+        if p_infected is not None:
+            p_infected[rows, cols] = moments.p_infected[inverse].astype(dtype)
     elif verbose:
         log("[copies] no nonzero observations; every pair is at the baseline")
 
@@ -399,6 +459,7 @@ def infer_copy_number(
     return CopyNumberMatrix(
         copies=copies,
         sd=sd,
+        p_infected=p_infected,
         obs_names=None if obs_names is None else np.asarray(obs_names, dtype=object),
         cre_names=[str(name) for name in cre_names],
         kmax=int(kmax),
@@ -413,6 +474,7 @@ def infer_copy_number_from_fit(
     *,
     tag: str | None = None,
     return_sd: bool = False,
+    return_probability: bool = False,
     chunk: int = 400,
     max_draws: int | None = None,
     dtype=np.float32,
@@ -449,6 +511,7 @@ def infer_copy_number_from_fit(
         cre_names=data.cre_names,
         obs_names=data.obs_names,
         return_sd=return_sd,
+        return_probability=return_probability,
         chunk=chunk,
         max_draws=max_draws,
         dtype=dtype,
@@ -484,7 +547,17 @@ def _main(argv: Sequence[str] | None = None) -> int:
                              "linear in the draw count and 200 is usually within "
                              "Monte Carlo error of the full 1,000")
     parser.add_argument("--with-sd", action="store_true",
-                        help="also compute the posterior sd (doubles the output size)")
+                        help="also compute the posterior sd (one more full matrix)")
+    parser.add_argument("--with-probability", action="store_true",
+                        help="also compute P(k >= 1 | obs), the infection probability")
+    parser.add_argument("--csv", type=Path, default=None,
+                        help="also write CSVs with this stem, e.g. out/k -> "
+                             "out/k_copies.csv.gz")
+    parser.add_argument("--csv-which", nargs="+", default=["copies"],
+                        choices=["copies", "sd", "p_infected"],
+                        help="which matrices to write as CSV (default: the "
+                             "posterior mean only -- each is ~1.3 GB of text)")
+    parser.add_argument("--csv-decimals", type=int, default=5)
     args = parser.parse_args(argv)
 
     from ..data import CountData
@@ -501,8 +574,18 @@ def _main(argv: Sequence[str] | None = None) -> int:
     )
     matrix = infer_copy_number_from_fit(
         data, args.fit_dir, tag=args.tag, return_sd=args.with_sd,
+        return_probability=args.with_probability,
         chunk=args.chunk, max_draws=args.max_draws,
     )
     path = matrix.write_npz(args.out)
     log(f"[copies] wrote {matrix.n_cells:,} x {matrix.n_cre} matrix to {path}")
+    if args.csv:
+        for which in args.csv_which:
+            if getattr(matrix, which) is None:
+                log(f"[copies] skipping {which} CSV: not computed")
+                continue
+            written = matrix.write_csv(
+                Path(f"{args.csv}_{which}.csv.gz"), which, decimals=args.csv_decimals
+            )
+            log(f"[copies] wrote {which} CSV to {written}")
     return 0

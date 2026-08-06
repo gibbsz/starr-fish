@@ -36,10 +36,19 @@ __all__ = [
 
 
 class PosteriorKMoments(NamedTuple):
-    """Posterior mean and sd of the latent copy number, per observation."""
+    """Posterior summaries of the latent copy number, per observation.
+
+    ``mean`` and ``sd`` describe how many copies; ``p_infected`` is
+    ``P(k >= 1 | obs)``, the probability the cell received *any* copy of that
+    construct. They answer different questions and can disagree: a pair can be
+    almost certainly infected (``p_infected`` near 1) with a low expected count,
+    or carry a high ``mean`` driven by a heavy tail while ``p_infected`` is
+    modest.
+    """
 
     mean: np.ndarray
     sd: np.ndarray
+    p_infected: np.ndarray
 
 
 def nb2_logpmf(count, mean, conc):
@@ -85,7 +94,7 @@ def posterior_k_moments(
     *,
     chunk: int = 400,
 ) -> PosteriorKMoments:
-    """Posterior mean and sd of ``k`` per observation, marginal over draws.
+    """Posterior mean, sd and infection probability of ``k``, marginal over draws.
 
     The sd combines both sources of uncertainty by the law of total variance::
 
@@ -120,6 +129,7 @@ def posterior_k_moments(
     log_k_factorial = gammaln(k + 1)
     mean = np.empty(n_pairs, dtype=np.float64)
     sd = np.empty(n_pairs, dtype=np.float64)
+    p_infected = np.empty(n_pairs, dtype=np.float64)
 
     def _per_draw(value):
         return None if value is None else np.asarray(value)[:, None, None]
@@ -150,7 +160,11 @@ def posterior_k_moments(
         within = (second - first**2).mean(axis=0)
         between = first.var(axis=0)
         sd[block] = np.sqrt(np.maximum(within + between, 0.0))
-    return PosteriorKMoments(mean=mean, sd=sd)
+        # P(k >= 1 | obs) = E_theta[ 1 - P(k = 0 | obs, theta) ], by the law of
+        # total expectation -- the same average over draws as the mean, so the
+        # parameter uncertainty is carried through here too.
+        p_infected[block] = (1.0 - weights[..., 0]).mean(axis=0)
+    return PosteriorKMoments(mean=mean, sd=sd, p_infected=p_infected)
 
 
 def posterior_k_expectation(

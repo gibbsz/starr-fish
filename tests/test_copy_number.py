@@ -397,3 +397,95 @@ def test_no_warning_when_the_grid_comfortably_covers_the_rates(draws, observatio
         warnings.simplefilter("error", RuntimeWarning)
         infer_copy_number(t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
                           verbose=False)
+
+
+def test_infection_probability_is_a_probability(draws, observations):
+    t7, cre, group = observations
+    m = infer_copy_number(t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+                          return_probability=True, dtype=np.float64, verbose=False)
+    assert m.p_infected.shape == m.copies.shape
+    assert (m.p_infected >= 0).all() and (m.p_infected <= 1).all()
+
+
+def test_probability_matches_an_explicit_sum_over_k(draws):
+    """P(k>=1|obs) = E_theta[1 - P(k=0|obs,theta)] -- check against a hand sum."""
+    from scipy.special import gammaln
+
+    from baystarrfish.inference.posterior_k import channel_logprob
+
+    t7 = np.array([0, 3, 11]); cre = np.array([0, 1, 7])
+    idx = np.array([0, 1, 2])
+    got = posterior_k_moments(t7, cre, idx, idx, draws, KMAX)
+
+    k = np.arange(KMAX + 1, dtype=float)
+    p0 = []
+    for d in range(N_DRAW):
+        lam = draws["rho"][d, idx] * draws["a"][d, idx]
+        gamma = np.exp(draws["log_gamma"][d, idx, idx])
+        logp = (
+            k * np.log(lam)[:, None] - lam[:, None] - gammaln(k + 1)
+            + channel_logprob(t7[:, None], k, draws["beta_t7"][d], draws["phi_t7"][d])
+            + channel_logprob(cre[:, None], k, gamma[:, None], draws["phi_cre"][d])
+        )
+        w = np.exp(logp - logp.max(axis=-1, keepdims=True))
+        w /= w.sum(axis=-1, keepdims=True)
+        p0.append(w[:, 0])
+    np.testing.assert_allclose(got.p_infected, 1.0 - np.array(p0).mean(axis=0), rtol=1e-12)
+
+
+def test_a_positive_count_forces_certainty_of_infection(draws, observations):
+    """k=0 is a point mass at zero counts, so any nonzero read implies k>=1."""
+    _, _, group = observations
+    loud = np.full((N_CELL, N_CRE), 4, dtype=np.int64)
+    m = infer_copy_number(loud, loud, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+                          return_probability=True, dtype=np.float64, verbose=False)
+    np.testing.assert_allclose(m.p_infected, 1.0, atol=1e-12)
+
+
+def test_probability_and_mean_are_different_questions(draws, observations):
+    """A pair can be probably-infected yet expected to carry few copies."""
+    _, _, group = observations
+    one = np.ones((N_CELL, N_CRE), dtype=np.int64)
+    m = infer_copy_number(one, one, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+                          return_probability=True, dtype=np.float64, verbose=False)
+    assert np.allclose(m.p_infected, 1.0, atol=1e-12)
+    assert (m.copies > 1.0).any()  # certain of infection, uncertain of the count
+
+
+def test_probability_is_absent_unless_requested(draws, observations):
+    t7, cre, group = observations
+    m = infer_copy_number(t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+                          verbose=False)
+    assert m.p_infected is None
+    with pytest.raises(ValueError, match="was not computed"):
+        m.matrix("p_infected")
+    with pytest.raises(ValueError, match="unknown matrix"):
+        m.matrix("nonsense")
+
+
+def test_write_csv_round_trips_every_matrix(tmp_path, draws, observations):
+    t7, cre, group = observations
+    m = infer_copy_number(t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+                          obs_names=[f"cell{i}" for i in range(N_CELL)],
+                          return_sd=True, return_probability=True, verbose=False)
+    for which in ("copies", "sd", "p_infected"):
+        for suffix in (".csv", ".csv.gz"):
+            path = m.write_csv(tmp_path / f"{which}{suffix}", which, decimals=6)
+            back = pd.read_csv(path, index_col="cell")
+            assert list(back.columns) == CRE_NAMES
+            assert list(back.index) == [f"cell{i}" for i in range(N_CELL)]
+            np.testing.assert_allclose(back.to_numpy(), m.matrix(which), atol=1e-6)
+
+
+def test_write_csv_block_boundary_keeps_one_header(tmp_path, draws, observations):
+    """Blocked writing must not repeat the header or drop rows."""
+    import gzip
+
+    t7, cre, group = observations
+    m = infer_copy_number(t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+                          verbose=False)
+    path = m.write_csv(tmp_path / "c.csv.gz", "copies")
+    with gzip.open(path, "rt") as handle:
+        lines = handle.read().splitlines()
+    assert len(lines) == N_CELL + 1
+    assert sum(line.startswith("cell,") for line in lines) == 1
