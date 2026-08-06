@@ -119,20 +119,40 @@ from baystarrfish.inference import infer_copy_number_from_fit
 data = CountData.from_h5ad(section="all", negative_control_mode="ordinary")
 copies = infer_copy_number_from_fit(data, "results/bayesian_full_posterior", return_sd=True)
 
-copies.copies            # (n_cells, n_cre) float32: E[k_ij | t7_ij, cre_ij]
-copies.sd                # same shape: posterior sd
-copies.total_per_cell()  # expected genomes per cell, summed over cCREs
-copies.to_frame()        # labelled DataFrame (dense — 1.3 GB at full size)
+copies.copies             # (n_cells, n_cre) float32: E[k_ij | t7_ij, cre_ij]
+copies.sd                 # same shape: posterior sd
+copies.p_infected         # P(k >= 1 | obs), with return_probability=True
+copies.total_per_cell()   # expected genomes per cell, summed over cCREs
+copies.to_frame("copies") # labelled DataFrame (dense — 1.3 GB at full size)
 copies.write_npz("results/copies.npz")
+copies.write_csv("results/copies.csv.gz", "copies")
 ```
 
-or from the command line, which is what you want for the full matrix:
+`copies` is the expected **count**; `p_infected` is a **probability**. They answer
+different questions and can disagree — a pair can be certainly infected yet
+expected to carry few copies. Thresholding `copies` is not an infection call.
+
+From the command line, which is what you want for the full matrix:
 
 ```bash
 python -m baystarrfish copy-number \
-    --fit-dir results/ablation/bayesian_full_posterior \
-    --out results/copy_number.npz --with-sd
+    --fit-dir revision/origin_vs_new/results/origin/bayesian_copy_number \
+    --out results/copy_number.npz \
+    --csv results/copy_number --csv-which copies \
+    --with-sd --max-draws 200
 ```
+
+or, for the two refit datasets, the runner that wraps exactly that:
+
+```bash
+sbatch --job-name=cn_origin \
+    revision/origin_vs_new/code/submit_copy_number_matrix.slurm origin
+```
+
+CSV is written in row blocks so 159 million values never exist as text in
+memory, gzipped when the path ends in `.gz`, and rounded (5 decimals is already
+far finer than the posterior is sharp). Each full matrix is ~1.3 GB of text, so
+`--csv-which` defaults to the posterior mean alone; `sd` still lands in the npz.
 
 `kmax`, the cell-type granularity and the infection model are read from the fit's
 manifest, so the reconstruction cannot silently disagree with the posterior it
