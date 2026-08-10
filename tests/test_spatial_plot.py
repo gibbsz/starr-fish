@@ -63,6 +63,8 @@ def _mode_kwargs(mode, data):
     kwargs = {"cre": CRE_NAMES[0]}
     if mode in {"copy_number", "activity"}:
         kwargs["copies"] = np.full((N_CELL, N_CRE), 2.0)
+    if mode == "activity_posterior":
+        kwargs["activity"] = np.full((N_CELL, N_CRE), 1.5)
     return kwargs
 
 
@@ -169,7 +171,7 @@ def test_copy_number_mode_accepts_a_CopyNumberMatrix(data, rng):
 
     matrix = CopyNumberMatrix(
         copies=rng.uniform(0, 5, size=(N_CELL, N_CRE)), sd=None, p_infected=None,
-        obs_names=data.obs_names, cre_names=list(CRE_NAMES), kmax=60,
+        activity=None, obs_names=data.obs_names, cre_names=list(CRE_NAMES), kmax=60,
         level="subclass", infection_model="copy_number_dropout",
     )
     np.testing.assert_allclose(
@@ -432,3 +434,38 @@ def test_activity_has_its_own_hue_and_label(data, rng):
     copies = rng.uniform(1.0, 6.0, size=(N_CELL, N_CRE))
     title = plot_spatial(data, "activity", cre=CRE_NAMES[0], copies=copies).axes[0].get_title()
     assert "activity" in title and CRE_NAMES[0] in title
+
+
+def test_activity_posterior_reads_the_activity_matrix(data, rng):
+    from baystarrfish.inference.copy_number import CopyNumberMatrix
+
+    act = rng.uniform(0.1, 4.0, size=(N_CELL, N_CRE))
+    np.testing.assert_allclose(
+        spatial_values(data, "activity_posterior", cre=CRE_NAMES[2], activity=act),
+        act[:, 2],
+    )
+    m = CopyNumberMatrix(copies=np.ones((N_CELL, N_CRE)), sd=None, p_infected=None,
+                         activity=act, obs_names=None, cre_names=list(CRE_NAMES),
+                         kmax=60, level="subclass", infection_model="copy_number")
+    np.testing.assert_allclose(
+        spatial_values(data, "activity_posterior", cre=CRE_NAMES[2], activity=m), act[:, 2]
+    )
+
+
+def test_activity_posterior_reports_a_matrix_without_activity(data):
+    from baystarrfish.inference.copy_number import CopyNumberMatrix
+
+    m = CopyNumberMatrix(copies=np.ones((N_CELL, N_CRE)), sd=None, p_infected=None,
+                         activity=None, obs_names=None, cre_names=list(CRE_NAMES),
+                         kmax=60, level="subclass", infection_model="copy_number")
+    with pytest.raises(ValueError, match="return_activity"):
+        spatial_values(data, "activity_posterior", cre=CRE_NAMES[0], activity=m)
+    with pytest.raises(ValueError, match="needs activity="):
+        spatial_values(data, "activity_posterior", cre=CRE_NAMES[0])
+
+
+def test_the_two_activity_modes_are_visually_distinct(data, rng):
+    assert MODE_COLORS["activity"] != MODE_COLORS["activity_posterior"]
+    act = rng.uniform(0.1, 4.0, size=(N_CELL, N_CRE))
+    fig = plot_spatial(data, "activity_posterior", cre=CRE_NAMES[0], activity=act)
+    assert "posterior" in fig.axes[0].get_title()

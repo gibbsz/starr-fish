@@ -12,8 +12,13 @@ One visual grammar, four things to look at:
     the inferred latent copies ``E[k | obs]`` from
     :mod:`baystarrfish.inference.copy_number`
 ``activity``
-    per-cell inferred activity, ``cCRE counts / E[k | obs]`` -- the enhancer
-    output normalised by how much virus the model thinks the cell received
+    per-cell inferred activity as the moment estimator ``cCRE counts /
+    E[k | obs]`` -- the enhancer output normalised by how much virus the model
+    thinks the cell received
+``activity_posterior``
+    the same quantity as a *posterior* rather than a ratio: the Gamma-conjugate
+    posterior mean of the per-cell activity, which shrinks toward the cell-type
+    activity where the evidence is thin
 
 Every mode draws *all* cells first as small grey dots, so the tissue outline is
 always visible and a sparse signal is never mistaken for a sparse section. The
@@ -47,10 +52,12 @@ __all__ = [
     "spatial_values",
 ]
 
-SpatialMode = Literal["celltype", "cre", "t7", "copy_number", "activity"]
+SpatialMode = Literal[
+    "celltype", "cre", "t7", "copy_number", "activity", "activity_posterior",
+]
 
 SPATIAL_MODES: tuple[str, ...] = (
-    "celltype", "cre", "t7", "copy_number", "activity",
+    "celltype", "cre", "t7", "copy_number", "activity", "activity_posterior",
 )
 
 #: Ramp endpoint per value mode. Distinct hues, all reading as "hot" against
@@ -60,6 +67,7 @@ MODE_COLORS: dict[str, str] = {
     "t7": "#4DD0E1",         # constitutive channel -- cyan, clearly not the cCRE
     "copy_number": "#FFC857",  # inferred latent -- amber, clearly not a measurement
     "activity": "#9CCC65",     # derived quantity -- green, neither channel
+    "activity_posterior": "#4DB6AC",  # the same quantity, shrunk -- teal
 }
 
 _MODE_LABELS = {
@@ -67,6 +75,7 @@ _MODE_LABELS = {
     "t7": "T7 counts",
     "copy_number": "inferred AAV copies  E[k | obs]",
     "activity": "inferred activity  cCRE / E[k | obs]",
+    "activity_posterior": "inferred activity  posterior mean",
 }
 
 
@@ -97,13 +106,20 @@ def _select(matrix, names, cre, aggregate, what):
     raise ValueError(f"unknown aggregate {aggregate!r}; expected 'sum' or 'mean'")
 
 
-def _copies_matrix(data, copies, mode):
+def _copies_matrix(data, copies, mode, attribute="copies"):
     if copies is None:
         raise ValueError(
-            f"mode={mode!r} needs copies=, a CopyNumberMatrix or an "
-            "(n_cells, n_cre) array from baystarrfish.infer_copy_number"
+            f"mode={mode!r} needs {'activity=' if attribute == 'activity' else 'copies='}"
+            ", a CopyNumberMatrix or an (n_cells, n_cre) array from "
+            "baystarrfish.infer_copy_number"
         )
-    matrix = np.asarray(getattr(copies, "copies", copies))
+    inner = getattr(copies, attribute, None)
+    if inner is None and hasattr(copies, "copies"):
+        raise ValueError(
+            f"this CopyNumberMatrix has no {attribute!r}; recompute it with "
+            f"return_{'activity' if attribute == 'activity' else 'sd'}=True"
+        )
+    matrix = np.asarray(inner if inner is not None else copies)
     names = [str(n) for n in getattr(copies, "cre_names", data.cre_names)]
     if matrix.shape[0] != data.n_cells:
         raise ValueError(f"values have {matrix.shape[0]} rows for {data.n_cells} cells")
@@ -117,6 +133,7 @@ def spatial_values(
     cre: str | None = None,
     aggregate: Literal["sum", "mean"] | None = None,
     copies=None,
+    activity=None,
 ) -> np.ndarray:
     """The per-cell quantity a value mode draws, before any scaling.
 
@@ -135,6 +152,10 @@ def spatial_values(
         raise ValueError(f"unknown mode {mode!r}; expected one of {list(SPATIAL_MODES)}")
     if mode == "celltype":
         raise ValueError("mode='celltype' is categorical and has no per-cell value")
+
+    if mode == "activity_posterior":
+        matrix, names = _copies_matrix(data, activity, mode, attribute="activity")
+        return _select(matrix, names, cre, aggregate, mode)
 
     if mode == "activity":
         numerator = _select(data.cre, list(data.cre_names), cre, aggregate, mode)
@@ -251,6 +272,7 @@ def plot_spatial(
     cre: str | None = None,
     aggregate: Literal["sum", "mean"] | None = None,
     copies=None,
+    activity=None,
     celltypes: Sequence[str] | None = None,
     level: Literal["subclass", "class"] = "subclass",
     palette: Mapping[str, str] | Sequence[str] | None = None,
@@ -286,6 +308,10 @@ def plot_spatial(
     cre, aggregate
         Value modes need exactly one: a single cCRE by name, or ``'sum'`` /
         ``'mean'`` across all of them.
+    activity
+        For ``mode='activity_posterior'``: a ``CopyNumberMatrix`` built with
+        ``return_activity=True``, or a plain ``(n_cells, n_cre)`` array of
+        posterior mean activities.
     copies
         For ``mode='copy_number'`` and ``mode='activity'``: a
         :class:`~baystarrfish.inference.copy_number.CopyNumberMatrix` or a plain
@@ -374,10 +400,10 @@ def plot_spatial(
         label = f"cell type ({level})"
     else:
         values = spatial_values(data, mode, cre=cre, aggregate=aggregate,
-                                copies=copies)[keep]
+                                copies=copies, activity=activity)[keep]
         if min_value is not None:
             visible = values > float(min_value)
-        elif mode in {"copy_number", "activity"}:
+        elif mode in {"copy_number", "activity", "activity_posterior"}:
             visible = evidence_mask(data, cre=cre, aggregate=aggregate)[keep]
         else:
             visible = values > (0.0 if vmin is None else float(vmin))

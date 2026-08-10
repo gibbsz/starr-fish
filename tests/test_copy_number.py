@@ -489,3 +489,77 @@ def test_write_csv_block_boundary_keeps_one_header(tmp_path, draws, observations
         lines = handle.read().splitlines()
     assert len(lines) == N_CELL + 1
     assert sum(line.startswith("cell,") for line in lines) == 1
+
+
+# ---- the Gamma-conjugate per-cell activity --------------------------------- #
+
+
+def test_activity_matches_the_conjugate_formula(draws):
+    """gamma * E[G], G | cre,k ~ Gamma(phi+cre, phi+k*gamma), over P(k|obs)."""
+    from scipy.special import gammaln
+
+    from baystarrfish.inference.posterior_k import channel_logprob
+
+    t7 = np.array([0, 2, 9]); cre = np.array([0, 1, 6])
+    idx = np.array([0, 1, 2])
+    got = posterior_k_moments(t7, cre, idx, idx, draws, KMAX)
+
+    k = np.arange(KMAX + 1, dtype=float)
+    per_cell = []
+    for i in range(3):
+        vals = []
+        for d in range(N_DRAW):
+            lam = draws["rho"][d, i] * draws["a"][d, i]
+            g = np.exp(draws["log_gamma"][d, i, i]); phi = draws["phi_cre"][d]
+            lp = (k*np.log(lam) - lam - gammaln(k+1)
+                  + channel_logprob(np.array([[t7[i]]]), k, draws["beta_t7"][d], draws["phi_t7"][d])[0]
+                  + channel_logprob(np.array([[cre[i]]]), k, g, phi)[0])
+            w = np.exp(lp - lp.max()); w /= w.sum()
+            vals.append(g * (w * (phi + cre[i]) / (phi + k * g)).sum())
+        per_cell.append(np.mean(vals))
+    np.testing.assert_allclose(got.activity, per_cell, rtol=1e-12)
+
+
+def test_activity_is_finite_and_positive_even_with_no_counts(draws):
+    """cre=0 returns a small positive number, not the ratio's hard zero."""
+    zeros = np.zeros(3, dtype=np.int64)
+    idx = np.array([0, 1, 2])
+    got = posterior_k_moments(zeros, zeros, idx, idx, draws, KMAX)
+    assert np.isfinite(got.activity).all()
+    assert (got.activity > 0).all()
+
+
+def test_activity_approaches_the_moment_estimator_for_large_counts(draws):
+    """With many counts the prior washes out and it relaxes to cre/k."""
+    t7 = np.array([400]); cre = np.array([400]); idx = np.array([0])
+    got = posterior_k_moments(t7, cre, idx, idx, draws, KMAX)
+    ratio = cre[0] / got.mean[0]
+    assert abs(got.activity[0] - ratio) / ratio < 0.25
+
+
+def test_activity_shrinks_toward_the_cell_type_activity(draws):
+    """A one-count cell is pulled below its raw ratio; a silent one below that."""
+    idx = np.array([0, 0])
+    got = posterior_k_moments(np.array([3, 3]), np.array([1, 0]), idx, idx, draws, KMAX)
+    assert got.activity[0] > got.activity[1] > 0
+
+
+def test_matrix_carries_activity_only_when_asked(draws, observations):
+    t7, cre, group = observations
+    plain = infer_copy_number(t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+                              verbose=False)
+    assert plain.activity is None
+    with pytest.raises(ValueError, match="return_activity"):
+        plain.matrix("activity")
+    full = infer_copy_number(t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+                             return_activity=True, verbose=False)
+    assert full.activity.shape == full.copies.shape
+    assert np.isfinite(full.activity).all() and (full.activity > 0).all()
+
+
+def test_activity_survives_the_npz_round_trip(tmp_path, draws, observations):
+    t7, cre, group = observations
+    m = infer_copy_number(t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+                          return_activity=True, verbose=False)
+    with np.load(m.write_npz(tmp_path / "cn.npz"), allow_pickle=True) as h:
+        np.testing.assert_allclose(h["activity"], m.activity)

@@ -101,11 +101,19 @@ class CopyNumberMatrix:
         ``P(k >= 1 | obs)`` -- the posterior probability that the cell received
         *any* copy of that construct. This is the probability; ``copies`` is the
         expected count. They answer different questions.
+    activity : (n_cells, n_cre) or None
+        Posterior mean per-cell enhancer activity, from the Gamma-conjugate
+        posterior of the NB2's latent scale (see
+        :func:`baystarrfish.inference.posterior_k.posterior_k_moments`). Unlike
+        the moment estimator ``cre / E[k]`` this is a posterior of a quantity the
+        model contains, shrinks toward the cell-type activity when evidence is
+        thin, and stays finite at ``cre = 0``.
     """
 
     copies: np.ndarray
     sd: np.ndarray | None
     p_infected: np.ndarray | None
+    activity: np.ndarray | None
     obs_names: np.ndarray | None
     cre_names: list[str]
     kmax: int
@@ -121,16 +129,17 @@ class CopyNumberMatrix:
         return int(self.copies.shape[1])
 
     def matrix(self, which: str = "copies") -> np.ndarray:
-        """One of ``"copies"``, ``"sd"`` or ``"p_infected"``, or raise."""
-        if which not in {"copies", "sd", "p_infected"}:
+        """One of ``"copies"``, ``"sd"``, ``"p_infected"``, ``"activity"``."""
+        if which not in {"copies", "sd", "p_infected", "activity"}:
             raise ValueError(
-                f"unknown matrix {which!r}; expected 'copies', 'sd' or 'p_infected'"
+                f"unknown matrix {which!r}; expected 'copies', 'sd', "
+                "'p_infected' or 'activity'"
             )
         value = getattr(self, which)
         if value is None:
             raise ValueError(
-                f"{which!r} was not computed; pass return_sd/return_probability to "
-                "infer_copy_number"
+                f"{which!r} was not computed; pass return_sd / "
+                "return_probability / return_activity to infer_copy_number"
             )
         return value
 
@@ -189,6 +198,8 @@ class CopyNumberMatrix:
             payload["sd"] = np.asarray(self.sd, dtype=np.float32)
         if self.p_infected is not None:
             payload["p_infected"] = np.asarray(self.p_infected, dtype=np.float32)
+        if self.activity is not None:
+            payload["activity"] = np.asarray(self.activity, dtype=np.float32)
         if self.obs_names is not None:
             payload["obs_names"] = np.asarray(self.obs_names, dtype=object)
         np.savez_compressed(path, **payload)
@@ -345,6 +356,7 @@ def infer_copy_number(
     obs_names: Sequence[str] | None = None,
     return_sd: bool = False,
     return_probability: bool = False,
+    return_activity: bool = False,
     chunk: int = 400,
     max_draws: int | None = None,
     dtype=np.float32,
@@ -376,6 +388,8 @@ def infer_copy_number(
         Also return ``P(k >= 1 | obs)`` -- the posterior probability the cell
         received any copy. Free to compute (same posterior weights), but each
         extra matrix is another ``n_cells x n_cre`` array.
+    return_activity
+        Also return the posterior mean per-cell activity. Same cost and caveat.
     dtype
         Output dtype. float32 halves a 636 MB matrix and is far finer than the
         posterior is sharp.
@@ -427,6 +441,10 @@ def infer_copy_number(
         baseline.p_infected.reshape(shape)[np.ix_(group_slot, cre_slot)].astype(dtype, copy=True)
         if return_probability else None
     )
+    activity = (
+        baseline.activity.reshape(shape)[np.ix_(group_slot, cre_slot)].astype(dtype, copy=True)
+        if return_activity else None
+    )
 
     rows, cols = np.nonzero((t7 > 0) | (cre > 0))
     if len(rows):
@@ -447,6 +465,8 @@ def infer_copy_number(
             sd[rows, cols] = moments.sd[inverse].astype(dtype)
         if p_infected is not None:
             p_infected[rows, cols] = moments.p_infected[inverse].astype(dtype)
+        if activity is not None:
+            activity[rows, cols] = moments.activity[inverse].astype(dtype)
     elif verbose:
         log("[copies] no nonzero observations; every pair is at the baseline")
 
@@ -460,6 +480,7 @@ def infer_copy_number(
         copies=copies,
         sd=sd,
         p_infected=p_infected,
+        activity=activity,
         obs_names=None if obs_names is None else np.asarray(obs_names, dtype=object),
         cre_names=[str(name) for name in cre_names],
         kmax=int(kmax),
@@ -475,6 +496,7 @@ def infer_copy_number_from_fit(
     tag: str | None = None,
     return_sd: bool = False,
     return_probability: bool = False,
+    return_activity: bool = False,
     chunk: int = 400,
     max_draws: int | None = None,
     dtype=np.float32,
@@ -512,6 +534,7 @@ def infer_copy_number_from_fit(
         obs_names=data.obs_names,
         return_sd=return_sd,
         return_probability=return_probability,
+        return_activity=return_activity,
         chunk=chunk,
         max_draws=max_draws,
         dtype=dtype,
@@ -550,11 +573,13 @@ def _main(argv: Sequence[str] | None = None) -> int:
                         help="also compute the posterior sd (one more full matrix)")
     parser.add_argument("--with-probability", action="store_true",
                         help="also compute P(k >= 1 | obs), the infection probability")
+    parser.add_argument("--with-activity", action="store_true",
+                        help="also compute the posterior mean per-cell activity")
     parser.add_argument("--csv", type=Path, default=None,
                         help="also write CSVs with this stem, e.g. out/k -> "
                              "out/k_copies.csv.gz")
     parser.add_argument("--csv-which", nargs="+", default=["copies"],
-                        choices=["copies", "sd", "p_infected"],
+                        choices=["copies", "sd", "p_infected", "activity"],
                         help="which matrices to write as CSV (default: the "
                              "posterior mean only -- each is ~1.3 GB of text)")
     parser.add_argument("--csv-decimals", type=int, default=5)
@@ -575,6 +600,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
     matrix = infer_copy_number_from_fit(
         data, args.fit_dir, tag=args.tag, return_sd=args.with_sd,
         return_probability=args.with_probability,
+        return_activity=args.with_activity,
         chunk=args.chunk, max_draws=args.max_draws,
     )
     path = matrix.write_npz(args.out)

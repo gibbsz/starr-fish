@@ -44,11 +44,16 @@ class PosteriorKMoments(NamedTuple):
     almost certainly infected (``p_infected`` near 1) with a low expected count,
     or carry a high ``mean`` driven by a heavy tail while ``p_infected`` is
     modest.
+
+    ``activity`` is the posterior mean per-cell enhancer activity -- see
+    :func:`posterior_k_moments` for the derivation. It is a posterior of a
+    quantity the model contains, not a ratio formed after the fact.
     """
 
     mean: np.ndarray
     sd: np.ndarray
     p_infected: np.ndarray
+    activity: np.ndarray
 
 
 def nb2_logpmf(count, mean, conc):
@@ -94,7 +99,7 @@ def posterior_k_moments(
     *,
     chunk: int = 400,
 ) -> PosteriorKMoments:
-    """Posterior mean, sd and infection probability of ``k``, marginal over draws.
+    """Posterior summaries of ``k`` and of the per-cell activity, over draws.
 
     The sd combines both sources of uncertainty by the law of total variance::
 
@@ -103,6 +108,19 @@ def posterior_k_moments(
     i.e. the spread of the copy number given a fixed parameter draw, plus the
     spread induced by not knowing the parameters. Reporting only the first would
     understate the uncertainty of a rarely-observed cCRE.
+
+    ``activity`` is the posterior mean of the per-cell enhancer activity. The
+    cCRE channel is ``NB2(k * gamma, phi_cre)``, which *is* ``Poisson(k * gamma *
+    G)`` with ``G ~ Gamma(phi_cre, phi_cre)``: the per-cell deviation from the
+    cell type's activity is a latent variable the model already has. Its
+    posterior is conjugate, ``G | cre, k ~ Gamma(phi + cre, phi + k * gamma)``,
+    so the activity is ``gamma * E[G]`` marginalised over ``P(k | obs)``.
+
+    That shrinks toward the cell-type activity when the evidence is thin and
+    relaxes to the moment estimator ``cre / k`` when counts are large, and unlike
+    the ratio it stays finite at ``cre = 0`` (returning a small positive number
+    rather than a hard zero, which is the difference between "silent" and
+    "no information").
 
     Parameters
     ----------
@@ -130,6 +148,7 @@ def posterior_k_moments(
     mean = np.empty(n_pairs, dtype=np.float64)
     sd = np.empty(n_pairs, dtype=np.float64)
     p_infected = np.empty(n_pairs, dtype=np.float64)
+    activity = np.empty(n_pairs, dtype=np.float64)
 
     def _per_draw(value):
         return None if value is None else np.asarray(value)[:, None, None]
@@ -164,7 +183,23 @@ def posterior_k_moments(
         # total expectation -- the same average over draws as the mean, so the
         # parameter uncertainty is carried through here too.
         p_infected[block] = (1.0 - weights[..., 0]).mean(axis=0)
-    return PosteriorKMoments(mean=mean, sd=sd, p_infected=p_infected)
+
+        # Per-cell activity, as a posterior rather than a ratio. NB2(k*gamma,
+        # phi) IS Poisson(k*gamma*G) with G ~ Gamma(phi, phi), so the cell's
+        # multiplicative deviation from its cell type's activity is a latent
+        # variable the model already contains, and it is conjugate:
+        #
+        #     G | cre, k  ~  Gamma(phi + cre,  phi + k*gamma)
+        #     activity    =  gamma * E[G | cre, k],  averaged over P(k | obs)
+        #
+        # phi > 0 keeps the denominator positive even at k = 0, where this
+        # correctly returns gamma itself -- no counts, so the prior stands.
+        phi = phi_cre[:, None, None]
+        posterior_g = (phi + cre_block) / (phi + k * gamma)
+        activity[block] = ((weights * posterior_g).sum(axis=-1) * gamma[:, :, 0]).mean(axis=0)
+    return PosteriorKMoments(
+        mean=mean, sd=sd, p_infected=p_infected, activity=activity
+    )
 
 
 def posterior_k_expectation(

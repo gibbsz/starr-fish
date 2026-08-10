@@ -252,13 +252,44 @@ plot_spatial(data, "copy_number", cre="CRE155", copies=copies, log=True)
 plot_spatial(data, "activity", cre="CRE155", copies=copies)   # cCRE / E[k]
 ```
 
-**`activity` is the per-cell enhancer output per virus copy**, `cCRE / E[k | obs]`.
-The model says `E[cre | k] = k · gamma`, so this is the moment estimator of the
-activity `gamma` — which is what makes a cell that received one copy comparable
-to one that received thirty. It cannot blow up: `k = 0` is a point mass forcing
-both channels to zero, so any cell with `cre > 0` has `P(k = 0 | obs) = 0` and
-hence `E[k] ≥ 1`, bounding the ratio by the raw count. On the old dataset the
-observed minimum is `E[k] = 1.0003` across all 23,111 cCRE-positive cells.
+### Two per-cell activity estimators
+
+Both answer "how much enhancer output per virus copy", which is what makes a cell
+that received one copy comparable to one that received thirty.
+
+`activity` — the **moment estimator** `cre / E[k | obs]`. The model says
+`E[cre | k] = k · gamma`, so the quotient estimates `gamma` directly. It cannot
+blow up: `k = 0` is a point mass forcing both channels to zero, so any cell with
+`cre > 0` has `P(k = 0 | obs) = 0` and hence `E[k] ≥ 1`, bounding the ratio by the
+raw count (observed minimum on the old dataset: `E[k] = 1.0003` across all 23,111
+cCRE-positive cells).
+
+`activity_posterior` — the **Gamma-conjugate posterior mean**, which is a
+posterior of a quantity the model contains rather than a ratio formed afterwards.
+`NB2(k·gamma, phi)` *is* `Poisson(k·gamma·G)` with `G ~ Gamma(phi, phi)`, so the
+cell's multiplicative deviation from its cell type's activity is a latent
+variable already in the model, and it is conjugate:
+
+```
+G | cre, k  ~  Gamma(phi_cre + cre,  phi_cre + k·gamma)
+activity    =  gamma · E[G | cre, k],  marginalised over P(k | obs)
+```
+
+It shrinks toward the cell-type activity where evidence is thin, relaxes to
+`cre / k` when counts are large, and stays finite at `cre = 0` — returning a small
+positive number rather than the ratio's hard zero, which is the difference
+between "silent" and "no information".
+
+```python
+m = infer_copy_number_from_fit(data, fit_dir, return_activity=True)
+plot_spatial(data, "activity", cre="CRE007", copies=m)              # moment
+plot_spatial(data, "activity_posterior", cre="CRE007", activity=m)  # posterior
+```
+
+A third option not implemented: `cre · E[1/k]` instead of `cre / E[k]` fixes a
+Jensen bias in the moment estimator (it is low by ~8% at the median, up to 23%,
+always low). Ranking is unaffected — Spearman 0.9999 — so it matters only for
+absolute values.
 
 Every mode draws **all** cells first as small grey dots, so the section outline
 is always visible and a sparse signal is never mistaken for a sparse tissue. The
