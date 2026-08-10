@@ -25,6 +25,8 @@ import pandas as pd
 from analysis_utils import (
     ANALYSIS_DIR,
     DEFAULT_H5AD,
+    FIGURES_WORK,
+    OLD_DATA_BOOTSTRAP,
     REVISION_DATA,
     STARRFISH_DATA,
     log,
@@ -65,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--bootstrap-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "bootstrap",
+        default=OLD_DATA_BOOTSTRAP,
     )
     parser.add_argument(
         "--old-bayesian-dir",
@@ -131,7 +133,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--figures-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "figures",
+        default=FIGURES_WORK,
     )
     parser.add_argument(
         "--tables-dir",

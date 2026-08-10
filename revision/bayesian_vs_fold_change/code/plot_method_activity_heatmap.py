@@ -20,7 +20,9 @@ import anndata as ad
 from analysis_utils import (
     ANALYSIS_DIR,
     DEFAULT_H5AD,
+    FIGURES_WORK,
     LIBSIZE_CSV,
+    OLD_DATA_BOOTSTRAP,
     log,
     read_and_prepare_adata,
     write_json,
@@ -63,7 +65,7 @@ SPARSE_AXIS_FONTSIZE = 7.0
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--bootstrap-dir", type=Path, default=ANALYSIS_DIR / "results" / "bootstrap"
+        "--bootstrap-dir", type=Path, default=OLD_DATA_BOOTSTRAP
     )
     parser.add_argument(
         "--old-bayesian-dir",
@@ -81,7 +83,7 @@ def parse_args() -> argparse.Namespace:
         default=ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint_dropout",
     )
     parser.add_argument(
-        "--figures-dir", type=Path, default=ANALYSIS_DIR / "results" / "figures"
+        "--figures-dir", type=Path, default=FIGURES_WORK
     )
     parser.add_argument(
         "--tables-dir", type=Path, default=ANALYSIS_DIR / "results" / "tables"

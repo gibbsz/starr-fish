@@ -16,7 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from analysis_utils import ANALYSIS_DIR, log, write_json
+from analysis_utils import ANALYSIS_DIR, OLD_DATA_BOOTSTRAP, log, write_json
 from baystarrfish.stats import bh_fdr as _bh_fdr
 
 
@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         nargs="*",
         default=[
-            ANALYSIS_DIR / "results" / "bootstrap",
+            OLD_DATA_BOOTSTRAP,
             ANALYSIS_DIR / "results" / "sections" / "sec1" / "bootstrap",
             ANALYSIS_DIR / "results" / "sections" / "sec2" / "bootstrap",
         ],

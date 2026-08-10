@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test raw cCRE activity against a draw-wise ordinary-control reference."""
+"""Test raw cCRE activity against the draw-wise maximum ordinary control."""
 
 from __future__ import annotations
 
@@ -10,7 +10,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from baystarrfish.stats import negative_control_test as compute_tests
+# The shared analysis layer (analysis_utils and the plot_* modules that other
+# scripts import) stays in the parent code/ directory.
+import sys as _sys
+from pathlib import Path as _Path
+_CODE_DIR = _Path(__file__).resolve().parent.parent
+if str(_CODE_DIR) not in _sys.path:
+    _sys.path.insert(0, str(_CODE_DIR))
+
 from analysis_utils import (
     ANALYSIS_DIR,
     DEFAULT_H5AD,
@@ -18,21 +25,15 @@ from analysis_utils import (
     OLD_DATA_BAYES,
     write_json,
 )
+from plot_method_activity_correlation import read_cre_blacklist
+from baystarrfish.stats import bh_fdr
 from test_individual_negative_control_loo_empirical_fdr import (
     POOLED_NAME,
     load_grouped_t7,
 )
 
 
-METHOD = "Joint+dropout mean controls"
-FILTERED_METHOD = "Joint+dropout mean controls (control T7>=50)"
-
-
-def read_cre_blacklist(root: Path) -> set[str]:
-    path = root / "cre_blacklist.csv"
-    if not path.exists():
-        return set()
-    return set(pd.read_csv(path).iloc[:, 0].astype(str))
+METHOD = "Joint+dropout max control"
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,21 +46,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--h5ad", type=Path, default=DEFAULT_H5AD)
     parser.add_argument("--t7-threshold", type=float, default=50.0)
     parser.add_argument("--effect-threshold", type=float, default=0.0)
-    parser.add_argument(
-        "--control-sd-multiplier",
-        type=float,
-        default=0.0,
-        help=(
-            "Add this many sample SDs across the selected controls to their "
-            "draw-wise mean (default: 0)."
-        ),
-    )
-    parser.add_argument(
-        "--individual-control-t7-threshold",
-        type=float,
-        default=None,
-        help="Average only controls meeting this cell-type-specific T7 threshold.",
-    )
     parser.add_argument("--q-cutoff", type=float, default=0.05)
     parser.add_argument(
         "--tables-dir", type=Path, default=ANALYSIS_DIR / "results" / "tables"
@@ -68,11 +54,78 @@ def parse_args() -> argparse.Namespace:
         "--figures-dir", type=Path, default=FIGURES_WORK
     )
     parser.add_argument(
-        "--stem", default="joint_dropout_direct_activity_mean_negative_control_tests"
+        "--stem", default="joint_dropout_direct_activity_max_negative_control_tests"
     )
     return parser.parse_args()
 
 
+
+
+def compute_tests(
+    log_gamma: np.ndarray,
+    groups: np.ndarray,
+    cre_names: np.ndarray,
+    target_indices: np.ndarray,
+    control_indices: np.ndarray,
+    t7_totals: np.ndarray,
+    group_classes: np.ndarray,
+    group_cell_counts: np.ndarray,
+    t7_threshold: float,
+    effect_threshold: float,
+) -> pd.DataFrame:
+    records = []
+    for group_idx, group in enumerate(groups):
+        control_draws = log_gamma[:, group_idx, control_indices].astype(
+            np.float64, copy=False
+        )
+        max_control_draws = control_draws.max(axis=1)
+        control_t7_total = float(t7_totals[group_idx, control_indices].sum())
+        eligible = (
+            (t7_totals[group_idx, target_indices] >= t7_threshold)
+            & (control_t7_total >= t7_threshold)
+        )
+        selected_indices = target_indices[eligible]
+        if len(selected_indices) == 0:
+            continue
+
+        target_draws = log_gamma[:, group_idx, selected_indices].astype(
+            np.float64, copy=False
+        )
+        contrasts = target_draws - max_control_draws[:, None] - effect_threshold
+        target_mean = target_draws.mean(axis=0)
+        max_control_mean = float(max_control_draws.mean())
+        contrast_mean = contrasts.mean(axis=0)
+        contrast_lo, contrast_hi = np.quantile(contrasts, [0.05, 0.95], axis=0)
+        posterior_probability = (contrasts > 0.0).mean(axis=0)
+        p_right = (contrasts <= 0.0).mean(axis=0)
+
+        records.append(
+            pd.DataFrame(
+                {
+                    "t7_threshold": float(t7_threshold),
+                    "method": METHOD,
+                    "group": group,
+                    "class": group_classes[group_idx],
+                    "cre": cre_names[selected_indices],
+                    "n_cells": int(group_cell_counts[group_idx]),
+                    "target_t7_total": t7_totals[group_idx, selected_indices],
+                    "negative_control_t7_total": control_t7_total,
+                    "n_negative_controls": len(control_indices),
+                    "activity_mean": target_mean,
+                    "max_negative_control_activity_mean": max_control_mean,
+                    "effect_vs_max_control_mean": contrast_mean,
+                    "effect_vs_max_control_lo90": contrast_lo,
+                    "effect_vs_max_control_hi90": contrast_hi,
+                    "posterior_probability_above_max_control": posterior_probability,
+                    "p_right": p_right,
+                }
+            )
+        )
+    if not records:
+        raise ValueError("No cCRE-cell-type pairs passed the T7 filters")
+    output = pd.concat(records, ignore_index=True)
+    output["q_right"] = bh_fdr(output["p_right"].to_numpy(float))
+    return output
 
 
 def main() -> None:
@@ -102,13 +155,6 @@ def main() -> None:
     t7_totals, group_classes, group_cell_counts = load_grouped_t7(
         args.h5ad, groups, cre_names
     )
-    method = (
-        f"Joint+dropout mean+{args.control_sd_multiplier:g} SD controls"
-        if args.control_sd_multiplier > 0
-        else FILTERED_METHOD
-        if args.individual_control_t7_threshold is not None
-        else METHOD
-    )
     tests = compute_tests(
         log_gamma,
         groups,
@@ -120,9 +166,6 @@ def main() -> None:
         group_cell_counts,
         args.t7_threshold,
         args.effect_threshold,
-        args.individual_control_t7_threshold,
-        method,
-        args.control_sd_multiplier,
     )
     tests["significant_q"] = tests["q_right"].le(args.q_cutoff)
 
@@ -133,31 +176,22 @@ def main() -> None:
     write_json(
         manifest_path,
         {
-            "method": str(tests["method"].iloc[0]),
+            "method": METHOD,
             "model": "Joint+dropout ordinary-and-pooled negative controls",
             "bayes_dir": str(args.bayes_dir),
             "posterior": str(posterior_path),
             "negative_controls": negative_controls,
             "activity_definition": "raw posterior log_gamma; alpha is not subtracted",
             "contrast_definition": (
-                "target log_gamma minus (the mean plus "
-                f"{args.control_sd_multiplier:g} sample SD across selected ordinary "
-                "negative-control log_gamma values) within each posterior draw"
+                "target log_gamma minus the maximum of seven ordinary negative-control "
+                "log_gamma values within each posterior draw"
             ),
             "p_right_definition": "posterior fraction of draw-wise contrasts <= 0",
             "multiple_testing": "BH across all eligible target-cell-type pairs",
             "t7_filter": (
-                f"target T7 >= {args.t7_threshold:g}; "
-                + (
-                    "total T7 across seven controls "
-                    f">= {args.t7_threshold:g}"
-                    if args.individual_control_t7_threshold is None
-                    else "average only controls with individual T7 >= "
-                    f"{args.individual_control_t7_threshold:g}, requiring at least one"
-                )
+                f"target T7 >= {args.t7_threshold:g} and total T7 across seven controls "
+                f">= {args.t7_threshold:g}"
             ),
-            "individual_control_t7_threshold": args.individual_control_t7_threshold,
-            "control_sd_multiplier": args.control_sd_multiplier,
             "q_cutoff": args.q_cutoff,
             "counts": {
                 "eligible_tests": int(len(tests)),

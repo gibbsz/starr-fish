@@ -16,20 +16,27 @@ import pandas as pd
 import seaborn as sns
 from scipy.stats import spearmanr
 
-from analysis_utils import ANALYSIS_DIR, log, write_json
+from analysis_utils import (
+    ANALYSIS_DIR,
+    FIGURES_WORK,
+    OLD_DATA_BAYES,
+    OLD_DATA_BOOTSTRAP,
+    log,
+    write_json,
+)
 from baystarrfish.stats import bh_fdr
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--bootstrap-dir", type=Path, default=ANALYSIS_DIR / "results" / "bootstrap"
+        "--bootstrap-dir", type=Path, default=OLD_DATA_BOOTSTRAP
     )
     parser.add_argument(
-        "--bayes-dir", type=Path, default=ANALYSIS_DIR / "results" / "bayesian"
+        "--bayes-dir", type=Path, default=OLD_DATA_BAYES
     )
     parser.add_argument(
-        "--figures-dir", type=Path, default=ANALYSIS_DIR / "results" / "figures"
+        "--figures-dir", type=Path, default=FIGURES_WORK
     )
     parser.add_argument(
         "--tables-dir", type=Path, default=ANALYSIS_DIR / "results" / "tables"

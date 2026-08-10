@@ -31,7 +31,7 @@ cd "$REPO"
 echo "start=$(date --iso-8601=seconds) host=$(hostname)"
 nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv,noheader
 "$PYTHON" -c "import jax; print(jax.devices()); assert any(d.platform == 'gpu' for d in jax.devices())"
-"$PYTHON" revision/bayesian_vs_fold_change/code/run_bayes.py \
+"$PYTHON" revision/run_Bayes/run_bayes.py \
   --level subclass \
   --channel joint \
   --infection-model copy_number \

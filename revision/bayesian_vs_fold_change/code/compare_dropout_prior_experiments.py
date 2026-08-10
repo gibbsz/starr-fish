@@ -11,7 +11,13 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from analysis_utils import ANALYSIS_DIR, DEFAULT_H5AD, log, write_json
+from analysis_utils import (
+    ANALYSIS_DIR,
+    DEFAULT_H5AD,
+    OLD_DATA_BOOTSTRAP,
+    log,
+    write_json,
+)
 from plot_method_activity_heatmap import (
     blacklisted_cres,
     combined_axes,
@@ -46,7 +52,7 @@ DEFAULT_EXPERIMENTS = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--bootstrap-dir", type=Path, default=ANALYSIS_DIR / "results" / "bootstrap"
+        "--bootstrap-dir", type=Path, default=OLD_DATA_BOOTSTRAP
     )
     parser.add_argument("--h5ad", type=Path, default=DEFAULT_H5AD)
     parser.add_argument(

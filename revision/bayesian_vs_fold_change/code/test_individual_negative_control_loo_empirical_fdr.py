@@ -18,7 +18,13 @@ import pandas as pd
 import seaborn as sns
 from scipy.stats import spearmanr
 
-from analysis_utils import ANALYSIS_DIR, DEFAULT_H5AD, write_json
+from analysis_utils import (
+    ANALYSIS_DIR,
+    DEFAULT_H5AD,
+    FIGURES_WORK,
+    OLD_DATA_BAYES,
+    write_json,
+)
 from plot_method_activity_correlation import read_cre_blacklist
 
 
@@ -30,14 +36,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--bayes-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "bayesian",
+        default=OLD_DATA_BAYES,
     )
     parser.add_argument("--h5ad", type=Path, default=DEFAULT_H5AD)
     parser.add_argument("--t7-threshold", type=float, default=50.0)
     parser.add_argument("--effect-threshold", type=float, default=0.0)
     parser.add_argument("--fdr", type=float, default=0.05)
     parser.add_argument(
-        "--figures-dir", type=Path, default=ANALYSIS_DIR / "results" / "figures"
+        "--figures-dir", type=Path, default=FIGURES_WORK
     )
     parser.add_argument(
         "--tables-dir", type=Path, default=ANALYSIS_DIR / "results" / "tables"

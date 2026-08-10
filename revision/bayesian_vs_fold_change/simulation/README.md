@@ -83,7 +83,7 @@ Optional fold-change/bootstrap comparison can be run against the simulated H5AD
 with the existing bootstrap script:
 
 ```bash
-sbatch revision/bayesian_vs_fold_change/code/submit_bootstrap.slurm \
+sbatch revision/run_Bootstrap/submit_bootstrap.slurm \
   --h5ad revision/bayesian_vs_fold_change/simulation/results/joint_dropout_simulated/simulated_joint_dropout.h5ad \
   --outdir revision/bayesian_vs_fold_change/simulation/results/bootstrap_on_simulated
 ```

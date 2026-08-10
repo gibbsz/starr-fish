@@ -58,6 +58,24 @@ from baystarrfish.io import atomic_save_array, input_fingerprint, jsonable, writ
 CODE_DIR = Path(__file__).resolve().parent
 ANALYSIS_DIR = CODE_DIR.parent
 
+# The production joint+dropout fit on the original (5/28 NEWNEW) dataset. It
+# lives outside this analysis directory because the same fit backs the
+# origin-vs-new comparison. Activity is identical to the superseded
+# results/bayesian to ~1e-13 relative; this one also stores log_rho and log_a,
+# so copy number is recoverable from it.
+OLD_DATA_BAYES = ANALYSIS_DIR.parent / "Bayes_OldData" / "bayesian"
+
+# The whole-dataset bootstrap on the same original data, likewise hoisted out of
+# this analysis directory. Per-section bootstraps stay under results/sections/.
+OLD_DATA_BOOTSTRAP = ANALYSIS_DIR.parent / "Bootstrap_OldData"
+
+# Figures are split by role. Every producer writes into FIGURES_WORK; the curated
+# manuscript set is assembled into FIGURES_FINAL by
+# figure_final/collect_final_figures.py, which owns the list of what counts as
+# final. Nothing should write to FIGURES_FINAL directly.
+FIGURES_WORK = ANALYSIS_DIR / "results" / "figures" / "work"
+FIGURES_FINAL = ANALYSIS_DIR / "results" / "figures" / "final"
+
 # Resolved once here for backwards compatibility. Prefer the package functions
 # in new code -- they honour the BAYSTARRFISH_* environment overrides at call
 # time, whereas these snapshots are frozen at import.
@@ -78,6 +96,10 @@ __all__ = [
     "DEFAULT_H5AD",
     "LIBSIZE_CSV",
     "MISMATCH_CSV",
+    "FIGURES_FINAL",
+    "FIGURES_WORK",
+    "OLD_DATA_BAYES",
+    "OLD_DATA_BOOTSTRAP",
     "REPO_ROOT",
     "REVISION_DATA",
     "STARRFISH_DATA",

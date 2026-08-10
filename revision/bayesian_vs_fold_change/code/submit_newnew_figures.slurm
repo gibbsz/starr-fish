@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=brbb_newnew_figures
-#SBATCH --partition=cpu
+#SBATCH --partition=bigmem
 #SBATCH --account=brlab
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=256G
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=512G
 #SBATCH --time=24:00:00
 #SBATCH --output=/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/revision/bayesian_vs_fold_change/results/logs/%x_%j.out
 #SBATCH --error=/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/revision/bayesian_vs_fold_change/results/logs/%x_%j.err

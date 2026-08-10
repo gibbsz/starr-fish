@@ -16,7 +16,7 @@ import seaborn as sns
 from scipy.stats import fisher_exact
 from sklearn.metrics import average_precision_score, precision_recall_curve
 
-from analysis_utils import ANALYSIS_DIR, STARRFISH_DATA, write_json
+from analysis_utils import ANALYSIS_DIR, FIGURES_WORK, STARRFISH_DATA, write_json
 from test_individual_negative_control_loo_empirical_fdr import assign_empirical_fdr
 from baystarrfish.stats import bh_fdr
 
@@ -68,7 +68,7 @@ def parse_args() -> argparse.Namespace:
         / "method_activity_t7_filter_negative_control_tests.csv.gz",
     )
     parser.add_argument(
-        "--figures-dir", type=Path, default=ANALYSIS_DIR / "results" / "figures"
+        "--figures-dir", type=Path, default=FIGURES_WORK
     )
     parser.add_argument(
         "--tables-dir", type=Path, default=ANALYSIS_DIR / "results" / "tables"

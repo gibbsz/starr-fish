@@ -18,7 +18,15 @@ import pandas as pd
 import seaborn as sns
 from scipy.stats import pearsonr, spearmanr
 
-from analysis_utils import ANALYSIS_DIR, DEFAULT_H5AD, STARRFISH_ROOT, log, write_json
+from analysis_utils import (
+    ANALYSIS_DIR,
+    DEFAULT_H5AD,
+    FIGURES_WORK,
+    OLD_DATA_BOOTSTRAP,
+    STARRFISH_ROOT,
+    log,
+    write_json,
+)
 from plot_method_activity_correlation import (
     blacklisted_cres_for_methods,
     load_corrected_activity,
@@ -57,7 +65,7 @@ METHOD_COLORS = {
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--bootstrap-dir", type=Path, default=ANALYSIS_DIR / "results" / "bootstrap"
+        "--bootstrap-dir", type=Path, default=OLD_DATA_BOOTSTRAP
     )
     parser.add_argument(
         "--old-bayesian-dir",
@@ -113,7 +121,7 @@ def parse_args() -> argparse.Namespace:
         / "cre_info.csv",
     )
     parser.add_argument(
-        "--figures-dir", type=Path, default=ANALYSIS_DIR / "results" / "figures"
+        "--figures-dir", type=Path, default=FIGURES_WORK
     )
     parser.add_argument(
         "--tables-dir", type=Path, default=ANALYSIS_DIR / "results" / "tables"

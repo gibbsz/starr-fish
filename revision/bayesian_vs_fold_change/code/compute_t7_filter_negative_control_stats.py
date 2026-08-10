@@ -10,7 +10,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from analysis_utils import ANALYSIS_DIR, DEFAULT_H5AD, log, write_json
+from analysis_utils import (
+    ANALYSIS_DIR,
+    DEFAULT_H5AD,
+    FIGURES_WORK,
+    OLD_DATA_BOOTSTRAP,
+    log,
+    write_json,
+)
 from baystarrfish.stats import bh_fdr
 from plot_method_activity_correlation import (
     pair_count_totals,
@@ -27,7 +34,7 @@ METHODS = (
     "Metacell Bayesian",
 )
 METHOD_ROOTS = {
-    "Bootstrap": ANALYSIS_DIR / "results" / "bootstrap",
+    "Bootstrap": OLD_DATA_BOOTSTRAP,
     "Joint": ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint",
     "Decoupled": (
         ANALYSIS_DIR / "results" / "ablation" / "bayesian_decoupled_no_dropout"
@@ -52,7 +59,7 @@ def parse_args() -> argparse.Namespace:
         "--tables-dir", type=Path, default=ANALYSIS_DIR / "results" / "tables"
     )
     parser.add_argument(
-        "--figures-dir", type=Path, default=ANALYSIS_DIR / "results" / "figures"
+        "--figures-dir", type=Path, default=FIGURES_WORK
     )
     parser.add_argument(
         "--t7-thresholds",

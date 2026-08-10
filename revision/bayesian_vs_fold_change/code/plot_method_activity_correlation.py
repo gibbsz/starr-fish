@@ -19,7 +19,9 @@ import seaborn as sns
 from analysis_utils import (
     ANALYSIS_DIR,
     DEFAULT_H5AD,
+    FIGURES_WORK,
     LIBSIZE_CSV,
+    OLD_DATA_BOOTSTRAP,
     log,
     read_and_prepare_adata,
     write_json,
@@ -47,7 +49,7 @@ CORRELATION_METHODS = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--bootstrap-dir", type=Path, default=ANALYSIS_DIR / "results" / "bootstrap"
+        "--bootstrap-dir", type=Path, default=OLD_DATA_BOOTSTRAP
     )
     parser.add_argument(
         "--old-bayesian-dir",
@@ -79,7 +81,7 @@ def parse_args() -> argparse.Namespace:
         help="Bayesian decoupled directory with zero-inflated dropout.",
     )
     parser.add_argument(
-        "--figures-dir", type=Path, default=ANALYSIS_DIR / "results" / "figures"
+        "--figures-dir", type=Path, default=FIGURES_WORK
     )
     parser.add_argument("--h5ad", type=Path, default=DEFAULT_H5AD)
     parser.add_argument(
@@ -141,7 +143,7 @@ def method_roots(args: argparse.Namespace) -> dict[str, Path]:
         or default_bayesian_root("bayesian_bootstrap_metacells_size100_number100")
     )
     return {
-        "Bootstrap": getattr(args, "bootstrap_dir", ANALYSIS_DIR / "results" / "bootstrap"),
+        "Bootstrap": getattr(args, "bootstrap_dir", OLD_DATA_BOOTSTRAP),
         "Bayesian decoupled": legacy_decoupled,
         "Bayesian joint": joint,
         "Joint": joint,

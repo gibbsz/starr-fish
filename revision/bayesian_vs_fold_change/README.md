@@ -18,11 +18,11 @@ Both analyses use cleaned Allen class/subclass names, the manuscript cCRE
 blacklist (CRE001, CRE061, CRE143, plus barcode mismatch >20%), and the ten
 `CRE_info` negative controls.
 
-1. `code/run_bootstrap.py` runs the manuscript Fig. 4 average bootstrap:
+1. `../run_Bootstrap/run_bootstrap.py` runs the manuscript Fig. 4 average bootstrap:
    10,000 within-subclass resamples, subclass-level T7 normalization,
    self-cCRE centering, testing against the negative-control mean, a
    five-positive-cell filter, and BH-adjusted right/left/two-sided q-values.
-2. `code/run_bayes.py` fits the production joint+dropout model at subclass
+2. `../run_Bayes/run_bayes.py` fits the production joint+dropout model at subclass
    resolution with direct activity estimation, SVI (30,000 steps), and 1,000
    posterior draws. The seven annotated negative controls are retained as
    ordinary cCREs; downstream tests compare each target with their draw-wise
@@ -50,8 +50,8 @@ by the legacy section objects:
 - section 1: `Conv_zscan2_*` (187,816 cells)
 - section 2: `Conv_zscan1_*` (220,805 cells)
 
-`code/run_bayes.py` accepts `--section sec1|sec2`.
-`code/submit_sections.sh` fits the selected joint+dropout model independently
+`../run_Bayes/run_bayes.py` accepts `--section sec1|sec2`.
+`../run_Bayes/submit_sections.sh` fits the selected joint+dropout model independently
 in each section with the seven ordinary controls plus the pooled pseudo-control.
 `code/plot_section_reproducibility.py` excludes the pooled pseudo-control and
 produces only:
@@ -76,14 +76,14 @@ the activity correlation, each section's BH correction, and call concordance.
 Submit both compute stages and the dependent plotting stage:
 
 ```bash
-bash revision/bayesian_vs_fold_change/code/submit_all.sh
+bash revision/run_Bayes/submit_all.sh
 ```
 
 Submit the two section-specific joint+dropout Bayesian fits on GPU nodes and
 the dependent section plotting job:
 
 ```bash
-bash revision/bayesian_vs_fold_change/code/submit_sections.sh
+bash revision/run_Bayes/submit_sections.sh
 ```
 
 The bootstrap requests a 1 TB big-memory node. The Bayesian fit requests one
@@ -115,13 +115,21 @@ For local smoke tests, both compute scripts accept `--max-cells` and
 
 ## Outputs
 
-- `results/bootstrap/`: all three raw bootstrap arrays, axes/configuration,
+Whole-dataset outputs live outside this directory, because the origin-vs-new
+comparison reads the same products. Code reaches them through
+`analysis_utils.OLD_DATA_BOOTSTRAP` and `analysis_utils.OLD_DATA_BAYES` rather
+than by joining paths onto `ANALYSIS_DIR`.
+
+- `../Bootstrap_OldData/`: all three raw bootstrap arrays, axes/configuration,
   activity estimates, detection/filter matrices, calibrated effects, and
   q-values.
-- `results/bayesian/`: the production direct-activity joint+dropout Bayesian
-  run used for the mean-of-seven-negative-controls precision–recall result.
-  It contains posterior summaries, evidence audit, ELBO losses, posterior
-  predictive checks, diagnostics, `log_gamma` draws, and the run manifest.
+- `../Bayes_OldData/bayesian/`: the production direct-activity joint+dropout
+  Bayesian run used for the mean-of-seven-negative-controls precision–recall
+  result. It contains posterior summaries, evidence audit, ELBO losses,
+  posterior predictive checks, diagnostics, the `log_gamma`/`log_rho`/`log_a`
+  draws, and the run manifest.
+- `results/bayesian/`: the superseded `log_gamma`-only fit, retained as the
+  original published artifact. Nothing reads it.
 - `results/ablation/`: all alternative Bayesian models, prior variants,
   component/full-posterior runs, meta-cell runs, and exploratory comparison
   outputs. Alternative section fits are under `results/ablation/sections/`.

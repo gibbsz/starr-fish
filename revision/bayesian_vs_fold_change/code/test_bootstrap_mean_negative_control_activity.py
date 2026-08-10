@@ -10,7 +10,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from analysis_utils import ANALYSIS_DIR, DEFAULT_H5AD, write_json
+from analysis_utils import (
+    ANALYSIS_DIR,
+    DEFAULT_H5AD,
+    FIGURES_WORK,
+    OLD_DATA_BOOTSTRAP,
+    write_json,
+)
 from compute_t7_filter_negative_control_stats import (
     aligned_t7_totals,
     bh_fdr,
@@ -28,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--bootstrap-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "bootstrap",
+        default=OLD_DATA_BOOTSTRAP,
     )
     parser.add_argument("--h5ad", type=Path, default=DEFAULT_H5AD)
     parser.add_argument("--t7-threshold", type=float, default=50.0)
@@ -44,7 +50,7 @@ def parse_args() -> argparse.Namespace:
         "--tables-dir", type=Path, default=ANALYSIS_DIR / "results" / "tables"
     )
     parser.add_argument(
-        "--figures-dir", type=Path, default=ANALYSIS_DIR / "results" / "figures"
+        "--figures-dir", type=Path, default=FIGURES_WORK
     )
     parser.add_argument("--stem", default="bootstrap_mean_negative_control_tests")
     return parser.parse_args()
