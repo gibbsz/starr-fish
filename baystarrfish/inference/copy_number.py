@@ -224,7 +224,7 @@ def load_copy_number_draws(
             f"{sorted(available - {'group_names', 'cre_names'})}. The copy number "
             "depends on the infection rate and the library abundance, and neither "
             "can be reconstructed from what was saved. Refit requesting them:\n\n"
-            "    python revision/bayesian_vs_fold_change/code/run_bayes.py \\\n"
+            "    python revision/run_Bayes/run_bayes.py \\\n"
             "        --posterior-sites log_gamma log_rho log_a [other args as before]\n"
         )
 

@@ -108,12 +108,16 @@ _EXPORTS: dict[str, str] = {
     "load_gamma": ".io.results",
     "load_posterior_samples": ".io.results",
     "log": "._log",
+    # --- figures (needs the `plots` extra) --------------------------------- #
+    "plot_spatial": ".plotting.spatial",
+    "spatial_values": ".plotting.spatial",
 }
 
 # Subpackages, resolvable as attributes without being imported up front:
 # `import baystarrfish as bsf` then `bsf.data.CountData` works, and `bsf.data`
 # alone still costs no JAX import.
-_SUBMODULES = ("data", "inference", "io", "model", "simulate", "stats")
+_SUBMODULES = ("data", "inference", "io", "model", "plotting", "simulate",
+                "stats")
 
 # Documented public aliases for the two entry points.
 _ALIASES: dict[str, str] = {

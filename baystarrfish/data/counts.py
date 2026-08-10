@@ -70,6 +70,9 @@ class CountData:
     #: Cell barcodes, carried so per-cell outputs (e.g. the copy-number matrix)
     #: can be traced back to the input rather than being positional.
     obs_names: np.ndarray | None = None
+    #: (n_cells, 2) tissue coordinates from ``obsm['X_spatial']``, for
+    #: :mod:`baystarrfish.plotting.spatial`. None when the input has none.
+    spatial: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         n_cells, n_cre = self.t7.shape
@@ -99,6 +102,10 @@ class CountData:
         if self.obs_names is not None and len(self.obs_names) != n_cells:
             raise ValueError(
                 f"{len(self.obs_names)} obs_names for {n_cells} cells"
+            )
+        if self.spatial is not None and self.spatial.shape != (n_cells, 2):
+            raise ValueError(
+                f"spatial has shape {self.spatial.shape}, expected {(n_cells, 2)}"
             )
         if self.negative_control_mode not in NEGATIVE_CONTROL_MODES:
             raise ValueError(
@@ -228,6 +235,10 @@ class CountData:
             section=section,
             source=source,
             obs_names=adata.obs_names.to_numpy(dtype=object),
+            spatial=(
+                np.asarray(adata.obsm["X_spatial"], dtype=np.float64)
+                if "X_spatial" in adata.obsm else None
+            ),
         )
 
     @classmethod

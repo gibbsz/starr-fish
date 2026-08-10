@@ -136,7 +136,7 @@ From the command line, which is what you want for the full matrix:
 
 ```bash
 python -m baystarrfish copy-number \
-    --fit-dir revision/origin_vs_new/results/origin/bayesian_copy_number \
+    --fit-dir revision/Bayes_OldData/bayesian \
     --out results/copy_number.npz \
     --csv results/copy_number --csv-which copies \
     --with-sd --max-draws 200
@@ -146,7 +146,7 @@ or, for the two refit datasets, the runner that wraps exactly that:
 
 ```bash
 sbatch --job-name=cn_origin \
-    revision/origin_vs_new/code/submit_copy_number_matrix.slurm origin
+    revision/run_Bayes/submit_copy_number_matrix.slurm origin
 ```
 
 CSV is written in row blocks so 159 million values never exist as text in
@@ -179,21 +179,25 @@ file. Fits that carry them:
 
 | fit | dataset | model |
 |---|---|---|
-| `revision/origin_vs_new/results/origin/bayesian_copy_number/` | 5/28 NEWNEW | joint+dropout, direct activity |
-| `revision/origin_vs_new/results/new/bayesian_copy_number/` | 07/29 SFv8 low dose | joint+dropout, direct activity |
+| `revision/Bayes_OldData/bayesian/` | 5/28 NEWNEW | joint+dropout, direct activity |
+| `revision/Bayes_NewData/bayesian/` | 07/29 SFv8 low dose | joint+dropout, direct activity |
 | `revision/bayesian_vs_fold_change/results/ablation/bayesian_full_posterior/` | 5/28 NEWNEW | no dropout |
 
-The first two replicate the published fits exactly — same settings, same seed —
-and reproduce their activity tables to 1e-12 relative, differing only in what was
-written out. The published `results/bayesian/` and `results/new/bayesian/` are
-untouched and still store `log_gamma` alone.
+The first two replicate the earlier `log_gamma`-only fits exactly — same settings,
+same seed — and reproduce their activity tables to 1e-12 relative, differing only
+in what was written out. Because they are strict supersets, they have since
+replaced those fits under the canonical `bayesian/` name: the superseded
+`Bayes_NewData` fit was deleted, and `bayesian_vs_fold_change/results/bayesian/`
+is retained only as the original published artifact — every plotting and testing
+entry point now reads `Bayes_OldData/bayesian/` via
+`analysis_utils.OLD_DATA_BAYES`.
 
 A production fit is ~13 minutes on an L40S (the collapsed representation is only
 ~300k rows), so regenerating one is cheap:
 
 ```bash
 sbatch --job-name=bayes_cn_origin \
-    revision/origin_vs_new/code/submit_bayesian_copy_number.slurm origin
+    revision/run_Bayes/submit_bayesian_copy_number.slurm origin
 ```
 
 **Sanity-check the scale before trusting absolute copy numbers.** `k` and
@@ -230,6 +234,52 @@ is paid whatever the cell count — the work scales with the *posterior*, not th
 data. Runtime is linear in the number of draws, so `--max-draws 200` is the main
 lever; a posterior **mean** over 200 evenly-spaced draws is within Monte Carlo
 error of one over 1,000. Run it on a compute node, not a login node.
+
+## Spatial maps
+
+Four views of the section, one visual grammar, on black:
+
+```python
+from baystarrfish.data import CountData
+from baystarrfish.plotting import plot_spatial
+
+data = CountData.from_h5ad(section="sec1")          # fills .spatial from obsm
+
+plot_spatial(data, "celltype", celltypes=["CB Granule Glut", "Oligo NN"])
+plot_spatial(data, "cre", cre="CRE155")             # raw enhancer counts
+plot_spatial(data, "t7", cre="CRE155")              # raw constitutive counts
+plot_spatial(data, "copy_number", cre="CRE155", copies=copies, log=True)
+```
+
+Every mode draws **all** cells first as small grey dots, so the section outline
+is always visible and a sparse signal is never mistaken for a sparse tissue. The
+three value modes then overlay the cells carrying signal, encoding magnitude
+three ways at once — dot size, opacity and colour — because on black at the dot
+sizes a 400,000-cell section forces, one channel is not enough. Each value mode
+has its own hue (cCRE red, T7 cyan, copy number amber) so the maps stay
+distinguishable when cropped out of their titles.
+
+Conventions follow `STARRFISH.utils.STARRFISH.plot_gene` — black facecolor, grey
+background at size 3, values from 5 to 30, alpha ramp, equal aspect, no ticks,
+the 7-dot scale bar — so these sit alongside the existing figures. Three
+deliberate departures:
+
+- value cells are drawn in **ascending** order, so the strongest are never buried
+  under whichever neighbour came later in the array;
+- the scale bar uses the same **linear** size ramp as the plot (`plot_gene` cubes
+  it, so its legend disagrees with the figure it documents);
+- `vmax` defaults to the **99th percentile** of the drawn cells, not the maximum,
+  because one 300-count cell otherwise flattens everything else to invisibility.
+
+**`copy_number` is not like the count modes.** `E[k | obs]` is defined for every
+cell, so "overlay cells with signal" would paint the entire tissue one colour.
+It therefore overlays only cells with a nonzero read in either channel — 7.4% of
+the section for a typical cCRE — leaving the rest grey, because everywhere else
+the estimate is the cell-type baseline `E[k | 0, 0]` rather than a measurement.
+`evidence_mask` exposes that rule; `min_value` overrides it.
+
+Needs the `plots` extra. `baystarrfish.plotting` is never imported unless asked
+for, so the inference path stays free of matplotlib.
 
 ## Layout
 
