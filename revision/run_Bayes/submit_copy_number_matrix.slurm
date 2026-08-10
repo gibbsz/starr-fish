@@ -3,16 +3,16 @@
 #SBATCH --partition=cpu
 #SBATCH --account=brlab
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=64G
-#SBATCH --time=8:00:00
+#SBATCH --mem=32G
+#SBATCH --time=4:00:00
 #SBATCH --output=/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/revision/run_Bayes/logs/copy_number_%x_%j.out
 #SBATCH --error=/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/revision/run_Bayes/logs/copy_number_%x_%j.err
 #
 # Posterior mean latent AAV copy number E[k_ij | t7_ij, cre_ij] for every
 # (cell, cCRE) pair, from a fit that saved log_rho and log_a.
 #
-#   sbatch --job-name=cn_origin submit_copy_number_matrix.slurm origin
-#   sbatch --job-name=cn_new    submit_copy_number_matrix.slurm new
+#   sbatch --job-name=cn_old submit_copy_number_matrix.slurm old
+#   sbatch --job-name=cn_new submit_copy_number_matrix.slurm new
 #
 # Writes <outdir>/copy_number.npz (mean + sd, float32) and
 # <outdir>/copy_number_copies.csv.gz (the mean, cells x cCREs).
@@ -21,11 +21,13 @@
 # GPU. Cost scales with the posterior, not the data -- the all-zero baseline
 # alone is n_cell_types x n_cre patterns -- so the posterior is thinned to 200
 # evenly-spaced draws, which is within Monte Carlo error of the full 1,000 for a
-# posterior *mean*.
+# posterior *mean*. Measured at MAX_DRAWS=200: 18m12s, 6.8 GB peak RSS, of which
+# roughly a third is writing the 159M-value CSV. MAX_DRAWS=1000 costs ~5x the
+# compute, which is what the 4-hour limit leaves room for.
 
 set -euo pipefail
 
-DATASET="${1:?usage: submit_copy_number_matrix.slurm <origin|new>}"
+DATASET="${1:?usage: submit_copy_number_matrix.slurm <old|new>}"
 
 REPO=/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish
 LOGS="$REPO/revision/run_Bayes/logs"
@@ -35,7 +37,7 @@ NEW_RESULTS="$REPO/revision/Bayes_NewData"
 MAX_DRAWS=${MAX_DRAWS:-200}
 
 case "$DATASET" in
-  origin)
+  old|origin)
     FIT="$OLD_RESULTS/bayesian"
     H5AD="$REPO/revision/Data/scdata_5_28_2025_BRBB500gn_final_CRE_T7CRE_NEWNEW.h5ad"
     OUTDIR="$OLD_RESULTS/copy_number"
@@ -46,7 +48,7 @@ case "$DATASET" in
     OUTDIR="$NEW_RESULTS/copy_number"
     ;;
   *)
-    echo "unknown dataset '$DATASET' (expected 'origin' or 'new')" >&2
+    echo "unknown dataset '$DATASET' (expected 'old' or 'new')" >&2
     exit 2
     ;;
 esac

@@ -4,8 +4,8 @@
 #SBATCH --account=brlab
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=96G
-#SBATCH --time=40:00:00
+#SBATCH --mem=32G
+#SBATCH --time=2:00:00
 #SBATCH --output=/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/revision/run_Bayes/logs/bayes_cn_%x_%j.out
 #SBATCH --error=/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/revision/run_Bayes/logs/bayes_cn_%x_%j.err
 #
@@ -19,8 +19,12 @@
 # agree to ~1e-13 relative, which is why these fits have since replaced the
 # log_gamma-only ones under revision/Bayes_{Old,New}Data/bayesian/.
 #
-#   sbatch --job-name=bayes_cn_origin submit_bayesian_copy_number.slurm origin
-#   sbatch --job-name=bayes_cn_new    submit_bayesian_copy_number.slurm new
+#   sbatch --job-name=bayes_cn_old submit_bayesian_copy_number.slurm old
+#   sbatch --job-name=bayes_cn_new submit_bayesian_copy_number.slurm new
+#
+# Measured: 12m46s (408,621 cells) and 10m19s (353,034), 6.4 GB peak RSS, on an
+# L40S. The collapsed representation is ~300k rows, so 30,000 SVI steps is
+# minutes; the resource request is sized from that, not from a guessed ceiling.
 #
 # This is now a reproduction recipe: both target directories already hold a
 # completed fit, so the guard below refuses to start. Move the existing fit aside
@@ -28,7 +32,7 @@
 
 set -euo pipefail
 
-DATASET="${1:?usage: submit_bayesian_copy_number.slurm <origin|new>}"
+DATASET="${1:?usage: submit_bayesian_copy_number.slurm <old|new>}"
 
 REPO=/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish
 LOGS="$REPO/revision/run_Bayes/logs"
@@ -40,7 +44,7 @@ NEW_RESULTS="$REPO/revision/Bayes_NewData"
 # empty where no such fit survives -- the log_gamma-only fits these replaced were
 # deleted once the refits took over the canonical bayesian/ name.
 case "$DATASET" in
-  origin)
+  old|origin)
     H5AD="$REPO/revision/Data/scdata_5_28_2025_BRBB500gn_final_CRE_T7CRE_NEWNEW.h5ad"
     OUTDIR="$OLD_RESULTS/bayesian"
     REFERENCE="$REPO/revision/bayesian_vs_fold_change/results/bayesian"
@@ -51,12 +55,13 @@ case "$DATASET" in
     REFERENCE=""
     ;;
   *)
-    echo "unknown dataset '$DATASET' (expected 'origin' or 'new')" >&2
+    echo "unknown dataset '$DATASET' (expected 'old' or 'new')" >&2
     exit 2
     ;;
 esac
 
-# Never clobber a completed fit -- these cost 30-40 GPU-hours each.
+# Never clobber a completed fit. Cheap to recompute (~13 min) but the outputs
+# are cited downstream, so replacing one should be a deliberate act.
 if [[ -e "$OUTDIR/run_manifest.json" ]]; then
   echo "refusing to overwrite the completed fit in $OUTDIR" >&2
   echo "move or delete it first if you really mean to refit" >&2
