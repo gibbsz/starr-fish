@@ -98,10 +98,30 @@ def compare(pre: Path, post: Path, tag: str = TAG) -> None:
           "the refactor is numerically inert.")
 
 
+# The runner moved from the analysis directory to its own during the 2026-08
+# reorganisation. The baseline checkout predates that, so the path has to be
+# resolved per checkout rather than hardcoded -- a single path breaks whichever
+# side of the move it does not match.
+RUNNER_CANDIDATES = (
+    "revision/run_Bayes/run_bayes.py",
+    "revision/bayesian_vs_fold_change/code/run_bayes.py",
+)
+
+
+def find_runner(cwd: Path) -> str:
+    for candidate in RUNNER_CANDIDATES:
+        if (cwd / candidate).exists():
+            return candidate
+    raise SystemExit(
+        f"no run_bayes.py under {cwd}; looked in {list(RUNNER_CANDIDATES)}"
+    )
+
+
 def fit(python: Path, cwd: Path, outdir: Path, extra: list[str]) -> None:
+    runner = find_runner(cwd)
+    print(f"[golden] {cwd.name or cwd}: {runner}")
     subprocess.run(
-        [str(python), "revision/bayesian_vs_fold_change/code/run_bayes.py",
-         *COMMON, *extra, "--outdir", str(outdir)],
+        [str(python), runner, *COMMON, *extra, "--outdir", str(outdir)],
         cwd=cwd, check=True,
     )
 
