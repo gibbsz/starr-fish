@@ -237,7 +237,7 @@ error of one over 1,000. Run it on a compute node, not a login node.
 
 ## Spatial maps
 
-Four views of the section, one visual grammar, on black:
+Five views of the section, one visual grammar, on black:
 
 ```python
 from baystarrfish.data import CountData
@@ -249,7 +249,16 @@ plot_spatial(data, "celltype", celltypes=["CB Granule Glut", "Oligo NN"])
 plot_spatial(data, "cre", cre="CRE155")             # raw enhancer counts
 plot_spatial(data, "t7", cre="CRE155")              # raw constitutive counts
 plot_spatial(data, "copy_number", cre="CRE155", copies=copies, log=True)
+plot_spatial(data, "activity", cre="CRE155", copies=copies)   # cCRE / E[k]
 ```
+
+**`activity` is the per-cell enhancer output per virus copy**, `cCRE / E[k | obs]`.
+The model says `E[cre | k] = k · gamma`, so this is the moment estimator of the
+activity `gamma` — which is what makes a cell that received one copy comparable
+to one that received thirty. It cannot blow up: `k = 0` is a point mass forcing
+both channels to zero, so any cell with `cre > 0` has `P(k = 0 | obs) = 0` and
+hence `E[k] ≥ 1`, bounding the ratio by the raw count. On the old dataset the
+observed minimum is `E[k] = 1.0003` across all 23,111 cCRE-positive cells.
 
 Every mode draws **all** cells first as small grey dots, so the section outline
 is always visible and a sparse signal is never mistaken for a sparse tissue. The

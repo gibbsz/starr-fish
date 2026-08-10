@@ -56,15 +56,22 @@ def _collections(fig):
     return fig.axes[0].collections
 
 
+def _mode_kwargs(mode, data):
+    """Minimum arguments each mode needs to draw."""
+    if mode == "celltype":
+        return {}
+    kwargs = {"cre": CRE_NAMES[0]}
+    if mode in {"copy_number", "activity"}:
+        kwargs["copies"] = np.full((N_CELL, N_CRE), 2.0)
+    return kwargs
+
+
 # ---- the grammar every mode shares ---------------------------------------- #
 
 
 @pytest.mark.parametrize("mode", SPATIAL_MODES)
 def test_every_mode_draws_on_black_with_a_grey_background_layer(mode, data):
-    kwargs = {"cre": CRE_NAMES[0]} if mode in {"cre", "t7"} else {}
-    if mode == "copy_number":
-        kwargs = {"cre": CRE_NAMES[0], "copies": np.abs(data.cre).astype(float)}
-    fig = plot_spatial(data, mode, **kwargs)
+    fig = plot_spatial(data, mode, **_mode_kwargs(mode, data))
     ax = fig.axes[0]
     assert ax.get_facecolor() == matplotlib.colors.to_rgba("black")
     assert fig.get_facecolor() == matplotlib.colors.to_rgba("black")
@@ -80,11 +87,8 @@ def test_every_mode_draws_on_black_with_a_grey_background_layer(mode, data):
 
 @pytest.mark.parametrize("mode", SPATIAL_MODES)
 def test_every_mode_accepts_an_external_axes(mode, data):
-    kwargs = {"cre": CRE_NAMES[0]} if mode in {"cre", "t7"} else {}
-    if mode == "copy_number":
-        kwargs = {"cre": CRE_NAMES[0], "copies": np.abs(data.cre).astype(float)}
     fig, ax = plt.subplots()
-    assert plot_spatial(data, mode, ax=ax, **kwargs) is fig
+    assert plot_spatial(data, mode, ax=ax, **_mode_kwargs(mode, data)) is fig
     assert ax.get_facecolor() == matplotlib.colors.to_rgba("black")
 
 
@@ -365,3 +369,66 @@ def test_min_value_overrides_the_default_visibility_rule(data, rng):
 def test_min_value_also_applies_to_the_count_modes(data):
     fig = plot_spatial(data, "t7", cre=CRE_NAMES[0], min_value=1.0)
     assert len(_collections(fig)[1].get_offsets()) == int((data.t7[:, 0] > 1).sum())
+
+
+# ---- mode 5: inferred activity, cCRE / E[k] -------------------------------- #
+
+
+def test_activity_is_the_ratio_of_counts_to_copies(data, rng):
+    copies = rng.uniform(1.0, 6.0, size=(N_CELL, N_CRE))
+    np.testing.assert_allclose(
+        spatial_values(data, "activity", cre=CRE_NAMES[1], copies=copies),
+        data.cre[:, 1] / copies[:, 1],
+    )
+
+
+def test_activity_aggregate_is_a_ratio_of_totals_not_a_mean_of_ratios(data, rng):
+    """Summing first weights each cCRE by its evidence; averaging ratios does not."""
+    copies = rng.uniform(1.0, 6.0, size=(N_CELL, N_CRE))
+    np.testing.assert_allclose(
+        spatial_values(data, "activity", aggregate="sum", copies=copies),
+        data.cre.sum(axis=1) / copies.sum(axis=1),
+    )
+
+
+def test_activity_is_flat_when_counts_track_copies(data):
+    """Two cells with 1 copy/2 counts and 30 copies/60 counts have equal activity."""
+    copies = np.full((N_CELL, N_CRE), 1.0)
+    copies[:, 0] = np.arange(1, N_CELL + 1, dtype=float)  # integer, so 2*k is exact
+    counts = np.zeros((N_CELL, N_CRE))
+    counts[:, 0] = 2.0 * copies[:, 0]
+    import dataclasses
+
+    scaled = dataclasses.replace(data, cre=counts.astype(np.int64))
+    got = spatial_values(scaled, "activity", cre=CRE_NAMES[0], copies=copies)
+    np.testing.assert_allclose(got, 2.0, rtol=1e-9)
+
+
+def test_activity_cannot_blow_up_on_a_matrix_from_this_model(data, rng):
+    """k=0 is a point mass forcing cre=0, so cre>0 implies E[k]>=1 and ratio<=cre."""
+    copies = np.where(data.cre > 0, rng.uniform(1.0, 8.0, (N_CELL, N_CRE)),
+                      rng.uniform(1e-4, 0.5, (N_CELL, N_CRE)))
+    got = spatial_values(data, "activity", cre=CRE_NAMES[0], copies=copies)
+    assert np.isfinite(got).all()
+    assert got.max() <= data.cre[:, 0].max() + 1e-9
+
+
+def test_activity_needs_copies(data):
+    with pytest.raises(ValueError, match="needs copies="):
+        spatial_values(data, "activity", cre=CRE_NAMES[0])
+
+
+def test_activity_shares_the_evidence_visibility_rule(data, rng):
+    from baystarrfish.plotting import evidence_mask
+
+    copies = rng.uniform(1.0, 6.0, size=(N_CELL, N_CRE))
+    fig = plot_spatial(data, "activity", cre=CRE_NAMES[0], copies=copies)
+    drawn = len(_collections(fig)[1].get_offsets())
+    assert drawn == int(evidence_mask(data, cre=CRE_NAMES[0], aggregate=None).sum())
+
+
+def test_activity_has_its_own_hue_and_label(data, rng):
+    assert MODE_COLORS["activity"] not in {MODE_COLORS[m] for m in ("cre", "t7", "copy_number")}
+    copies = rng.uniform(1.0, 6.0, size=(N_CELL, N_CRE))
+    title = plot_spatial(data, "activity", cre=CRE_NAMES[0], copies=copies).axes[0].get_title()
+    assert "activity" in title and CRE_NAMES[0] in title

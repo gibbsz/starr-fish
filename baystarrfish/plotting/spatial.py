@@ -11,6 +11,9 @@ One visual grammar, four things to look at:
 ``copy_number``
     the inferred latent copies ``E[k | obs]`` from
     :mod:`baystarrfish.inference.copy_number`
+``activity``
+    per-cell inferred activity, ``cCRE counts / E[k | obs]`` -- the enhancer
+    output normalised by how much virus the model thinks the cell received
 
 Every mode draws *all* cells first as small grey dots, so the tissue outline is
 always visible and a sparse signal is never mistaken for a sparse section. The
@@ -44,9 +47,11 @@ __all__ = [
     "spatial_values",
 ]
 
-SpatialMode = Literal["celltype", "cre", "t7", "copy_number"]
+SpatialMode = Literal["celltype", "cre", "t7", "copy_number", "activity"]
 
-SPATIAL_MODES: tuple[str, ...] = ("celltype", "cre", "t7", "copy_number")
+SPATIAL_MODES: tuple[str, ...] = (
+    "celltype", "cre", "t7", "copy_number", "activity",
+)
 
 #: Ramp endpoint per value mode. Distinct hues, all reading as "hot" against
 #: black, all reaching white at zero so the low end fades into the grey field.
@@ -54,12 +59,14 @@ MODE_COLORS: dict[str, str] = {
     "cre": "#FF6B6B",        # enhancer channel -- the plot_gene red
     "t7": "#4DD0E1",         # constitutive channel -- cyan, clearly not the cCRE
     "copy_number": "#FFC857",  # inferred latent -- amber, clearly not a measurement
+    "activity": "#9CCC65",     # derived quantity -- green, neither channel
 }
 
 _MODE_LABELS = {
     "cre": "cCRE counts",
     "t7": "T7 counts",
     "copy_number": "inferred AAV copies  E[k | obs]",
+    "activity": "inferred activity  cCRE / E[k | obs]",
 }
 
 
@@ -68,6 +75,39 @@ def _ramp(color: str):
     from matplotlib.colors import LinearSegmentedColormap
 
     return LinearSegmentedColormap.from_list("baystarrfish", ["#FFFFFF", color])
+
+
+def _select(matrix, names, cre, aggregate, what):
+    """One column by name, or an aggregate across all of them."""
+    matrix = np.asarray(matrix)
+    if cre is not None:
+        if aggregate is not None:
+            raise ValueError("pass either cre= or aggregate=, not both")
+        if cre not in names:
+            raise ValueError(f"unknown cCRE {cre!r}")
+        return np.asarray(matrix[:, names.index(cre)], dtype=np.float64)
+    if aggregate is None:
+        raise ValueError(
+            f"mode={what!r} needs either cre='CRE123' or aggregate='sum'|'mean'"
+        )
+    if aggregate == "sum":
+        return np.asarray(matrix.sum(axis=1), dtype=np.float64)
+    if aggregate == "mean":
+        return np.asarray(matrix.mean(axis=1), dtype=np.float64)
+    raise ValueError(f"unknown aggregate {aggregate!r}; expected 'sum' or 'mean'")
+
+
+def _copies_matrix(data, copies, mode):
+    if copies is None:
+        raise ValueError(
+            f"mode={mode!r} needs copies=, a CopyNumberMatrix or an "
+            "(n_cells, n_cre) array from baystarrfish.infer_copy_number"
+        )
+    matrix = np.asarray(getattr(copies, "copies", copies))
+    names = [str(n) for n in getattr(copies, "cre_names", data.cre_names)]
+    if matrix.shape[0] != data.n_cells:
+        raise ValueError(f"values have {matrix.shape[0]} rows for {data.n_cells} cells")
+    return matrix, names
 
 
 def spatial_values(
@@ -82,44 +122,39 @@ def spatial_values(
 
     Separated from the drawing so the numbers can be checked, reused, or plotted
     by something else entirely.
+
+    ``activity`` is ``cCRE counts / E[k | obs]``. The model says
+    ``E[cre | k] = k * gamma``, so this is the per-cell moment estimator of the
+    activity ``gamma`` -- the enhancer output per virus copy, which is what makes
+    it comparable between a cell that received one copy and one that received
+    thirty. It cannot blow up: ``k = 0`` is a point mass forcing both channels to
+    zero, so any cell with ``cre > 0`` has ``P(k = 0 | obs) = 0`` and therefore
+    ``E[k] >= 1``. The ratio is bounded above by the raw count.
     """
     if mode not in SPATIAL_MODES:
         raise ValueError(f"unknown mode {mode!r}; expected one of {list(SPATIAL_MODES)}")
     if mode == "celltype":
         raise ValueError("mode='celltype' is categorical and has no per-cell value")
 
+    if mode == "activity":
+        numerator = _select(data.cre, list(data.cre_names), cre, aggregate, mode)
+        matrix, names = _copies_matrix(data, copies, mode)
+        denominator = _select(matrix, names, cre, aggregate, mode)
+        # Guaranteed >= 1 wherever the numerator is positive (see the docstring),
+        # so this floor never binds on a matrix from this model. It is here so a
+        # hand-supplied denominator cannot silently produce an infinity.
+        return numerator / np.maximum(denominator, 1e-12)
+
     if mode == "copy_number":
-        if copies is None:
-            raise ValueError(
-                "mode='copy_number' needs copies=, a CopyNumberMatrix or an "
-                "(n_cells, n_cre) array from baystarrfish.infer_copy_number"
-            )
-        matrix = getattr(copies, "copies", copies)
-        names = list(getattr(copies, "cre_names", data.cre_names))
+        matrix, names = _copies_matrix(data, copies, mode)
     else:
         matrix = data.cre if mode == "cre" else data.t7
-        names = list(data.cre_names)
-    matrix = np.asarray(matrix)
-    if matrix.shape[0] != data.n_cells:
-        raise ValueError(
-            f"values have {matrix.shape[0]} rows for {data.n_cells} cells"
-        )
-
-    if cre is not None:
-        if aggregate is not None:
-            raise ValueError("pass either cre= or aggregate=, not both")
-        if cre not in names:
-            raise ValueError(f"unknown cCRE {cre!r}")
-        return np.asarray(matrix[:, names.index(cre)], dtype=np.float64)
-    if aggregate is None:
-        raise ValueError(
-            f"mode={mode!r} needs either cre='CRE123' or aggregate='sum'|'mean'"
-        )
-    if aggregate == "sum":
-        return np.asarray(matrix.sum(axis=1), dtype=np.float64)
-    if aggregate == "mean":
-        return np.asarray(matrix.mean(axis=1), dtype=np.float64)
-    raise ValueError(f"unknown aggregate {aggregate!r}; expected 'sum' or 'mean'")
+        names = [str(n) for n in data.cre_names]
+        if np.asarray(matrix).shape[0] != data.n_cells:
+            raise ValueError(
+                f"values have {np.asarray(matrix).shape[0]} rows for {data.n_cells} cells"
+            )
+    return _select(matrix, names, cre, aggregate, mode)
 
 
 def evidence_mask(data, *, cre: str | None, aggregate: str | None) -> np.ndarray:
@@ -252,7 +287,7 @@ def plot_spatial(
         Value modes need exactly one: a single cCRE by name, or ``'sum'`` /
         ``'mean'`` across all of them.
     copies
-        For ``mode='copy_number'``: a
+        For ``mode='copy_number'`` and ``mode='activity'``: a
         :class:`~baystarrfish.inference.copy_number.CopyNumberMatrix` or a plain
         ``(n_cells, n_cre)`` array.
     celltypes
@@ -265,9 +300,11 @@ def plot_spatial(
     min_value
         Overlay only cells above this value; the rest stay grey. Default: any
         positive value for ``'cre'`` / ``'t7'``, and for ``'copy_number'`` the
-        cells with a nonzero read in either channel, since everywhere else the
-        estimate is the cell-type baseline rather than a measurement (see
-        :func:`evidence_mask`).
+        cells with a nonzero read in either channel -- and the same for
+        ``'activity'`` -- since everywhere else the estimate is the cell-type
+        baseline rather than a measurement (see :func:`evidence_mask`). An
+        evidence-bearing cell with no cCRE transcript draws at zero activity,
+        which is a measurement (infected but silent), not missing data.
     log
         Scale by ``log1p`` before normalising. Useful for copy number, which
         spans several orders of magnitude.
@@ -340,7 +377,7 @@ def plot_spatial(
                                 copies=copies)[keep]
         if min_value is not None:
             visible = values > float(min_value)
-        elif mode == "copy_number":
+        elif mode in {"copy_number", "activity"}:
             visible = evidence_mask(data, cre=cre, aggregate=aggregate)[keep]
         else:
             visible = values > (0.0 if vmin is None else float(vmin))
