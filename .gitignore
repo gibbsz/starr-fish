@@ -220,9 +220,11 @@ working/
 .codegraph/
 
 # revision
-revision/archive/
+*archive*
 *logs*
 *csv*
+*tsv*
 *meme*
 *fa*
 *fimo*
+REPORT.md
