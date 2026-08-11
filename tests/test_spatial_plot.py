@@ -1,4 +1,4 @@
-"""Spatial maps: the four modes, and the conventions that make them readable.
+"""Spatial maps: every mode, and the conventions that make them readable.
 
 Figures are hard to assert on, so these check the things that would actually go
 wrong -- the wrong array plotted, the background layer missing, the size ramp
@@ -63,7 +63,7 @@ def _mode_kwargs(mode, data):
     kwargs = {"cre": CRE_NAMES[0]}
     if mode in {"copy_number", "activity"}:
         kwargs["copies"] = np.full((N_CELL, N_CRE), 2.0)
-    if mode == "activity_posterior":
+    if mode in {"activity_posterior", "activity_posterior_normalized"}:
         kwargs["activity"] = np.full((N_CELL, N_CRE), 1.5)
     return kwargs
 
@@ -469,3 +469,260 @@ def test_the_two_activity_modes_are_visually_distinct(data, rng):
     act = rng.uniform(0.1, 4.0, size=(N_CELL, N_CRE))
     fig = plot_spatial(data, "activity_posterior", cre=CRE_NAMES[0], activity=act)
     assert "posterior" in fig.axes[0].get_title()
+
+
+# ---- mode 6: activity normalised by the negative-control mean -------------- #
+
+
+def test_normalized_mode_reads_the_normalized_field_not_the_raw_one(data):
+    """A CopyNumberMatrix carries both; the mode must not pick the wrong one."""
+    from baystarrfish.inference.copy_number import CopyNumberMatrix
+
+    matrix = CopyNumberMatrix(
+        copies=np.full((N_CELL, N_CRE), 2.0),
+        sd=None,
+        p_infected=None,
+        activity=np.full((N_CELL, N_CRE), 9.0),
+        activity_normalized=np.full((N_CELL, N_CRE), 3.0),
+        obs_names=None,
+        cre_names=list(CRE_NAMES),
+        kmax=25,
+        level="subclass",
+        infection_model="copy_number",
+    )
+    raw = spatial_values(data, "activity_posterior", cre=CRE_NAMES[0], activity=matrix)
+    normalized = spatial_values(
+        data, "activity_posterior_normalized", cre=CRE_NAMES[0], activity=matrix
+    )
+    np.testing.assert_allclose(raw, 9.0)
+    np.testing.assert_allclose(normalized, 3.0)
+
+
+def test_normalized_mode_reports_a_matrix_without_the_field(data):
+    from baystarrfish.inference.copy_number import CopyNumberMatrix
+
+    matrix = CopyNumberMatrix(
+        copies=np.full((N_CELL, N_CRE), 2.0), sd=None, p_infected=None,
+        activity=np.full((N_CELL, N_CRE), 9.0), obs_names=None,
+        cre_names=list(CRE_NAMES), kmax=25, level="subclass",
+        infection_model="copy_number",
+    )
+    with pytest.raises(ValueError, match="return_activity_normalized"):
+        spatial_values(data, "activity_posterior_normalized",
+                       cre=CRE_NAMES[0], activity=matrix)
+
+
+def test_normalized_mode_anchors_the_ramp_at_background(data):
+    """vmin defaults to 1, so a cell at background is at the bottom of the ramp."""
+    values = np.full((N_CELL, N_CRE), 0.5)
+    values[:, 0] = 1.0            # background
+    values[:10, 0] = 5.0          # clearly above it
+    fig = plot_spatial(data, "activity_posterior_normalized", cre=CRE_NAMES[0],
+                       activity=values)
+    sizes = _collections(fig)[1].get_sizes()
+    # Two populations only: at-or-below background, and the bright cells. Only
+    # cells with a read in either channel are drawn at all, so the bright count
+    # comes from the evidence mask rather than from the ten values set above.
+    evidence = (np.asarray(data.t7)[:, 0] > 0) | (np.asarray(data.cre)[:, 0] > 0)
+    assert np.isclose(sizes.min(), 5.0)
+    assert sizes.max() > 5.0
+    assert int((sizes > 5.0 + 1e-9).sum()) == int(evidence[:10].sum()) > 0
+    # The scale bar states where the ramp starts, and it must say 1.
+    assert "1" in [t.get_text() for t in fig.axes[-1].texts]
+
+
+def test_normalized_mode_can_be_asked_to_show_below_background(data):
+    values = np.full((N_CELL, N_CRE), 0.5)
+    values[:10, 0] = 5.0
+    fig = plot_spatial(data, "activity_posterior_normalized", cre=CRE_NAMES[0],
+                       activity=values, vmin=0.0)
+    assert "0" in [t.get_text() for t in fig.axes[-1].texts]
+    assert _collections(fig)[1].get_sizes().min() > 5.0
+
+
+def test_cells_without_a_reference_are_never_drawn(data):
+    """NaN means "no background to compare against", not "zero activity"."""
+    values = np.full((N_CELL, N_CRE), 4.0)
+    values[: N_CELL // 2, 0] = np.nan
+    fig = plot_spatial(data, "activity_posterior_normalized", cre=CRE_NAMES[0],
+                       activity=values)
+    drawn = _collections(fig)[1].get_offsets()
+    evidence = (np.asarray(data.t7)[:, 0] > 0) | (np.asarray(data.cre)[:, 0] > 0)
+    expected = int((evidence & ~np.isnan(values[:, 0])).sum())
+    assert len(drawn) == expected
+    assert np.isfinite(np.asarray(drawn)).all()
+
+
+# ---- highlighting cell types inside a value mode --------------------------- #
+
+
+@pytest.mark.parametrize("mode", [m for m in SPATIAL_MODES if m != "celltype"])
+def test_highlighting_adds_layers_on_top_of_the_value_layer(mode, data):
+    fig = plot_spatial(data, mode, celltypes=["Pvalb", "Sst"],
+                       **_mode_kwargs(mode, data))
+    # background + the value ramp for everything else + one layer per named type.
+    assert len(_collections(fig)) == 1 + 1 + 2
+    labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    assert labels == ["Pvalb", "Sst"]
+
+
+def test_highlighting_colours_by_identity_and_sizes_by_value(data):
+    values = np.zeros((N_CELL, N_CRE))
+    values[:, 0] = np.where(data.subclass == "Pvalb", 8.0, 1.0)
+    fig = plot_spatial(data, "activity_posterior", cre=CRE_NAMES[0],
+                       activity=values, celltypes=["Pvalb", "Sst"],
+                       palette={"Pvalb": "#123456", "Sst": "#654321"})
+    pvalb, sst = _collections(fig)[2], _collections(fig)[3]
+    # One flat colour per type -- not a value ramp.
+    for artist, expected in ((pvalb, "#123456"), (sst, "#654321")):
+        assert len(np.unique(artist.get_facecolor()[:, :3], axis=0)) == 1
+        np.testing.assert_allclose(
+            artist.get_facecolor()[0][:3], matplotlib.colors.to_rgb(expected), atol=1e-6
+        )
+    # Size still tracks the value: Pvalb is the high-value type here.
+    assert pvalb.get_sizes().min() > sst.get_sizes().max()
+
+
+def test_the_unhighlighted_cells_keep_the_default_ramp(data):
+    """Highlighting is additive -- it must not blank the rest of the map."""
+    values = np.full((N_CELL, N_CRE), 3.0)
+    fig = plot_spatial(data, "activity_posterior", cre=CRE_NAMES[0],
+                       activity=values, celltypes=["Sst"])
+    evidence = (np.asarray(data.t7)[:, 0] > 0) | (np.asarray(data.cre)[:, 0] > 0)
+    ramped, highlighted = _collections(fig)[1], _collections(fig)[2]
+    assert len(ramped.get_offsets()) == int((evidence & (data.subclass != "Sst")).sum())
+    assert len(highlighted.get_offsets()) == int(
+        (evidence & (data.subclass == "Sst")).sum()
+    )
+    # The default layer keeps the mode's hue, not a cell-type colour.
+    np.testing.assert_allclose(
+        ramped.get_facecolor()[0][:3],
+        matplotlib.colors.to_rgb(MODE_COLORS["activity_posterior"]), atol=1e-6,
+    )
+
+
+def test_highlighting_respects_the_class_level(data):
+    fig = plot_spatial(data, "cre", cre=CRE_NAMES[0], celltypes=["Glut"],
+                       level="class")
+    drawn = _collections(fig)[2].get_offsets()
+    assert len(drawn) == int(((np.asarray(data.cre)[:, 0] > 0)
+                              & (data.class_ == "Glut")).sum())
+
+
+def test_the_scale_bar_keeps_its_hue_when_highlighting(data):
+    """The ramp still describes every unhighlighted cell, so it stays coloured."""
+    values = np.full((N_CELL, N_CRE), 3.0)
+    fig = plot_spatial(data, "activity_posterior", cre=CRE_NAMES[0],
+                       activity=values, celltypes=["Sst"])
+    brightest = fig.axes[-1].collections[-1].get_facecolor()[0][:3]
+    np.testing.assert_allclose(
+        brightest, matplotlib.colors.to_rgb(MODE_COLORS["activity_posterior"]),
+        atol=1e-6,
+    )
+
+
+def test_an_absent_type_is_skipped_in_a_value_mode(data):
+    fig = plot_spatial(data, "cre", cre=CRE_NAMES[0],
+                       celltypes=["Pvalb", "NoSuchType"])
+    assert len(_collections(fig)) == 1 + 1 + 1  # background + ramp + Pvalb
+
+
+# ---- excluding cell types from the figure ---------------------------------- #
+
+
+def test_excluding_suppresses_the_value_but_keeps_the_cell(data):
+    """Excluded cells stay in the grey layer -- the section outline is intact."""
+    fig = plot_spatial(data, "cre", cre=CRE_NAMES[0], exclude_celltypes=["Sst"])
+    background = _collections(fig)[0]
+    assert background.get_offsets().shape == (N_CELL, 2)   # every cell, still there
+    drawn = _collections(fig)[1].get_offsets()
+    kept = data.subclass != "Sst"
+    assert len(drawn) == int((kept & (np.asarray(data.cre)[:, 0] > 0)).sum())
+
+
+def test_excluding_changes_the_colour_scale(data):
+    """Excluded cells must not set a ramp they never appear on."""
+    values = np.full((N_CELL, N_CRE), 1.0)
+    values[data.subclass == "Sst", 0] = 500.0
+    with_sst = plot_spatial(data, "activity_posterior", cre=CRE_NAMES[0],
+                            activity=values)
+    without = plot_spatial(data, "activity_posterior", cre=CRE_NAMES[0],
+                           activity=values, exclude_celltypes=["Sst"])
+    top = lambda fig: [t.get_text() for t in fig.axes[-1].texts]
+    assert "500" in top(with_sst)
+    assert "500" not in top(without)
+
+
+def test_excluding_composes_with_highlighting(data):
+    fig = plot_spatial(data, "cre", cre=CRE_NAMES[0], celltypes=["Pvalb"],
+                       exclude_celltypes=["Sst"])
+    positive = np.asarray(data.cre)[:, 0] > 0
+    assert _collections(fig)[0].get_offsets().shape == (N_CELL, 2)
+    # background + the ramp for L2-3 IT + the Pvalb overlay; Sst has no value.
+    assert len(_collections(fig)) == 1 + 1 + 1
+    assert len(_collections(fig)[1].get_offsets()) == int(
+        (positive & (data.subclass == "L2-3 IT")).sum()
+    )
+    assert len(_collections(fig)[2].get_offsets()) == int(
+        (positive & (data.subclass == "Pvalb")).sum()
+    )
+
+
+def test_excluding_an_unknown_type_raises_but_highlighting_one_does_not(data):
+    """A silent no-op exclusion would look exactly like a correct figure."""
+    with pytest.raises(ValueError, match="are not present at level"):
+        plot_spatial(data, "cre", cre=CRE_NAMES[0], exclude_celltypes=["NoSuchType"])
+    assert plot_spatial(data, "cre", cre=CRE_NAMES[0],
+                        celltypes=["NoSuchType"]) is not None
+
+
+def test_excluding_everything_raises(data):
+    with pytest.raises(ValueError, match="no value would be drawn"):
+        plot_spatial(data, "cre", cre=CRE_NAMES[0],
+                     exclude_celltypes=["Pvalb", "Sst", "L2-3 IT"])
+
+
+def test_excluding_in_celltype_mode_drops_the_colour_not_the_cell(data):
+    fig = plot_spatial(data, "celltype", exclude_celltypes=["Sst"])
+    labels = {t.get_text() for t in fig.axes[0].get_legend().get_texts()}
+    assert labels == {"Pvalb", "L2-3 IT"}
+    assert _collections(fig)[0].get_offsets().shape == (N_CELL, 2)
+
+
+def test_value_modes_without_celltypes_keep_the_single_hue_ramp(data):
+    """The default path must be untouched by the highlighting branch."""
+    values = np.linspace(0.0, 10.0, N_CELL)
+    matrix = np.tile(values[:, None], (1, N_CRE))
+    fig = plot_spatial(data, "activity_posterior", cre=CRE_NAMES[0], activity=matrix)
+    assert len(_collections(fig)) == 2
+    assert fig.axes[0].get_legend() is None
+    faces = _collections(fig)[1].get_facecolor()[:, :3]
+    assert len(np.unique(faces, axis=0)) > 1  # a ramp, not one flat colour
+
+
+# ---- scale ends are in data units, on both scales -------------------------- #
+
+
+def test_log_scaling_interprets_vmin_in_data_units(data):
+    """vmin=1 must mean 1, not log1p(x) = 1 -- and the bar must say so."""
+    values = np.full((N_CELL, N_CRE), 100.0)
+    values[:5, 0] = 1.0
+    fig = plot_spatial(data, "activity_posterior_normalized", cre=CRE_NAMES[0],
+                       activity=values, vmin=1.0, log=True)
+    texts = [t.get_text() for t in fig.axes[-1].texts]
+    assert "1" in texts and "100" in texts
+
+
+def test_highlighting_every_present_type_leaves_no_ramp_layer(data):
+    """The default layer can be empty; matplotlib rejects a zero-length alpha."""
+    fig = plot_spatial(data, "cre", cre=CRE_NAMES[0],
+                       celltypes=["Pvalb", "Sst", "L2-3 IT"])
+    # background + one layer per type, and no empty ramp layer between them.
+    assert len(_collections(fig)) == 1 + 3
+
+
+def test_highlighting_every_kept_type_after_exclusion(data):
+    """The real failure: exclusion narrows the section to highlighted types only."""
+    fig = plot_spatial(data, "cre", cre=CRE_NAMES[0], celltypes=["Pvalb", "Sst"],
+                       exclude_celltypes=["L2-3 IT"])
+    assert len(_collections(fig)) == 1 + 2

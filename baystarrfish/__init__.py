@@ -102,6 +102,7 @@ _EXPORTS: dict[str, str] = {
     "CountData": ".data.counts",
     "read_and_prepare_adata": ".data.anndata",
     "bh_fdr": ".stats.fdr",
+    "negative_control_log_baseline": ".stats.baseline",
     "negative_control_test": ".stats.negative_control",
     "write_fit": ".io.results",
     "read_fit": ".io.results",

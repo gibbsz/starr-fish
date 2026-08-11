@@ -1,6 +1,6 @@
 """Spatial maps of the tissue section, on black.
 
-One visual grammar, four things to look at:
+One visual grammar, several things to look at:
 
 ``celltype``
     which cells are which type -- a categorical colour per highlighted type
@@ -19,12 +19,23 @@ One visual grammar, four things to look at:
     the same quantity as a *posterior* rather than a ratio: the Gamma-conjugate
     posterior mean of the per-cell activity, which shrinks toward the cell-type
     activity where the evidence is thin
+``activity_posterior_normalized``
+    that posterior activity divided, inside each draw, by the cell type's
+    negative-control reference -- the only mode with an absolute zero point, so
+    it is the only one whose colour ramp starts at a *meaning* (1 = background)
+    rather than at whatever the section happened to contain
 
 Every mode draws *all* cells first as small grey dots, so the tissue outline is
 always visible and a sparse signal is never mistaken for a sparse section. The
 three value modes then overlay the cells carrying signal, encoding magnitude
 three ways at once -- dot size, opacity and colour -- because on a black field a
 single channel is hard to read at the dot sizes a 400,000-cell section forces.
+
+Any value mode also accepts ``celltypes=[...]``, which gives those types their own
+hues on top of the value map, and ``exclude_celltypes=[...]``, which withholds the
+value for types where it is undefined while leaving their cells in the grey layer
+-- so a map can name a few populations and stay silent about others without ever
+losing the section outline.
 
 Conventions (black facecolor, grey background dots, size 5-30, alpha ramp,
 equal aspect, no ticks, the 7-dot scale bar) follow
@@ -54,11 +65,22 @@ __all__ = [
 
 SpatialMode = Literal[
     "celltype", "cre", "t7", "copy_number", "activity", "activity_posterior",
+    "activity_posterior_normalized",
 ]
 
 SPATIAL_MODES: tuple[str, ...] = (
     "celltype", "cre", "t7", "copy_number", "activity", "activity_posterior",
+    "activity_posterior_normalized",
 )
+
+#: Value modes whose estimate is only cell-specific where a channel was read.
+_EVIDENCE_MODES = frozenset(
+    {"copy_number", "activity", "activity_posterior", "activity_posterior_normalized"}
+)
+
+#: Background is 1 for the normalised mode, so the ramp starts there rather than
+#: at zero: below-background cells stay dim instead of consuming half the range.
+_MODE_DEFAULT_VMIN: dict[str, float] = {"activity_posterior_normalized": 1.0}
 
 #: Ramp endpoint per value mode. Distinct hues, all reading as "hot" against
 #: black, all reaching white at zero so the low end fades into the grey field.
@@ -68,6 +90,7 @@ MODE_COLORS: dict[str, str] = {
     "copy_number": "#FFC857",  # inferred latent -- amber, clearly not a measurement
     "activity": "#9CCC65",     # derived quantity -- green, neither channel
     "activity_posterior": "#4DB6AC",  # the same quantity, shrunk -- teal
+    "activity_posterior_normalized": "#CE93D8",  # on a fold-change scale -- orchid
 }
 
 _MODE_LABELS = {
@@ -76,6 +99,18 @@ _MODE_LABELS = {
     "copy_number": "inferred AAV copies  E[k | obs]",
     "activity": "inferred activity  cCRE / E[k | obs]",
     "activity_posterior": "inferred activity  posterior mean",
+    "activity_posterior_normalized": "activity / negative-control mean  (1 = background)",
+}
+
+#: The scale bar sits in a narrow centred column, so a long label collides with
+#: the min/max numbers either side of it. Only modes that overflow need an entry.
+_MODE_BAR_LABELS = {"activity_posterior_normalized": "activity / control mean"}
+
+#: Which ``CopyNumberMatrix`` field each value mode reads.
+_MODE_ATTRIBUTES = {
+    "copy_number": "copies",
+    "activity_posterior": "activity",
+    "activity_posterior_normalized": "activity_normalized",
 }
 
 
@@ -107,17 +142,17 @@ def _select(matrix, names, cre, aggregate, what):
 
 
 def _copies_matrix(data, copies, mode, attribute="copies"):
+    keyword = "copies=" if attribute == "copies" else "activity="
     if copies is None:
         raise ValueError(
-            f"mode={mode!r} needs {'activity=' if attribute == 'activity' else 'copies='}"
-            ", a CopyNumberMatrix or an (n_cells, n_cre) array from "
-            "baystarrfish.infer_copy_number"
+            f"mode={mode!r} needs {keyword}, a CopyNumberMatrix or an "
+            "(n_cells, n_cre) array from baystarrfish.infer_copy_number"
         )
     inner = getattr(copies, attribute, None)
     if inner is None and hasattr(copies, "copies"):
         raise ValueError(
             f"this CopyNumberMatrix has no {attribute!r}; recompute it with "
-            f"return_{'activity' if attribute == 'activity' else 'sd'}=True"
+            f"return_{attribute if attribute != 'copies' else 'sd'}=True"
         )
     matrix = np.asarray(inner if inner is not None else copies)
     names = [str(n) for n in getattr(copies, "cre_names", data.cre_names)]
@@ -147,14 +182,23 @@ def spatial_values(
     thirty. It cannot blow up: ``k = 0`` is a point mass forcing both channels to
     zero, so any cell with ``cre > 0`` has ``P(k = 0 | obs) = 0`` and therefore
     ``E[k] >= 1``. The ratio is bounded above by the raw count.
+
+    ``activity_posterior_normalized`` divides the posterior activity by the cell
+    type's negative-control reference, which is the only one of the three that is
+    comparable *across* cell types: ``gamma``'s scale is confounded with the
+    infection rate and library abundance, so a raw activity map partly shows
+    which cell types capture better. It is ``NaN`` wherever the cell type had too
+    little control signal to establish a background.
     """
     if mode not in SPATIAL_MODES:
         raise ValueError(f"unknown mode {mode!r}; expected one of {list(SPATIAL_MODES)}")
     if mode == "celltype":
         raise ValueError("mode='celltype' is categorical and has no per-cell value")
 
-    if mode == "activity_posterior":
-        matrix, names = _copies_matrix(data, activity, mode, attribute="activity")
+    if mode in {"activity_posterior", "activity_posterior_normalized"}:
+        matrix, names = _copies_matrix(
+            data, activity, mode, attribute=_MODE_ATTRIBUTES[mode]
+        )
         return _select(matrix, names, cre, aggregate, mode)
 
     if mode == "activity":
@@ -203,6 +247,23 @@ def _coordinates(data, transpose: int, flipx: int, flipy: int) -> np.ndarray:
     return np.asarray(data.spatial)[:, ::transpose] * [flipx, flipy]
 
 
+def _celltype_mask(data, names, level: str) -> np.ndarray:
+    """Cells whose label is in ``names``, at ``level``. Unknown names are fatal.
+
+    Silently ignoring a typo would produce a figure that looks exactly like a
+    correct one while excluding nothing.
+    """
+    labels = np.asarray(data.subclass if level == "subclass" else data.class_).astype(str)
+    wanted = [str(name) for name in names]
+    unknown = sorted(set(wanted) - set(np.unique(labels)))
+    if unknown:
+        raise ValueError(
+            f"cell type(s) {unknown} are not present at level={level!r}; "
+            f"the data has {len(np.unique(labels))} of them"
+        )
+    return np.isin(labels, wanted)
+
+
 def _region_mask(coords, x_region, y_region) -> np.ndarray:
     keep = np.ones(len(coords), dtype=bool)
     if x_region is not None:
@@ -222,7 +283,11 @@ def _normalise(values, vmin, vmax, log, subset=None):
     """
     values = np.asarray(values, dtype=np.float64)
     if log:
+        # vmin/vmax are always in data units. Comparing a caller's "1" against
+        # log1p'd values would silently put the floor at e - 1.
         values = np.log1p(np.maximum(values, 0.0))
+        vmin = None if vmin is None else float(np.log1p(max(float(vmin), 0.0)))
+        vmax = None if vmax is None else float(np.log1p(max(float(vmax), 0.0)))
     reference = values if subset is None else values[np.asarray(subset, dtype=bool)]
     # Zero, not values.min(): every mode here is a count or an expected count,
     # so zero is the meaningful floor. Anchoring at the observed minimum would
@@ -260,7 +325,9 @@ def _scale_bar(ax, low, high, color, size_min, size_max, label, n=7):
     ax.text(-0.3, 0.25, f"{low:.3g}", va="center", ha="center", color="white", fontsize=8)
     ax.text(span + 0.3, 0.25, f"{high:.3g}", va="center", ha="center",
             color="white", fontsize=8)
-    ax.text(span / 2, 0.45, label, ha="center", va="top", color="white", fontsize=9)
+    # Well clear of the dot row: the bar axes is short, so a label only 0.2 above
+    # the dots renders on the same visual line as the min/max numbers either side.
+    ax.text(span / 2, 0.85, label, ha="center", va="center", color="white", fontsize=9)
     ax.set_xlim(-0.35, span + 0.35)
     ax.set_ylim(0, 1.0)
 
@@ -274,6 +341,7 @@ def plot_spatial(
     copies=None,
     activity=None,
     celltypes: Sequence[str] | None = None,
+    exclude_celltypes: Sequence[str] | None = None,
     level: Literal["subclass", "class"] = "subclass",
     palette: Mapping[str, str] | Sequence[str] | None = None,
     vmin: float | None = None,
@@ -304,33 +372,60 @@ def plot_spatial(
         Must carry ``spatial``; ``CountData.from_h5ad`` fills it from
         ``obsm['X_spatial']``.
     mode
-        ``'celltype'``, ``'cre'``, ``'t7'`` or ``'copy_number'``.
+        One of :data:`SPATIAL_MODES`.
     cre, aggregate
         Value modes need exactly one: a single cCRE by name, or ``'sum'`` /
         ``'mean'`` across all of them.
     activity
         For ``mode='activity_posterior'``: a ``CopyNumberMatrix`` built with
         ``return_activity=True``, or a plain ``(n_cells, n_cre)`` array of
-        posterior mean activities.
+        posterior mean activities. For
+        ``mode='activity_posterior_normalized'``: the same object built with
+        ``return_activity_normalized=True`` (it reads a different field of it),
+        or a plain array already on the fold-change scale.
     copies
         For ``mode='copy_number'`` and ``mode='activity'``: a
         :class:`~baystarrfish.inference.copy_number.CopyNumberMatrix` or a plain
         ``(n_cells, n_cre)`` array.
     celltypes
-        Which types to colour in ``'celltype'`` mode. Default: every type, which
+        In ``'celltype'`` mode, which types to colour. Default: every type, which
         for 328 subclasses is a smear -- name the handful you care about.
+
+        In a **value** mode, naming types calls them out on top of the value map:
+        each named type gets its own hue while every other cell keeps the mode's
+        default ramp colour. Size and opacity track the value throughout, for
+        highlighted and default cells alike, so the map still reads as a value
+        map with a few types identified on it. A name matching nothing simply
+        draws nothing, as in ``'celltype'`` mode -- highlighting is additive, so
+        a miss is visible as an absent colour.
+    exclude_celltypes
+        Cell types whose *value* is suppressed. Their cells still appear in the
+        grey background layer -- the section outline stays intact -- but they are
+        never drawn on the value overlay and never contribute to the colour
+        scale, so the ramp is set by the cell types that remain. Use this for
+        types where the quantity is undefined or untrustworthy: the cells are
+        still there, the claim about them is withheld. In ``'celltype'`` mode the
+        named types simply lose their colour. Unlike ``celltypes``, an unknown
+        name here **raises**: an exclusion that silently excluded nothing would
+        give a figure indistinguishable from a correct one. Excluding every cell
+        raises too.
     vmin, vmax
         Value-scale ends. ``vmax=None`` uses the 99th percentile of the values
         above ``vmin``, because counts are heavy-tailed enough that the raw
-        maximum flattens everything else.
+        maximum flattens everything else. ``vmin=None`` anchors at zero, except
+        for ``'activity_posterior_normalized'`` where it anchors at 1 -- that
+        mode has an absolute background, so starting the ramp anywhere else
+        would spend half the colour range on cells that are not above it. Pass
+        ``vmin=0`` to see the sub-background structure instead.
     min_value
         Overlay only cells above this value; the rest stay grey. Default: any
-        positive value for ``'cre'`` / ``'t7'``, and for ``'copy_number'`` the
-        cells with a nonzero read in either channel -- and the same for
-        ``'activity'`` -- since everywhere else the estimate is the cell-type
-        baseline rather than a measurement (see :func:`evidence_mask`). An
-        evidence-bearing cell with no cCRE transcript draws at zero activity,
-        which is a measurement (infected but silent), not missing data.
+        positive value for ``'cre'`` / ``'t7'``, and for the inferred modes the
+        cells with a nonzero read in either channel, since everywhere else the
+        estimate is the cell-type baseline rather than a measurement (see
+        :func:`evidence_mask`). An evidence-bearing cell with no cCRE transcript
+        draws at zero activity, which is a measurement (infected but silent),
+        not missing data. Cells whose value is ``NaN`` are never drawn whatever
+        this is set to.
     log
         Scale by ``log1p`` before normalising. Useful for copy number, which
         spans several orders of magnitude.
@@ -348,6 +443,18 @@ def plot_spatial(
     coords = _coordinates(data, transpose, flipx, flipy)
     keep = _region_mask(coords, x_region, y_region)
     coords = coords[keep]
+
+    # Exclusion suppresses the *value*, not the cell. Excluded cells stay in the
+    # grey layer so the section outline is intact -- they are cells whose value
+    # is not being claimed, not cells that are absent. They are also kept out of
+    # the colour scale, since a value that is never drawn should not set the ramp.
+    excluded = None
+    if exclude_celltypes:
+        excluded = _celltype_mask(data, exclude_celltypes, level)[keep]
+        if excluded.all():
+            raise ValueError(
+                "every cell belongs to an excluded cell type; no value would be drawn"
+            )
 
     external_ax = ax is not None
     if external_ax:
@@ -378,6 +485,9 @@ def plot_spatial(
         wanted = list(dict.fromkeys(celltypes)) if celltypes is not None else sorted(
             np.unique(labels)
         )
+        if exclude_celltypes:
+            drop = {str(name) for name in exclude_celltypes}
+            wanted = [name for name in wanted if str(name) not in drop]
         colors = _celltype_colors(wanted, palette)
         for name in wanted:
             hit = labels == name
@@ -401,32 +511,94 @@ def plot_spatial(
     else:
         values = spatial_values(data, mode, cre=cre, aggregate=aggregate,
                                 copies=copies, activity=activity)[keep]
+        if vmin is None:
+            vmin = _MODE_DEFAULT_VMIN.get(mode)
         if min_value is not None:
             visible = values > float(min_value)
-        elif mode in {"copy_number", "activity", "activity_posterior"}:
+        elif mode in _EVIDENCE_MODES:
             visible = evidence_mask(data, cre=cre, aggregate=aggregate)[keep]
         else:
             visible = values > (0.0 if vmin is None else float(vmin))
+        # A cell type with no eligible control reference has no background to be
+        # scored against, so its cells are NaN. They stay grey -- drawing them at
+        # any value would invent the comparison the filter refused to make. An
+        # excluded cell type is the same statement made by the caller.
+        visible = visible & np.isfinite(values)
+        if excluded is not None:
+            visible = visible & ~excluded
         # Scale over the cells actually drawn. Including the ones left grey would
         # set the ramp from a population that never appears -- for copy number
         # that is 92% of the section sitting at the cell-type baseline, which
         # pushes every drawn cell past the top of the ramp and flattens the map.
         fraction, low, high = _normalise(values, vmin, vmax, log, subset=visible)
+        # NaN survives the clip; it is never drawn (excluded from `visible`), but
+        # it would poison the colormap lookup and the sort order below.
+        fraction = np.nan_to_num(fraction, nan=0.0)
         color = MODE_COLORS[mode]
         sizes = size_min + fraction * (size_max - size_min)
         # Ascending, so the strongest cells land on top instead of being buried
         # under whichever neighbour happened to come later in the array.
         order = np.argsort(fraction, kind="stable")
-        drawn = order[visible[order]]
-        ax.scatter(
-            coords[drawn, 0], coords[drawn, 1],
-            c=_ramp(color)(fraction[drawn]), s=sizes[drawn],
-            alpha=np.clip(fraction[drawn], 0.15, 1.0),
-            rasterized=rasterized, edgecolors="none",
-        )
+
+        # Highlighted types are lifted out of the value ramp and given their own
+        # hue; everything else keeps the mode colour, so the map still reads as a
+        # value map with a few types called out on top of it.
+        highlighted = np.zeros(len(values), dtype=bool)
+        wanted: list[str] = []
+        if celltypes is not None:
+            labels = np.asarray(
+                data.subclass if level == "subclass" else data.class_
+            )[keep].astype(str)
+            wanted = list(dict.fromkeys(str(name) for name in celltypes))
+            highlighted = np.isin(labels, wanted)
+
+        rest = order[(visible & ~highlighted)[order]]
+        # Can legitimately be empty -- every cell type left in the figure may be
+        # a highlighted one. matplotlib rejects a zero-length alpha array, so
+        # this is a guard, not an optimisation.
+        if len(rest):
+            ax.scatter(
+                coords[rest, 0], coords[rest, 1],
+                c=_ramp(color)(fraction[rest]), s=sizes[rest],
+                alpha=np.clip(fraction[rest], 0.15, 1.0),
+                rasterized=rasterized, edgecolors="none",
+            )
+        # Drawn after the ramp so a highlighted cell is never buried under a
+        # default-coloured neighbour.
+        colors = _celltype_colors(wanted, palette) if wanted else {}
+        for name in wanted:
+            hit = visible & (labels == name)
+            if not hit.any():
+                continue
+            drawn = order[hit[order]]
+            ax.scatter(
+                coords[drawn, 0], coords[drawn, 1], color=colors[name],
+                s=sizes[drawn],
+                # Floored higher than the ramp path: a categorical hue has to
+                # stay identifiable, and at alpha 0.15 two palette entries are
+                # indistinguishable from each other.
+                alpha=np.clip(fraction[drawn], 0.45, 1.0),
+                label=str(name), rasterized=rasterized, edgecolors="none",
+            )
+        if wanted and show_legend and ax.get_legend_handles_labels()[1]:
+            legend = ax.legend(
+                fontsize=8, loc="upper left", bbox_to_anchor=(1.01, 1.0),
+                frameon=False, markerscale=1.5,
+            ) if len(wanted) > 5 else ax.legend(
+                fontsize=10, loc="lower right", frameon=False, markerscale=1.5
+            )
+            for text in legend.get_texts():
+                text.set_color("white")
+
         label = _MODE_LABELS[mode] + (" (log1p)" if log else "")
         if ax_bar is not None:
-            _scale_bar(ax_bar, low, high, color, size_min, size_max, label)
+            # Label the bar in data units; `low`/`high` are on whatever scale
+            # the ramp used, which the reader never sees.
+            ends = (float(np.expm1(low)), float(np.expm1(high))) if log else (low, high)
+            bar_label = _MODE_BAR_LABELS.get(mode, _MODE_LABELS[mode]) + (
+                " (log1p)" if log else ""
+            )
+            _scale_bar(ax_bar, *ends, color, size_min, size_max, bar_label)
 
     ax.set_aspect("equal")
     ax.grid(False)

@@ -563,3 +563,137 @@ def test_activity_survives_the_npz_round_trip(tmp_path, draws, observations):
                           return_activity=True, verbose=False)
     with np.load(m.write_npz(tmp_path / "cn.npz"), allow_pickle=True) as h:
         np.testing.assert_allclose(h["activity"], m.activity)
+
+
+# ---- activity normalised by the negative-control reference ----------------- #
+
+
+def test_a_constant_baseline_reduces_to_a_plain_division(draws):
+    """With ``b`` fixed across draws, ``E[X/b] = E[X]/b`` -- exactly, not nearly.
+
+    This is the one case where the per-draw and two-stage forms must agree, so it
+    pins the arithmetic without the draw-to-draw variation obscuring it.
+    """
+    idx = np.repeat(np.arange(N_GROUP), 4)
+    cre_idx = np.tile(np.arange(4), N_GROUP)
+    t7 = np.tile(np.array([0, 2, 5, 9]), N_GROUP)
+    cre = np.tile(np.array([0, 1, 3, 7]), N_GROUP)
+    offsets = np.array([0.4, -0.7, 1.1])[:N_GROUP]
+    log_baseline = np.tile(offsets, (N_DRAW, 1))
+
+    got = posterior_k_moments(t7, cre, idx, cre_idx, draws, KMAX,
+                              log_baseline=log_baseline)
+    np.testing.assert_allclose(
+        got.activity_normalized, got.activity / np.exp(offsets[idx]), rtol=1e-12
+    )
+
+
+def test_the_ratio_is_formed_inside_the_draw_not_after(draws, rng):
+    """A draw-varying baseline must NOT equal activity / mean(baseline).
+
+    ``gamma`` and ``b`` share the scale factors that make either one arbitrary,
+    so their per-draw ratio is a different -- and better determined -- quantity
+    than the ratio of their averages. If this ever passes, the division has
+    silently moved outside the draw loop.
+    """
+    idx = np.repeat(np.arange(N_GROUP), 4)
+    cre_idx = np.tile(np.arange(4), N_GROUP)
+    t7 = np.tile(np.array([0, 2, 5, 9]), N_GROUP)
+    cre = np.tile(np.array([0, 1, 3, 7]), N_GROUP)
+    log_baseline = rng.normal(0.2, 0.8, size=(N_DRAW, N_GROUP))
+
+    got = posterior_k_moments(t7, cre, idx, cre_idx, draws, KMAX,
+                              log_baseline=log_baseline)
+    two_stage = got.activity / np.exp(log_baseline).mean(axis=0)[idx]
+    assert np.all(np.isfinite(got.activity_normalized))
+    assert not np.allclose(got.activity_normalized, two_stage, rtol=1e-3)
+
+
+def test_an_ineligible_cell_type_stays_nan(draws):
+    idx = np.repeat(np.arange(N_GROUP), 3)
+    cre_idx = np.tile(np.arange(3), N_GROUP)
+    counts = np.tile(np.array([0, 2, 4]), N_GROUP)
+    log_baseline = np.zeros((N_DRAW, N_GROUP))
+    log_baseline[:, 1] = np.nan  # no eligible control reference for group 1
+
+    got = posterior_k_moments(counts, counts, idx, cre_idx, draws, KMAX,
+                              log_baseline=log_baseline)
+    assert np.all(np.isnan(got.activity_normalized[idx == 1]))
+    assert np.all(np.isfinite(got.activity_normalized[idx != 1]))
+    # The other outputs are unaffected: only the normalisation is missing.
+    assert np.isfinite(got.mean).all() and np.isfinite(got.activity).all()
+
+
+def test_a_mismatched_baseline_is_rejected_rather_than_broadcast(draws):
+    idx = np.zeros(3, dtype=np.int64)
+    with pytest.raises(ValueError, match="log_baseline has shape"):
+        posterior_k_moments(idx, idx, idx, idx, draws, KMAX,
+                            log_baseline=np.zeros((N_DRAW // 2, N_GROUP)))
+    with pytest.raises(ValueError, match="cell types but"):
+        posterior_k_moments(idx, idx, np.full(3, 2), idx, draws, KMAX,
+                            log_baseline=np.zeros((N_DRAW, 1)))
+
+
+def test_normalized_matrix_scatters_the_same_way_the_others_do(draws, observations):
+    """The collapse-and-scatter shortcut must carry the new field correctly.
+
+    Controls are given equal, draw-constant activity by construction, so the
+    reference is known and the whole matrix must equal activity / b.
+    """
+    t7, cre, group = observations
+    controls = CRE_NAMES[-2:]
+    control_idx = [CRE_NAMES.index(name) for name in controls]
+    flat = dict(draws)
+    flat["log_gamma"] = draws["log_gamma"].copy()
+    flat["log_gamma"][:, :, control_idx] = 0.25   # b = exp(0.25) everywhere
+
+    matrix = infer_copy_number(
+        t7, cre, group, flat, kmax=KMAX, cre_names=CRE_NAMES,
+        return_activity=True, return_activity_normalized=True,
+        negative_control_cre=controls, negative_control_t7_threshold=0.0,
+        verbose=False,
+    )
+    assert matrix.activity_normalized.shape == matrix.copies.shape
+    np.testing.assert_allclose(
+        matrix.activity_normalized, matrix.activity / np.exp(0.25), rtol=2e-6
+    )
+
+
+def test_a_cell_type_below_the_t7_threshold_is_nan_across_the_row(draws, observations):
+    t7, cre, group = observations
+    controls = CRE_NAMES[-2:]
+    # Nothing reaches a pooled control T7 this high, so no cell type qualifies.
+    matrix = infer_copy_number(
+        t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+        return_activity_normalized=True, negative_control_cre=controls,
+        negative_control_t7_threshold=1e9, verbose=False,
+    )
+    assert np.all(np.isnan(matrix.activity_normalized))
+    assert np.isfinite(matrix.copies).all()
+
+
+def test_normalization_needs_controls_and_reports_unknown_ones(draws, observations):
+    t7, cre, group = observations
+    with pytest.raises(ValueError, match="needs negative_control_cre"):
+        infer_copy_number(t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+                          return_activity_normalized=True, verbose=False)
+    with pytest.raises(ValueError, match="not columns of the fit"):
+        infer_copy_number(t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+                          return_activity_normalized=True,
+                          negative_control_cre=["CRE999"], verbose=False)
+
+
+def test_normalized_activity_survives_the_npz_round_trip(tmp_path, draws, observations):
+    t7, cre, group = observations
+    m = infer_copy_number(
+        t7, cre, group, draws, kmax=KMAX, cre_names=CRE_NAMES,
+        return_activity_normalized=True, negative_control_cre=CRE_NAMES[-2:],
+        negative_control_t7_threshold=0.0, verbose=False,
+    )
+    assert m.activity is None
+    with pytest.raises(ValueError, match="return_activity_normalized"):
+        m.matrix("activity")
+    with np.load(m.write_npz(tmp_path / "cn.npz"), allow_pickle=True) as h:
+        np.testing.assert_allclose(
+            h["activity_normalized"], m.matrix("activity_normalized")
+        )

@@ -250,9 +250,14 @@ plot_spatial(data, "cre", cre="CRE155")             # raw enhancer counts
 plot_spatial(data, "t7", cre="CRE155")              # raw constitutive counts
 plot_spatial(data, "copy_number", cre="CRE155", copies=copies, log=True)
 plot_spatial(data, "activity", cre="CRE155", copies=copies)   # cCRE / E[k]
+
+# Any value mode: colour by cell-type identity instead of by value. Size (and
+# opacity) still track the value, so one figure answers "how much" and "where".
+plot_spatial(data, "activity_posterior_normalized", cre="CRE155", activity=m,
+             celltypes=["CB Granule Glut", "Oligo NN"])
 ```
 
-### Two per-cell activity estimators
+### Three per-cell activity estimators
 
 Both answer "how much enhancer output per virus copy", which is what makes a cell
 that received one copy comparable to one that received thirty.
@@ -286,18 +291,82 @@ plot_spatial(data, "activity", cre="CRE007", copies=m)              # moment
 plot_spatial(data, "activity_posterior", cre="CRE007", activity=m)  # posterior
 ```
 
-A third option not implemented: `cre · E[1/k]` instead of `cre / E[k]` fixes a
+`activity_posterior_normalized` — the same posterior activity divided by the cell
+type's **negative-control reference**, so **1 is background**. `gamma` has no
+absolute scale (it is set jointly by the infection rate and the library
+abundance), which means a raw activity map partly shows which cell types capture
+better. Dividing by the controls of the *same* cell type removes that and puts
+every cell on the fold-change scale the published calls use:
+
+```
+log b[d, s] = mean_{j' ∈ controls(s)} log_gamma[d, s, j']     # geometric mean
+R_ij        = E_d[ (gamma[d,s,j] / b[d,s]) · E[G | cre, k] ]  # divided per draw
+```
+
+Two things are load-bearing. The reference is the mean of *logs* — the geometric
+mean — because that is the centre a log contrast is symmetric about and what the
+published tables used; a corollary is that no individual control's target is 1,
+only their geometric mean is. And the division happens **inside** each posterior
+draw: `gamma` and `b` share the scale factors that make either one arbitrary, so
+their ratio is far better determined than either term (on the production fit the
+per-draw and two-stage forms differ by 0.8% at the median, up to 17%).
+
+`baystarrfish.stats.negative_control_log_baseline` builds that reference and is
+the same code `negative_control_test` uses, so a map and the table beside it
+cannot disagree about what background means. Cell types whose pooled control T7
+falls below the threshold (50, as published) have no reference and come back
+`NaN` — on the old dataset that is 44 of 328 subclasses eligible, covering
+289,802 of 408,621 cells; the rest stay grey rather than being scored against a
+background the data cannot support.
+
+```python
+m = infer_copy_number_from_fit(data, fit_dir, return_activity_normalized=True)
+plot_spatial(data, "activity_posterior_normalized", cre="CRE007", activity=m)
+```
+
+**Calibration.** Running each estimator on the 7 control columns and comparing
+the cell-mean of `R` against its parameter-level target (`E_d[gamma/b]`, *not* 1)
+gives, on rows with at least 10 control counts: conjugate 0.994, moment
+ratio-of-sums 0.975 — both unbiased. But the moment estimator's *mean of
+per-cell ratios* is **0.070**, because the median fraction of cCRE-positive cells
+is 0.0007 and a cell with `cre = 0` contributes exactly 0. So `R = 1` is
+background only for the conjugate estimator at the individual-cell level; that is
+why only that mode anchors its colour ramp at 1, and why the moment map is left
+un-normalised.
+
+A fourth option not implemented: `cre · E[1/k]` instead of `cre / E[k]` fixes a
 Jensen bias in the moment estimator (it is low by ~8% at the median, up to 23%,
 always low). Ranking is unaffected — Spearman 0.9999 — so it matters only for
-absolute values.
+absolute values. A per-*cell* background (dividing by that cell's own control
+reads) is not implemented either, and would need a refit: each `(cell, cCRE)`
+pair has an independent `G` in the model, so a cell's control reads carry no
+information about its target pair without a shared per-cell factor. Even as a
+deliberate plug-in it fails — with `phi_cre ≈ 0.0124`, `E[1/G]` needs
+`phi + controls > 1` and most cells have zero control reads, so the mean does not
+exist.
 
 Every mode draws **all** cells first as small grey dots, so the section outline
 is always visible and a sparse signal is never mistaken for a sparse tissue. The
 three value modes then overlay the cells carrying signal, encoding magnitude
 three ways at once — dot size, opacity and colour — because on black at the dot
 sizes a 400,000-cell section forces, one channel is not enough. Each value mode
-has its own hue (cCRE red, T7 cyan, copy number amber) so the maps stay
+has its own hue (cCRE red, T7 cyan, copy number amber, moment activity green,
+posterior activity teal, normalised activity orchid) so the maps stay
 distinguishable when cropped out of their titles.
+
+To render one map from a fit without recomputing the full matrix:
+
+```bash
+python revision/run_Bayes/plot_spatial_cre.py \
+    --fit-dir revision/Bayes_OldData/bayesian \
+    --cre CRE007 --mode activity_posterior_normalized \
+    --outdir revision/Bayes_OldData/visualization
+```
+
+That reconstructs only the requested cCRE plus the negative-control columns —
+exact, because pairs are conditionally independent given the parameters and the
+collapse is keyed on `(cell type, cCRE, t7, cre)` — which turns a ~25 minute
+whole-matrix pass into a couple of minutes.
 
 Conventions follow `STARRFISH.utils.STARRFISH.plot_gene` — black facecolor, grey
 background at size 3, values from 5 to 30, alpha ramp, equal aspect, no ticks,

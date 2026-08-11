@@ -51,6 +51,8 @@ from .posterior_k import posterior_k_moments
 
 __all__ = [
     "CopyNumberMatrix",
+    "DEFAULT_CONTROL_T7_THRESHOLD",
+    "MATRIX_NAMES",
     "MissingPosteriorSites",
     "REQUIRED_POSTERIOR_SITES",
     "infer_copy_number",
@@ -67,6 +69,13 @@ _REQUIRED_SCALARS = ("beta_t7", "phi_t7", "phi_cre")
 #: Present only for a ``copy_number_dropout`` fit; omitting them where they exist
 #: silently evaluates the wrong model, so they are carried through when found.
 _OPTIONAL_SCALARS = ("p_drop_t7", "p_drop_cre")
+
+#: Every matrix a :class:`CopyNumberMatrix` can carry.
+MATRIX_NAMES = ("copies", "sd", "p_infected", "activity", "activity_normalized")
+
+#: Pooled control T7 a cell type needs before it gets a background reference.
+#: 50 is the threshold behind the published ``t7_ge50`` tables.
+DEFAULT_CONTROL_T7_THRESHOLD = 50.0
 
 
 class MissingPosteriorSites(KeyError):
@@ -108,6 +117,13 @@ class CopyNumberMatrix:
         the moment estimator ``cre / E[k]`` this is a posterior of a quantity the
         model contains, shrinks toward the cell-type activity when evidence is
         thin, and stays finite at ``cre = 0``.
+    activity_normalized : (n_cells, n_cre) or None
+        The same activity divided, inside each posterior draw, by the cell type's
+        negative-control reference -- so **1 is background** and the value is a
+        per-cell fold change on the scale the published calls use. ``NaN`` for
+        cells whose cell type has no eligible control reference; those are not
+        missing values to be filled but cell types the data cannot place against
+        a background, and every plotting path leaves them grey.
     """
 
     copies: np.ndarray
@@ -119,6 +135,7 @@ class CopyNumberMatrix:
     kmax: int
     level: str
     infection_model: str
+    activity_normalized: np.ndarray | None = None
 
     @property
     def n_cells(self) -> int:
@@ -129,17 +146,18 @@ class CopyNumberMatrix:
         return int(self.copies.shape[1])
 
     def matrix(self, which: str = "copies") -> np.ndarray:
-        """One of ``"copies"``, ``"sd"``, ``"p_infected"``, ``"activity"``."""
-        if which not in {"copies", "sd", "p_infected", "activity"}:
+        """One of ``"copies"``, ``"sd"``, ``"p_infected"``, ``"activity"``,
+        ``"activity_normalized"``."""
+        if which not in MATRIX_NAMES:
             raise ValueError(
-                f"unknown matrix {which!r}; expected 'copies', 'sd', "
-                "'p_infected' or 'activity'"
+                f"unknown matrix {which!r}; expected one of {list(MATRIX_NAMES)}"
             )
         value = getattr(self, which)
         if value is None:
             raise ValueError(
                 f"{which!r} was not computed; pass return_sd / "
-                "return_probability / return_activity to infer_copy_number"
+                "return_probability / return_activity / "
+                "return_activity_normalized to infer_copy_number"
             )
         return value
 
@@ -200,6 +218,10 @@ class CopyNumberMatrix:
             payload["p_infected"] = np.asarray(self.p_infected, dtype=np.float32)
         if self.activity is not None:
             payload["activity"] = np.asarray(self.activity, dtype=np.float32)
+        if self.activity_normalized is not None:
+            payload["activity_normalized"] = np.asarray(
+                self.activity_normalized, dtype=np.float32
+            )
         if self.obs_names is not None:
             payload["obs_names"] = np.asarray(self.obs_names, dtype=object)
         np.savez_compressed(path, **payload)
@@ -345,6 +367,82 @@ def _warn_if_truncated(
         )
 
 
+def _control_log_baseline(
+    draws: Mapping[str, np.ndarray],
+    t7: np.ndarray,
+    group_index: np.ndarray,
+    cre_index: np.ndarray,
+    negative_control_cre: Sequence[str],
+    *,
+    t7_threshold: float,
+    sd_multiplier: float,
+    verbose: bool,
+) -> np.ndarray:
+    """``log b[d, s]`` for the (already thinned) draws, from the control columns.
+
+    Built here rather than taken from the caller so it cannot be paired with a
+    different set of draws than the one it was computed from -- thinning the
+    posterior without thinning the baseline would silently mismatch the two.
+    """
+    from ..stats.baseline import negative_control_log_baseline
+
+    fit_cre = [str(name) for name in draws["cre_names"]]
+    position = {name: index for index, name in enumerate(fit_cre)}
+    unknown = [str(n) for n in negative_control_cre if str(n) not in position]
+    if unknown:
+        raise ValueError(
+            f"negative control(s) {unknown} are not columns of the fit; it "
+            f"covers {len(fit_cre)} cCREs"
+        )
+    control_fit_idx = np.array(
+        [position[str(n)] for n in negative_control_cre], dtype=np.int64
+    )
+
+    # The controls must also be present in the data, or their T7 totals -- and
+    # therefore eligibility -- cannot be evaluated.
+    fit_to_data = {int(fit): int(data) for data, fit in enumerate(cre_index)}
+    absent = [
+        str(n) for n, fit in zip(negative_control_cre, control_fit_idx)
+        if int(fit) not in fit_to_data
+    ]
+    if absent:
+        raise ValueError(
+            f"negative control(s) {absent} are in the fit but not in the data "
+            "passed here; the eligibility filter needs their T7 totals"
+        )
+    control_data_idx = np.array(
+        [fit_to_data[int(fit)] for fit in control_fit_idx], dtype=np.int64
+    )
+
+    n_groups = len(draws["group_names"])
+    t7_totals = np.zeros((n_groups, len(fit_cre)), dtype=np.float64)
+    for column, fit_column in zip(control_data_idx, control_fit_idx):
+        t7_totals[:, fit_column] = np.bincount(
+            group_index,
+            weights=np.asarray(t7[:, column], dtype=np.float64),
+            minlength=n_groups,
+        )
+
+    baseline = negative_control_log_baseline(
+        draws["log_gamma"],
+        control_fit_idx,
+        t7_totals=t7_totals,
+        t7_threshold=t7_threshold,
+        control_sd_multiplier=sd_multiplier,
+    )
+    if verbose:
+        present = np.unique(group_index)
+        eligible = int(baseline.eligible[present].sum())
+        covered = int(np.isin(group_index, present[baseline.eligible[present]]).sum())
+        log(
+            f"[copies] control reference: {len(negative_control_cre)} controls, "
+            f"pooled T7 >= {t7_threshold:g} -> {eligible}/{len(present)} cell types "
+            f"eligible, covering {covered:,}/{len(group_index):,} cells "
+            "(the rest are NaN)"
+        )
+    return baseline.log_reference
+
+
 def infer_copy_number(
     t7: np.ndarray,
     cre: np.ndarray,
@@ -357,6 +455,10 @@ def infer_copy_number(
     return_sd: bool = False,
     return_probability: bool = False,
     return_activity: bool = False,
+    return_activity_normalized: bool = False,
+    negative_control_cre: Sequence[str] | None = None,
+    negative_control_t7_threshold: float = DEFAULT_CONTROL_T7_THRESHOLD,
+    negative_control_sd_multiplier: float = 0.0,
     chunk: int = 400,
     max_draws: int | None = None,
     dtype=np.float32,
@@ -390,6 +492,20 @@ def infer_copy_number(
         extra matrix is another ``n_cells x n_cre`` array.
     return_activity
         Also return the posterior mean per-cell activity. Same cost and caveat.
+    return_activity_normalized
+        Also return that activity divided by the cell type's negative-control
+        reference, so 1 is background. Requires ``negative_control_cre``.
+    negative_control_cre
+        Names of the negative-control cCREs. These must be the controls the fit
+        was run with -- :func:`infer_copy_number_from_fit` reads them from the
+        manifest so they cannot disagree.
+    negative_control_t7_threshold
+        Pooled control T7 a cell type needs before it gets a reference; cell
+        types below it come back ``NaN`` rather than being scored against a
+        background the data cannot support. Defaults to the published 50.
+    negative_control_sd_multiplier
+        Raise the reference by this many control standard deviations for a
+        stricter background. 0 reproduces the published mean-control reference.
     dtype
         Output dtype. float32 halves a 636 MB matrix and is far finer than the
         posterior is sharp.
@@ -415,6 +531,23 @@ def infer_copy_number(
     draws = _thin_draws(draws, max_draws, verbose=verbose)
     _warn_if_truncated(draws, kmax, group_index, cre_index)
 
+    log_baseline = None
+    if return_activity_normalized:
+        if negative_control_cre is None:
+            raise ValueError(
+                "return_activity_normalized needs negative_control_cre -- the "
+                "activity is on an arbitrary scale until it is divided by the "
+                "controls' geometric mean, so there is no sensible default"
+            )
+        # After thinning, so the baseline and the draws it divides are the same
+        # posterior samples.
+        log_baseline = _control_log_baseline(
+            draws, t7, group_index, cre_index, negative_control_cre,
+            t7_threshold=negative_control_t7_threshold,
+            sd_multiplier=negative_control_sd_multiplier,
+            verbose=verbose,
+        )
+
     # 1. Baseline: the all-zero observation, once per (cell type, cCRE). Only over
     #    the cell types and cCREs this data actually contains -- a fit covers 328
     #    subclasses and 389 cCREs, and a section or a subsample may use far fewer.
@@ -428,7 +561,8 @@ def infer_copy_number(
     grid_group, grid_cre = np.meshgrid(present_groups, present_cres, indexing="ij")
     zeros = np.zeros(grid_group.size, dtype=np.int64)
     baseline = posterior_k_moments(
-        zeros, zeros, grid_group.ravel(), grid_cre.ravel(), draws, kmax, chunk=chunk
+        zeros, zeros, grid_group.ravel(), grid_cre.ravel(), draws, kmax,
+        chunk=chunk, log_baseline=log_baseline,
     )
     shape = (len(present_groups), len(present_cres))
     baseline_mean = baseline.mean.reshape(shape)
@@ -445,6 +579,12 @@ def infer_copy_number(
         baseline.activity.reshape(shape)[np.ix_(group_slot, cre_slot)].astype(dtype, copy=True)
         if return_activity else None
     )
+    activity_normalized = (
+        baseline.activity_normalized.reshape(shape)[
+            np.ix_(group_slot, cre_slot)
+        ].astype(dtype, copy=True)
+        if return_activity_normalized else None
+    )
 
     rows, cols = np.nonzero((t7 > 0) | (cre > 0))
     if len(rows):
@@ -458,7 +598,8 @@ def infer_copy_number(
                 f"{len(unique):,} unique (cell type, cCRE, t7, cre) patterns"
             )
         moments = posterior_k_moments(
-            unique[:, 2], unique[:, 3], unique[:, 0], unique[:, 1], draws, kmax, chunk=chunk
+            unique[:, 2], unique[:, 3], unique[:, 0], unique[:, 1], draws, kmax,
+            chunk=chunk, log_baseline=log_baseline,
         )
         copies[rows, cols] = moments.mean[inverse].astype(dtype)
         if sd is not None:
@@ -467,6 +608,10 @@ def infer_copy_number(
             p_infected[rows, cols] = moments.p_infected[inverse].astype(dtype)
         if activity is not None:
             activity[rows, cols] = moments.activity[inverse].astype(dtype)
+        if activity_normalized is not None:
+            activity_normalized[rows, cols] = (
+                moments.activity_normalized[inverse].astype(dtype)
+            )
     elif verbose:
         log("[copies] no nonzero observations; every pair is at the baseline")
 
@@ -481,6 +626,7 @@ def infer_copy_number(
         sd=sd,
         p_infected=p_infected,
         activity=activity,
+        activity_normalized=activity_normalized,
         obs_names=None if obs_names is None else np.asarray(obs_names, dtype=object),
         cre_names=[str(name) for name in cre_names],
         kmax=int(kmax),
@@ -497,6 +643,10 @@ def infer_copy_number_from_fit(
     return_sd: bool = False,
     return_probability: bool = False,
     return_activity: bool = False,
+    return_activity_normalized: bool = False,
+    negative_control_cre: Sequence[str] | None = None,
+    negative_control_t7_threshold: float = DEFAULT_CONTROL_T7_THRESHOLD,
+    negative_control_sd_multiplier: float = 0.0,
     chunk: int = 400,
     max_draws: int | None = None,
     dtype=np.float32,
@@ -504,15 +654,19 @@ def infer_copy_number_from_fit(
 ) -> CopyNumberMatrix:
     """Infer the copy-number matrix for ``data`` under a fit on disk.
 
-    ``kmax``, the cell-type granularity and the infection model are read from the
-    fit's manifest, so the reconstruction cannot silently disagree with the model
-    that produced the posterior.
+    ``kmax``, the cell-type granularity, the infection model and the negative
+    controls are read from the fit's manifest, so the reconstruction cannot
+    silently disagree with the model that produced the posterior.
 
     Parameters
     ----------
     data : CountData
         Must be assembled the same way the fit was -- same blacklist, same
         section -- or the axis alignment raises.
+    negative_control_cre
+        Overrides the manifest's ``annotated_negative_control_cre``. Only pass
+        this to answer a deliberate "what if the reference were different"
+        question; the default is what the fit and the published tables used.
     """
     draws, manifest = load_copy_number_draws(fit_dir, tag)
     config = manifest.get("config", {})
@@ -524,6 +678,17 @@ def infer_copy_number_from_fit(
         )
     level = config.get("level", "subclass")
     labels = data.class_ if level == "class" else data.subclass
+
+    controls = negative_control_cre
+    if controls is None:
+        controls = config.get("annotated_negative_control_cre")
+    if return_activity_normalized and not controls:
+        raise KeyError(
+            f"{fit_dir} manifest records no 'annotated_negative_control_cre', so "
+            "the background reference cannot be reconstructed from the fit. Pass "
+            "negative_control_cre= explicitly if you know which cCREs it used."
+        )
+
     return infer_copy_number(
         data.t7,
         data.cre,
@@ -535,6 +700,10 @@ def infer_copy_number_from_fit(
         return_sd=return_sd,
         return_probability=return_probability,
         return_activity=return_activity,
+        return_activity_normalized=return_activity_normalized,
+        negative_control_cre=controls,
+        negative_control_t7_threshold=negative_control_t7_threshold,
+        negative_control_sd_multiplier=negative_control_sd_multiplier,
         chunk=chunk,
         max_draws=max_draws,
         dtype=dtype,
@@ -575,11 +744,22 @@ def _main(argv: Sequence[str] | None = None) -> int:
                         help="also compute P(k >= 1 | obs), the infection probability")
     parser.add_argument("--with-activity", action="store_true",
                         help="also compute the posterior mean per-cell activity")
+    parser.add_argument("--with-activity-normalized", action="store_true",
+                        help="also compute that activity divided by the cell "
+                             "type's negative-control reference, so 1 is "
+                             "background; NaN where no reference is eligible")
+    parser.add_argument("--negative-control-t7-threshold", type=float,
+                        default=DEFAULT_CONTROL_T7_THRESHOLD,
+                        help="pooled control T7 a cell type needs before it gets "
+                             "a background reference (default: the published 50)")
+    parser.add_argument("--negative-control-sd-multiplier", type=float, default=0.0,
+                        help="raise the reference by this many control SDs for a "
+                             "stricter background (default 0 = the mean control)")
     parser.add_argument("--csv", type=Path, default=None,
                         help="also write CSVs with this stem, e.g. out/k -> "
                              "out/k_copies.csv.gz")
     parser.add_argument("--csv-which", nargs="+", default=["copies"],
-                        choices=["copies", "sd", "p_infected", "activity"],
+                        choices=list(MATRIX_NAMES),
                         help="which matrices to write as CSV (default: the "
                              "posterior mean only -- each is ~1.3 GB of text)")
     parser.add_argument("--csv-decimals", type=int, default=5)
@@ -601,6 +781,9 @@ def _main(argv: Sequence[str] | None = None) -> int:
         data, args.fit_dir, tag=args.tag, return_sd=args.with_sd,
         return_probability=args.with_probability,
         return_activity=args.with_activity,
+        return_activity_normalized=args.with_activity_normalized,
+        negative_control_t7_threshold=args.negative_control_t7_threshold,
+        negative_control_sd_multiplier=args.negative_control_sd_multiplier,
         chunk=args.chunk, max_draws=args.max_draws,
     )
     path = matrix.write_npz(args.out)

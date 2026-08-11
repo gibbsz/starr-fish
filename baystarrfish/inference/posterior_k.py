@@ -48,12 +48,18 @@ class PosteriorKMoments(NamedTuple):
     ``activity`` is the posterior mean per-cell enhancer activity -- see
     :func:`posterior_k_moments` for the derivation. It is a posterior of a
     quantity the model contains, not a ratio formed after the fact.
+
+    ``activity_normalized`` is that same activity divided by the cell type's
+    negative-control reference, so 1 is background. ``None`` unless a
+    ``log_baseline`` was supplied; ``NaN`` for cell types that have no eligible
+    reference.
     """
 
     mean: np.ndarray
     sd: np.ndarray
     p_infected: np.ndarray
     activity: np.ndarray
+    activity_normalized: np.ndarray | None = None
 
 
 def nb2_logpmf(count, mean, conc):
@@ -98,6 +104,7 @@ def posterior_k_moments(
     kmax: int,
     *,
     chunk: int = 400,
+    log_baseline: np.ndarray | None = None,
 ) -> PosteriorKMoments:
     """Posterior summaries of ``k`` and of the per-cell activity, over draws.
 
@@ -136,6 +143,17 @@ def posterior_k_moments(
         the normalisation and therefore the answer.
     chunk
         Pairs per block. Peak memory is ``n_draws x chunk x (kmax + 1)``.
+    log_baseline : (n_draws, n_groups), optional
+        ``log b[d, s]``, the per-draw negative-control reference from
+        :func:`baystarrfish.stats.negative_control_log_baseline`. Supplying it
+        also returns ``activity_normalized``, the activity divided by that
+        reference **inside each draw**, so 1 means "this cell behaves like the
+        average control of its cell type". Dividing per draw rather than
+        afterwards matters because ``gamma`` and ``b`` share the scale factors
+        that make either one arbitrary, so their ratio is much better determined
+        than either term; it must therefore be thinned with the draws it
+        accompanies, which is why :func:`infer_copy_number` builds it internally
+        rather than taking it from the caller.
     """
     rho, a, log_gamma = draws["rho"], draws["a"], draws["log_gamma"]
     beta, phi_t7, phi_cre = draws["beta_t7"], draws["phi_t7"], draws["phi_cre"]
@@ -149,6 +167,24 @@ def posterior_k_moments(
     sd = np.empty(n_pairs, dtype=np.float64)
     p_infected = np.empty(n_pairs, dtype=np.float64)
     activity = np.empty(n_pairs, dtype=np.float64)
+
+    activity_normalized = None
+    if log_baseline is not None:
+        log_baseline = np.asarray(log_baseline, dtype=np.float64)
+        n_draws = len(np.asarray(beta))
+        if log_baseline.ndim != 2 or log_baseline.shape[0] != n_draws:
+            raise ValueError(
+                f"log_baseline has shape {log_baseline.shape}; expected "
+                f"({n_draws}, n_groups) matching the draws given here. A baseline "
+                "built before the draws were thinned pairs the wrong reference "
+                "with each draw and fails silently."
+            )
+        if log_baseline.shape[1] <= int(np.max(group_idx, initial=-1)):
+            raise ValueError(
+                f"log_baseline covers {log_baseline.shape[1]} cell types but "
+                f"group_idx reaches {int(np.max(group_idx, initial=-1))}"
+            )
+        activity_normalized = np.empty(n_pairs, dtype=np.float64)
 
     def _per_draw(value):
         return None if value is None else np.asarray(value)[:, None, None]
@@ -196,9 +232,22 @@ def posterior_k_moments(
         # correctly returns gamma itself -- no counts, so the prior stands.
         phi = phi_cre[:, None, None]
         posterior_g = (phi + cre_block) / (phi + k * gamma)
-        activity[block] = ((weights * posterior_g).sum(axis=-1) * gamma[:, :, 0]).mean(axis=0)
+        expected_g = (weights * posterior_g).sum(axis=-1)          # (D, C)
+        activity[block] = (expected_g * gamma[:, :, 0]).mean(axis=0)
+
+        if activity_normalized is not None:
+            # gamma / b[d, s] formed inside the draw, then averaged -- not the
+            # average activity over the average baseline. NaN columns (cell types
+            # with no eligible control reference) propagate here by design.
+            activity_normalized[block] = (
+                expected_g * gamma[:, :, 0] * np.exp(-log_baseline[:, s])
+            ).mean(axis=0)
     return PosteriorKMoments(
-        mean=mean, sd=sd, p_infected=p_infected, activity=activity
+        mean=mean,
+        sd=sd,
+        p_infected=p_infected,
+        activity=activity,
+        activity_normalized=activity_normalized,
     )
 
 

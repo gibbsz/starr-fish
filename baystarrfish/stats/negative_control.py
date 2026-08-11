@@ -27,6 +27,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .baseline import negative_control_log_baseline
 from .fdr import bh_fdr
 
 __all__ = ["negative_control_test"]
@@ -75,37 +76,26 @@ def negative_control_test(
     """
     if control_sd_multiplier < 0:
         raise ValueError("control_sd_multiplier must be non-negative")
+    # The reference is built by the module the per-cell normalised activity also
+    # uses, so a map and the table it accompanies cannot disagree about what
+    # "background" means.
+    baseline = negative_control_log_baseline(
+        log_gamma,
+        control_indices,
+        t7_totals=t7_totals,
+        t7_threshold=t7_threshold,
+        individual_control_t7_threshold=individual_control_t7_threshold,
+        control_sd_multiplier=control_sd_multiplier,
+    )
     records = []
     for group_idx, group in enumerate(groups):
-        control_t7 = t7_totals[group_idx, control_indices]
-        if individual_control_t7_threshold is None:
-            selected_control_indices = control_indices
-            control_reference_passes = float(control_t7.sum()) >= t7_threshold
-        else:
-            selected_control_indices = control_indices[
-                control_t7 >= individual_control_t7_threshold
-            ]
-            control_reference_passes = len(selected_control_indices) > 0
-        if not control_reference_passes:
+        if not baseline.eligible[group_idx]:
             continue
-
-        control_draws = log_gamma[:, group_idx, selected_control_indices].astype(
-            np.float64, copy=False
-        )
-        mean_control_draws = control_draws.mean(axis=1)
-        if control_sd_multiplier > 0 and control_draws.shape[1] < 2:
-            raise ValueError(
-                "At least two selected negative controls are required for an SD reference"
-            )
-        control_sd_draws = (
-            control_draws.std(axis=1, ddof=1)
-            if control_draws.shape[1] >= 2
-            else np.zeros(control_draws.shape[0], dtype=np.float64)
-        )
-        control_reference_draws = (
-            mean_control_draws + control_sd_multiplier * control_sd_draws
-        )
-        control_t7_total = float(control_t7.sum())
+        selected_control_indices = baseline.control_indices[group_idx]
+        mean_control_draws = baseline.log_mean[:, group_idx]
+        control_sd_draws = baseline.log_sd[:, group_idx]
+        control_reference_draws = baseline.log_reference[:, group_idx]
+        control_t7_total = float(baseline.control_t7_total[group_idx])
         eligible = t7_totals[group_idx, target_indices] >= t7_threshold
         selected_indices = target_indices[eligible]
         if len(selected_indices) == 0:
