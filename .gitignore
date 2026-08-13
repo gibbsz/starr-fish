@@ -232,4 +232,5 @@ working/
 revision/spatial_density/results
 revision/TFMotif/tests
 revision/TFMotif/resources/H14CORE-MOUSE_annotation.jsonl
+revision/spatial_variable_cre/
 REPORT.md
