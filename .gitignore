@@ -230,4 +230,6 @@ working/
 *geojson*
 *figure*
 revision/spatial_density/results
+revision/TFMotif/tests
+revision/TFMotif/resources/H14CORE-MOUSE_annotation.jsonl
 REPORT.md
