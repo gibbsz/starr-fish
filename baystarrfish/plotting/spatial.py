@@ -65,22 +65,29 @@ __all__ = [
 
 SpatialMode = Literal[
     "celltype", "cre", "t7", "copy_number", "activity", "activity_posterior",
-    "activity_posterior_normalized",
+    "activity_posterior_normalized", "activity_deviation",
 ]
 
 SPATIAL_MODES: tuple[str, ...] = (
     "celltype", "cre", "t7", "copy_number", "activity", "activity_posterior",
-    "activity_posterior_normalized",
+    "activity_posterior_normalized", "activity_deviation",
 )
 
 #: Value modes whose estimate is only cell-specific where a channel was read.
 _EVIDENCE_MODES = frozenset(
-    {"copy_number", "activity", "activity_posterior", "activity_posterior_normalized"}
+    {
+        "copy_number", "activity", "activity_posterior",
+        "activity_posterior_normalized", "activity_deviation",
+    }
 )
 
-#: Background is 1 for the normalised mode, so the ramp starts there rather than
-#: at zero: below-background cells stay dim instead of consuming half the range.
-_MODE_DEFAULT_VMIN: dict[str, float] = {"activity_posterior_normalized": 1.0}
+#: Background is 1 for the normalised and deviation modes, so the ramp starts
+#: there rather than at zero: below-background cells stay dim instead of
+#: consuming half the range.
+_MODE_DEFAULT_VMIN: dict[str, float] = {
+    "activity_posterior_normalized": 1.0,
+    "activity_deviation": 1.0,
+}
 
 #: Ramp endpoint per value mode. Distinct hues, all reading as "hot" against
 #: black, all reaching white at zero so the low end fades into the grey field.
@@ -91,6 +98,7 @@ MODE_COLORS: dict[str, str] = {
     "activity": "#9CCC65",     # derived quantity -- green, neither channel
     "activity_posterior": "#4DB6AC",  # the same quantity, shrunk -- teal
     "activity_posterior_normalized": "#CE93D8",  # on a fold-change scale -- orchid
+    "activity_deviation": "#F48FB1",  # the single-cell factor alone -- pink
 }
 
 _MODE_LABELS = {
@@ -100,17 +108,22 @@ _MODE_LABELS = {
     "activity": "inferred activity  cCRE / E[k | obs]",
     "activity_posterior": "inferred activity  posterior mean",
     "activity_posterior_normalized": "activity / negative-control mean  (1 = background)",
+    "activity_deviation": "single-cell deviation  E[G]  (1 = the cell type's own activity)",
 }
 
 #: The scale bar sits in a narrow centred column, so a long label collides with
 #: the min/max numbers either side of it. Only modes that overflow need an entry.
-_MODE_BAR_LABELS = {"activity_posterior_normalized": "activity / control mean"}
+_MODE_BAR_LABELS = {
+    "activity_posterior_normalized": "activity / control mean",
+    "activity_deviation": "deviation from cell type",
+}
 
 #: Which ``CopyNumberMatrix`` field each value mode reads.
 _MODE_ATTRIBUTES = {
     "copy_number": "copies",
     "activity_posterior": "activity",
     "activity_posterior_normalized": "activity_normalized",
+    "activity_deviation": "deviation",
 }
 
 

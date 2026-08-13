@@ -53,6 +53,15 @@ class PosteriorKMoments(NamedTuple):
     negative-control reference, so 1 is background. ``None`` unless a
     ``log_baseline`` was supplied; ``NaN`` for cell types that have no eligible
     reference.
+
+    ``deviation`` is ``E[G | cre, k]`` on its own -- the *single-cell* factor of
+    the activity, before it is multiplied by the cell type's ``gamma``. Since
+    ``activity = deviation * gamma`` and ``gamma`` is constant within a cell
+    type, this is the only part of the activity that varies cell to cell, and it
+    is the quantity to use when the cell-type contribution must not be counted
+    as signal. It is 1 when the cell carries no counts and no dropout, below 1
+    when the construct is present but the reporter is not seen, above 1 when the
+    reporter is seen more than the cell type predicts.
     """
 
     mean: np.ndarray
@@ -60,6 +69,7 @@ class PosteriorKMoments(NamedTuple):
     p_infected: np.ndarray
     activity: np.ndarray
     activity_normalized: np.ndarray | None = None
+    deviation: np.ndarray | None = None
 
 
 def nb2_logpmf(count, mean, conc):
@@ -129,6 +139,12 @@ def posterior_k_moments(
     rather than a hard zero, which is the difference between "silent" and
     "no information").
 
+    ``E[G]`` is also returned on its own as ``deviation``. The activity factorises
+    as ``deviation * gamma``, and only the first factor varies within a cell type,
+    so an analysis that must not credit cell-type identity as signal -- a spatial
+    one, say, where cell types are themselves spatially arranged -- wants that
+    factor rather than the activity.
+
     Parameters
     ----------
     t7, cre : (n_pairs,) observed counts.
@@ -167,6 +183,7 @@ def posterior_k_moments(
     sd = np.empty(n_pairs, dtype=np.float64)
     p_infected = np.empty(n_pairs, dtype=np.float64)
     activity = np.empty(n_pairs, dtype=np.float64)
+    deviation = np.empty(n_pairs, dtype=np.float64)
 
     activity_normalized = None
     if log_baseline is not None:
@@ -234,6 +251,10 @@ def posterior_k_moments(
         posterior_g = (phi + cre_block) / (phi + k * gamma)
         expected_g = (weights * posterior_g).sum(axis=-1)          # (D, C)
         activity[block] = (expected_g * gamma[:, :, 0]).mean(axis=0)
+        # The same factor on its own. gamma is constant within a cell type, so
+        # this is the whole of the cell-to-cell variation in the activity -- and
+        # it is free here, where expected_g already exists.
+        deviation[block] = expected_g.mean(axis=0)
 
         if activity_normalized is not None:
             # gamma / b[d, s] formed inside the draw, then averaged -- not the
@@ -248,6 +269,7 @@ def posterior_k_moments(
         p_infected=p_infected,
         activity=activity,
         activity_normalized=activity_normalized,
+        deviation=deviation,
     )
 
 

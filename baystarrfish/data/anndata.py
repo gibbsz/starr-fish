@@ -30,11 +30,26 @@ from . import paths
 __all__ = [
     "aligned_obsm_frame",
     "canonical_cre_info",
+    "normalize_celltype_labels",
     "read_and_prepare_adata",
+    "read_obs_metadata",
     "section_labels",
     "select_cre_info",
     "standardize_obs",
 ]
+
+
+def normalize_celltype_labels(labels: pd.Series) -> pd.Series:
+    """Strip the Allen numeric prefix and make ``/`` filesystem-safe.
+
+    The single definition of the label convention every fit and every
+    downstream analysis indexes groups by.
+    """
+    return (
+        labels.astype(str)
+        .str.replace(r"^\d+\s+", "", regex=True)
+        .str.replace("/", "-", regex=False)
+    )
 
 
 def standardize_obs(adata: ad.AnnData) -> None:
@@ -44,12 +59,7 @@ def standardize_obs(adata: ad.AnnData) -> None:
     if missing:
         raise KeyError(f"missing required obs columns: {sorted(missing)}")
     for source, target in (("subclass_name", "subclass"), ("class_name", "class")):
-        adata.obs[target] = (
-            adata.obs[source]
-            .astype(str)
-            .str.replace(r"^\d+\s+", "", regex=True)
-            .str.replace("/", "-", regex=False)
-        )
+        adata.obs[target] = normalize_celltype_labels(adata.obs[source])
 
 
 def canonical_cre_info(adata: ad.AnnData) -> pd.DataFrame:
@@ -136,6 +146,67 @@ def section_labels(obs_names: Iterable[str]) -> pd.Series:
         examples = names[labels.isna().to_numpy()][:5].tolist()
         raise ValueError(f"cannot assign section for obs names: {examples}")
     return labels
+
+
+def _decode(values: Iterable[bytes | str]) -> np.ndarray:
+    """HDF5 string arrays come back as ``bytes``; normalise to ``str``."""
+    return np.asarray(
+        [value.decode() if isinstance(value, bytes) else str(value) for value in values],
+        dtype=object,
+    )
+
+
+def read_obs_metadata(
+    path: Path | str | None = None,
+    *,
+    spatial_key: str = "X_spatial",
+    celltype_keys: Iterable[str] = ("subclass_name", "class_name"),
+) -> pd.DataFrame:
+    """``(obs_name, section, x, y)`` plus cell-type labels, without the counts.
+
+    Uses ``h5py`` rather than ``anndata``: even a backed read materialises every
+    ``obsm`` entry, and ``CRE``/``T7CRE``/``X_raw`` are hundreds of megabytes
+    that a spatial analysis never touches. Labels get the same normalisation
+    :func:`standardize_obs` applies, so they index exactly the groups a fit was
+    built for. ``subclass_name`` yields a ``subclass`` column, ``class_name`` a
+    ``class`` column -- the ``_name`` suffix is dropped.
+    """
+    import h5py
+
+    resolved = Path(path) if path is not None else paths.default_h5ad()
+    wanted = list(celltype_keys)
+    columns: dict[str, np.ndarray] = {}
+    with h5py.File(resolved, "r") as handle:
+        obs = handle["obs"]
+        obs_names = _decode(obs["_index"][:])
+        for key in wanted:
+            if key not in obs:
+                raise KeyError(f"{resolved} has no obs[{key!r}]; have {list(obs)}")
+            node = obs[key]
+            if not isinstance(node, h5py.Group):
+                raise TypeError(f"obs[{key!r}] is not a categorical encoding")
+            codes = np.asarray(node["codes"][:], dtype=np.int64)
+            if codes.size and codes.min() < 0:
+                raise ValueError(f"obs[{key!r}] has unassigned (-1) codes")
+            columns[key] = _decode(node["categories"][:])[codes]
+        obsm = handle["obsm"]
+        if spatial_key not in obsm:
+            raise KeyError(f"obsm[{spatial_key!r}] absent; have {list(obsm)}")
+        coords = np.asarray(obsm[spatial_key][:, :2], dtype=np.float64)
+
+    if coords.shape[0] != obs_names.size:
+        raise ValueError(
+            f"obs has {obs_names.size} rows but obsm[{spatial_key!r}] has "
+            f"{coords.shape[0]}"
+        )
+    frame = pd.DataFrame({"obs_name": obs_names})
+    for key, values in columns.items():
+        target = key[: -len("_name")] if key.endswith("_name") else key
+        frame[target] = normalize_celltype_labels(pd.Series(values)).to_numpy()
+    frame["section"] = section_labels(obs_names).to_numpy()
+    frame["x"] = coords[:, 0]
+    frame["y"] = coords[:, 1]
+    return frame
 
 
 def read_and_prepare_adata(

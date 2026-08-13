@@ -71,7 +71,9 @@ _REQUIRED_SCALARS = ("beta_t7", "phi_t7", "phi_cre")
 _OPTIONAL_SCALARS = ("p_drop_t7", "p_drop_cre")
 
 #: Every matrix a :class:`CopyNumberMatrix` can carry.
-MATRIX_NAMES = ("copies", "sd", "p_infected", "activity", "activity_normalized")
+MATRIX_NAMES = (
+    "copies", "sd", "p_infected", "activity", "activity_normalized", "deviation"
+)
 
 #: Pooled control T7 a cell type needs before it gets a background reference.
 #: 50 is the threshold behind the published ``t7_ge50`` tables.
@@ -124,6 +126,14 @@ class CopyNumberMatrix:
         cells whose cell type has no eligible control reference; those are not
         missing values to be filled but cell types the data cannot place against
         a background, and every plotting path leaves them grey.
+    deviation : (n_cells, n_cre) or None
+        The single-cell factor of the activity, ``E[G | cre, k]``, before the
+        cell type's ``gamma`` multiplies it. ``activity = deviation * gamma``,
+        and ``gamma`` is a constant within a cell type, so this carries all of
+        the cell-to-cell variation and none of the cell-type contrast. Use it
+        when cell-type identity must not be counted as signal; use ``activity``
+        or ``activity_normalized`` when it should. Unlike ``activity_normalized``
+        it is defined for every cell, because no control reference enters it.
     """
 
     copies: np.ndarray
@@ -136,6 +146,7 @@ class CopyNumberMatrix:
     level: str
     infection_model: str
     activity_normalized: np.ndarray | None = None
+    deviation: np.ndarray | None = None
 
     @property
     def n_cells(self) -> int:
@@ -147,7 +158,7 @@ class CopyNumberMatrix:
 
     def matrix(self, which: str = "copies") -> np.ndarray:
         """One of ``"copies"``, ``"sd"``, ``"p_infected"``, ``"activity"``,
-        ``"activity_normalized"``."""
+        ``"activity_normalized"``, ``"deviation"``."""
         if which not in MATRIX_NAMES:
             raise ValueError(
                 f"unknown matrix {which!r}; expected one of {list(MATRIX_NAMES)}"
@@ -157,7 +168,8 @@ class CopyNumberMatrix:
             raise ValueError(
                 f"{which!r} was not computed; pass return_sd / "
                 "return_probability / return_activity / "
-                "return_activity_normalized to infer_copy_number"
+                "return_activity_normalized / return_deviation to "
+                "infer_copy_number"
             )
         return value
 
@@ -222,6 +234,8 @@ class CopyNumberMatrix:
             payload["activity_normalized"] = np.asarray(
                 self.activity_normalized, dtype=np.float32
             )
+        if self.deviation is not None:
+            payload["deviation"] = np.asarray(self.deviation, dtype=np.float32)
         if self.obs_names is not None:
             payload["obs_names"] = np.asarray(self.obs_names, dtype=object)
         np.savez_compressed(path, **payload)
@@ -456,6 +470,7 @@ def infer_copy_number(
     return_probability: bool = False,
     return_activity: bool = False,
     return_activity_normalized: bool = False,
+    return_deviation: bool = False,
     negative_control_cre: Sequence[str] | None = None,
     negative_control_t7_threshold: float = DEFAULT_CONTROL_T7_THRESHOLD,
     negative_control_sd_multiplier: float = 0.0,
@@ -495,6 +510,10 @@ def infer_copy_number(
     return_activity_normalized
         Also return that activity divided by the cell type's negative-control
         reference, so 1 is background. Requires ``negative_control_cre``.
+    return_deviation
+        Also return the single-cell factor ``E[G | cre, k]`` alone -- the part of
+        the activity that varies within a cell type. No control reference is
+        involved, so unlike ``activity_normalized`` it is defined everywhere.
     negative_control_cre
         Names of the negative-control cCREs. These must be the controls the fit
         was run with -- :func:`infer_copy_number_from_fit` reads them from the
@@ -585,6 +604,12 @@ def infer_copy_number(
         ].astype(dtype, copy=True)
         if return_activity_normalized else None
     )
+    deviation = (
+        baseline.deviation.reshape(shape)[np.ix_(group_slot, cre_slot)].astype(
+            dtype, copy=True
+        )
+        if return_deviation else None
+    )
 
     rows, cols = np.nonzero((t7 > 0) | (cre > 0))
     if len(rows):
@@ -612,6 +637,8 @@ def infer_copy_number(
             activity_normalized[rows, cols] = (
                 moments.activity_normalized[inverse].astype(dtype)
             )
+        if deviation is not None:
+            deviation[rows, cols] = moments.deviation[inverse].astype(dtype)
     elif verbose:
         log("[copies] no nonzero observations; every pair is at the baseline")
 
@@ -627,6 +654,7 @@ def infer_copy_number(
         p_infected=p_infected,
         activity=activity,
         activity_normalized=activity_normalized,
+        deviation=deviation,
         obs_names=None if obs_names is None else np.asarray(obs_names, dtype=object),
         cre_names=[str(name) for name in cre_names],
         kmax=int(kmax),
@@ -644,6 +672,7 @@ def infer_copy_number_from_fit(
     return_probability: bool = False,
     return_activity: bool = False,
     return_activity_normalized: bool = False,
+    return_deviation: bool = False,
     negative_control_cre: Sequence[str] | None = None,
     negative_control_t7_threshold: float = DEFAULT_CONTROL_T7_THRESHOLD,
     negative_control_sd_multiplier: float = 0.0,
@@ -701,6 +730,7 @@ def infer_copy_number_from_fit(
         return_probability=return_probability,
         return_activity=return_activity,
         return_activity_normalized=return_activity_normalized,
+        return_deviation=return_deviation,
         negative_control_cre=controls,
         negative_control_t7_threshold=negative_control_t7_threshold,
         negative_control_sd_multiplier=negative_control_sd_multiplier,
@@ -748,6 +778,10 @@ def _main(argv: Sequence[str] | None = None) -> int:
                         help="also compute that activity divided by the cell "
                              "type's negative-control reference, so 1 is "
                              "background; NaN where no reference is eligible")
+    parser.add_argument("--with-deviation", action="store_true",
+                        help="also compute the single-cell factor E[G] alone -- "
+                             "the part of the activity that varies within a cell "
+                             "type, with no control reference in it")
     parser.add_argument("--negative-control-t7-threshold", type=float,
                         default=DEFAULT_CONTROL_T7_THRESHOLD,
                         help="pooled control T7 a cell type needs before it gets "
@@ -782,6 +816,7 @@ def _main(argv: Sequence[str] | None = None) -> int:
         return_probability=args.with_probability,
         return_activity=args.with_activity,
         return_activity_normalized=args.with_activity_normalized,
+        return_deviation=args.with_deviation,
         negative_control_t7_threshold=args.negative_control_t7_threshold,
         negative_control_sd_multiplier=args.negative_control_sd_multiplier,
         chunk=args.chunk, max_draws=args.max_draws,
