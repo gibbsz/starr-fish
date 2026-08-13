@@ -55,6 +55,14 @@ CRE_300_experiment2 = preprocess_experiment(
     bed_file='data/STARR-FISH_300_library.bed'
 )
 
+print("Preprocessing WTC11 ...")
+CRE_300_experiment3 = preprocess_experiment(
+    enhancer_file='data/SFv6_WTC11_D3_enhancer_cbg.csv', 
+    vector_file=None, 
+    nanopore_file='data/SFv6_300CRE_nanopore_counts',
+    bed_file='data/STARR-FISH_300_library.bed'
+)
+
 # GLM fit (same as glm.py lines 289-290)
 print("Fitting GLM (July)...")
 july_experiment = glm_fit(july_experiment, family=sm.families.Gaussian(), norm_by_total=False)
@@ -64,6 +72,8 @@ print("Fitting GLM (300CRE) 1...")
 CRE_300_experiment1 = glm_fit_total(CRE_300_experiment1, family=sm.families.Gaussian(), norm_by_vector=False, norm_by_nanopore=True, key_add='glm_fit_total_result_nanopore')
 print("Fitting GLM (300CRE) 2...")
 CRE_300_experiment2 = glm_fit_total(CRE_300_experiment2, family=sm.families.Gaussian(), norm_by_vector=False, norm_by_nanopore=True, key_add='glm_fit_total_result_nanopore')
+print("Fitting GLM (300CRE) 3...")
+CRE_300_experiment3 = glm_fit_total(CRE_300_experiment3, family=sm.families.Gaussian(), norm_by_vector=False, norm_by_nanopore=True, key_add='glm_fit_total_result_nanopore')
     
 # Extract STARR-FISH Activity values into a matrix
 # Rows = experiments ("cell types"), Columns = CREs
@@ -71,6 +81,7 @@ july_activity = july_experiment['glm_fit_result']['STARR-FISH Activity']
 sept_activity = sept_experiment['glm_fit_result']['STARR-FISH Activity']
 CRE_300_activity1 = CRE_300_experiment1['glm_fit_total_result_nanopore']['STARR-FISH Activity']*100 # Scale by 100 to match the scale of the 20CRE experiments (since they are not normalized by nanopore counts)
 CRE_300_activity2 = CRE_300_experiment2['glm_fit_total_result_nanopore']['STARR-FISH Activity']*100
+CRE_300_activity3 = CRE_300_experiment3['glm_fit_total_result_nanopore']['STARR-FISH Activity']*1000000
 
 activity_matrix_20CRE = pd.DataFrame({
     'July': july_activity,
@@ -80,7 +91,8 @@ activity_matrix_20CRE = pd.DataFrame({
 activity_matrix_300CRE = pd.DataFrame({
     '300CRE_1': CRE_300_activity1,
     '300CRE_2': CRE_300_activity2,
-}).T  # Shape: (2 experiments) x (300 CREs)
+    '300CRE_3': CRE_300_activity3,
+}).T  # Shape: (3 experiments) x (300 CREs)
 
 print(f"\nActivity matrix shape: {activity_matrix_20CRE.shape}")
 print(activity_matrix_20CRE)

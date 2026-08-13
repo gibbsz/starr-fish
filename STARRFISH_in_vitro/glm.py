@@ -22,10 +22,20 @@ def preprocess_experiment(enhancer_file, vector_file=None, nanopore_file=None, r
         vector.index = vector['masks'].astype(str) + '_' + vector['fov'].astype(str)
     else:
         # infer mask and fov from the index
-        enhancer['fov'] = enhancer.index.str.split('-').str[0]
-        enhancer['masks'] = enhancer.index.str.split('-').str[1]
-        vector['fov'] = vector.index.str.split('-').str[0]
-        vector['masks'] = vector.index.str.split('-').str[1]
+        enhancer_idx_str = enhancer.index.astype(str)
+        vector_idx_str = vector.index.astype(str)
+        if enhancer_idx_str.str.contains('-').any():
+            enhancer['fov'] = enhancer_idx_str.str.split('-').str[0]
+            enhancer['masks'] = enhancer_idx_str.str.split('-').str[1]
+        else:
+            enhancer['fov'] = enhancer_idx_str
+            enhancer['masks'] = enhancer_idx_str
+        if vector_idx_str.str.contains('-').any():
+            vector['fov'] = vector_idx_str.str.split('-').str[0]
+            vector['masks'] = vector_idx_str.str.split('-').str[1]
+        else:
+            vector['fov'] = vector_idx_str
+            vector['masks'] = vector_idx_str
     # find common index and filter
     common_index = enhancer.index.intersection(vector.index)
     enhancer = enhancer.loc[common_index]
