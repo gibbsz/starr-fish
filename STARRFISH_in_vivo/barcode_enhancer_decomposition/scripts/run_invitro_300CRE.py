@@ -15,6 +15,7 @@ import argparse
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
+import pandas as pd
 from scipy.spatial.distance import pdist, squareform
 
 from config import (
@@ -35,6 +36,25 @@ from src.motif_kernel import (
 from src.mantel import run_partial_mantel
 from src.variance_decomp import run_variance_decomposition
 from src.plotting import plot_distance_scatter, plot_all_variance
+
+
+def apply_transform(activity_df, method):
+    """Apply phenotype transform column-wise to activity matrix."""
+    if method == 'none':
+        return activity_df
+    elif method == 'log':
+        return np.log1p(activity_df)
+    elif method == 'rank':
+        from scipy.stats import norm
+        def rank_int(x):
+            mask = np.isfinite(x)
+            out = x.copy()
+            n = mask.sum()
+            ranks = pd.Series(x[mask]).rank()
+            out[mask] = norm.ppf((ranks - 0.5) / n)
+            return out
+        return activity_df.apply(rank_int, axis=0)
+
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 _INVITRO_ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -61,6 +81,8 @@ def main():
                         help="Pre-computed barcode motif matrix (optional)")
     parser.add_argument("--enhancer-motif-csv", default=INVITRO_ENHANCER_MOTIF_CSV,
                         help="Pre-computed enhancer motif matrix (optional)")
+    parser.add_argument("--transform", choices=["none", "log", "rank"], default="none",
+                        help="Phenotype transform before fitting: log (log1p), rank (inverse normal)")
     args = parser.parse_args()
 
     os.makedirs(SAVE_DIR, exist_ok=True)
@@ -68,6 +90,9 @@ def main():
     # -- Load data -----------------------------------------------------------
     print("Loading data...")
     activity = load_activity_matrix(ACTIVITY_CSV)
+    activity = apply_transform(activity, args.transform)
+    if args.transform != 'none':
+        print(f"  Applied {args.transform} transform to activity matrix.")
     seq_df = load_sequences(SEQUENCES_XLSX, SEQUENCES_SHEET, LIBRARY_FILTER)
     activity, seq_df = align_data(activity, seq_df)
 

@@ -267,6 +267,99 @@ fig1, fig2 = plot_variance_qc(df_sorted[df_sorted["cell_type"]!="All_celltypes"]
                               output_prefix="/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/STARRFISH_in_vivo/barcode_enhancer_decomposition/results/plots/invivo", show=True)
 
 # %%
+def plot_noise_vs_activity(blup_df, activity_matrix_path, cell_type=None,
+                           fig=None, ax=None, figsize=(7, 6)):
+    """
+    Scatter plot of per-construct noise proportion vs. in-vitro activity.
+
+    Args:
+        blup_df (pd.DataFrame): DataFrame from blup.csv with columns
+            'construct', 'cell_type', 'prop_noise'.
+        activity_matrix_path (str): Path to activity matrix CSV (rows = cell
+            types, columns = constructs).
+        cell_type (str | None): If given, restrict to that cell type; if None,
+            plot all cell types with separate colours.
+        fig, ax: Optional existing matplotlib Figure/Axes to draw into.
+        figsize (tuple): Figure size when fig/ax are not provided.
+
+    Returns:
+        (fig, ax, merged_df)
+    """
+    # --- 1. Load and melt activity matrix ---
+    act = pd.read_csv(activity_matrix_path, index_col=0)
+    act_long = act.reset_index().melt(
+        id_vars=act.index.name or "index",
+        var_name="construct",
+        value_name="activity"
+    )
+    act_long = act_long.rename(columns={act_long.columns[0]: "cell_type"})
+
+    # --- 2. Merge with blup_df ---
+    merged = blup_df.merge(act_long, on=["construct", "cell_type"], how="inner")
+
+    if cell_type is not None:
+        merged = merged[merged["cell_type"] == cell_type]
+
+    if merged.empty:
+        raise ValueError("No overlapping (construct, cell_type) pairs found after merge.")
+
+    # --- 3. Plot ---
+    if ax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+
+    n_celltypes = merged["cell_type"].nunique()
+    if n_celltypes == 1 or cell_type is not None:
+        sns.scatterplot(data=merged, x="activity", y="prop_noise",
+                        ax=ax, color="steelblue", alpha=0.75, s=60)
+        sns.regplot(data=merged, x="activity", y="prop_noise",
+                    scatter=False, ax=ax, color="red",
+                    line_kws={"linestyle": "--", "alpha": 0.8})
+    else:
+        sns.scatterplot(data=merged, x="activity", y="prop_noise",
+                        hue="cell_type", ax=ax, alpha=0.75, s=60)
+        for ct, grp in merged.groupby("cell_type"):
+            sns.regplot(data=grp, x="activity", y="prop_noise",
+                        scatter=False, ax=ax,
+                        line_kws={"linestyle": "--", "alpha": 0.6})
+
+    # Pearson r annotation
+    from scipy.stats import pearsonr
+    r, p = pearsonr(merged["activity"], merged["prop_noise"])
+    ax.annotate(f"r = {r:.2f}\np = {p:.3g}", xy=(0.05, 0.93),
+                xycoords="axes fraction", fontsize=10,
+                bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.7))
+
+    ax.set_xlabel("In-vitro Activity")
+    ax.set_ylabel("Noise Proportion")
+    title = "Noise vs. Activity"
+    if cell_type:
+        title += f" ({cell_type})"
+    ax.set_title(title)
+    ax.grid(True, linestyle="--", alpha=0.4)
+
+    if fig:
+        fig.tight_layout()
+
+    return fig, ax, merged
+
+
+# %% noise vs activity — 20CRE (all cell types)
+blup_20CRE = pd.read_csv("/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/STARRFISH_in_vivo/barcode_enhancer_decomposition/results/invitro_20CRE/blup.csv")
+act_20CRE_path = "/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/STARRFISH_in_vitro/results/activity_matrix_20CRE.csv"
+
+fig_nva, ax_nva, _ = plot_noise_vs_activity(blup_20CRE, act_20CRE_path)
+fig_nva.savefig("/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/STARRFISH_in_vivo/barcode_enhancer_decomposition/results/plots/invitro_20CRE_noise_vs_activity.pdf", dpi=300)
+fig_nva.show()
+
+# %% noise vs activity — 300CRE (all cell types)
+blup_300CRE = pd.read_csv("/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/STARRFISH_in_vivo/barcode_enhancer_decomposition/results/invitro_300CRE/blup.csv")
+act_300CRE_path = "/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/STARRFISH_in_vitro/results/activity_matrix_300CRE.csv"
+
+fig_nva_300, ax_nva_300, _ = plot_noise_vs_activity(blup_300CRE, act_300CRE_path)
+fig_nva_300.savefig("/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish/STARRFISH_in_vivo/barcode_enhancer_decomposition/results/plots/invitro_300CRE_noise_vs_activity.pdf", dpi=300)
+fig_nva_300.show()
+
+# %%
 # plot the violin of barcode vs enhancer variance proportion
 fig, ax = plt.subplots(figsize=(6, 6))
 df_violin = var_decomp_in_vivo.melt(id_vars=["cell_type"], value_vars=["prop_enhancer", "prop_barcode"], var_name="Component", value_name="Proportion")

@@ -11,6 +11,7 @@ import argparse
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import numpy as np
+import pandas as pd
 
 from config import (
     ACTIVITY_CSV, SEQUENCES_XLSX, SEQUENCES_SHEET, LIBRARY_FILTER,
@@ -30,6 +31,24 @@ from src.motif_kernel import (
 )
 from src.variance_decomp import run_variance_decomposition
 from src.plotting import plot_all_variance
+
+
+def apply_transform(activity_df, method):
+    """Apply phenotype transform column-wise to activity matrix."""
+    if method == 'none':
+        return activity_df
+    elif method == 'log':
+        return np.log1p(activity_df)
+    elif method == 'rank':
+        from scipy.stats import norm
+        def rank_int(x):
+            mask = np.isfinite(x)
+            out = x.copy()
+            n = mask.sum()
+            ranks = pd.Series(x[mask]).rank()
+            out[mask] = norm.ppf((ranks - 0.5) / n)
+            return out
+        return activity_df.apply(rank_int, axis=0)
 
 
 def main():
@@ -69,6 +88,8 @@ def main():
                         help="Number of parallel jobs for bootstrap (-1 = all cores)")
     parser.add_argument("--outdir",
                         default=os.path.join(RESULTS_DIR, "variance_decomp"))
+    parser.add_argument("--transform", choices=["none", "log", "rank"], default="none",
+                        help="Phenotype transform before fitting: log (log1p), rank (inverse normal)")
     args = parser.parse_args()
 
     both_strands = not args.no_both_strands
@@ -82,6 +103,11 @@ def main():
     if args.celltype_counts and os.path.exists(args.celltype_counts):
         activity = filter_celltypes_by_count(
             activity, args.celltype_counts, min_cells=args.min_cells)
+
+    # Apply phenotype transformation
+    activity = apply_transform(activity, args.transform)
+    if args.transform != 'none':
+        print(f"  Applied {args.transform} transform to activity matrix.")
 
     seq_df = load_sequences(args.sequences, args.sheet, args.library)
     activity, seq_df = align_data(activity, seq_df)
