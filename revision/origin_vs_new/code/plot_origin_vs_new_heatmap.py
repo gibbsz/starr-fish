@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -21,12 +22,22 @@ import pandas as pd
 HERE = Path(__file__).resolve()
 ANALYSIS_DIR = HERE.parent.parent
 REPO_ROOT = ANALYSIS_DIR.parents[1]
-DEFAULT_COMPARISON_DIR = ANALYSIS_DIR / "results" / "comparison"
-DEFAULT_SHARED_TESTS = (
-    DEFAULT_COMPARISON_DIR
-    / "tables"
-    / "shared_pair_mean_plus_1sd_comparison_t7_ge50.csv.gz"
+RUN_BAYES_CODE = REPO_ROOT / "revision" / "run_Bayes"
+if str(RUN_BAYES_CODE) not in sys.path:
+    sys.path.insert(0, str(RUN_BAYES_CODE))
+
+from activity_matrix_io import (  # noqa: E402
+    DEFAULT_STEM as MATRIX_STEM,
+    load_dataset,
+    shared_universe,
 )
+from baystarrfish.stats import bh_fdr  # noqa: E402
+
+DEFAULT_COMPARISON_DIR = ANALYSIS_DIR / "results" / "comparison"
+DEFAULT_TABLES = {
+    "origin": REPO_ROOT / "revision" / "Bayes_OldData" / "tables",
+    "new": REPO_ROOT / "revision" / "Bayes_NewData" / "tables",
+}
 DEFAULT_ORIGIN_H5AD = (
     REPO_ROOT
     / "revision"
@@ -40,23 +51,15 @@ DEFAULT_ATAC_PEAKS = (
     REPO_ROOT / "STARRFISH_in_vivo" / "Data" / "cre_atac_peaks.csv"
 )
 DEFAULT_STEM = "origin_vs_new_mean_plus_1sd_activity_heatmap_t7_ge50"
-DEFAULT_OVERLAP_TESTS = (
-    DEFAULT_COMPARISON_DIR / "tables" / "overlap_t7_ge50_pair_comparison.csv.gz"
-)
-DEFAULT_CONTROL_ACTIVITY = (
-    DEFAULT_COMPARISON_DIR
-    / "tables"
-    / "overlap_t7_ge50_negative_control_activity.csv"
-)
 RUNS = ("origin", "new")
 RUN_LABELS = {"origin": "Original run", "new": "New low-dose run"}
 
-# The two test families differ only in their control reference, so the layout is
-# shared and only the column names, the control-spread strip, and the labels
-# change.
+# Both families plot the same exported activity matrix and differ only in which
+# significance export they take p from -- the mean-control null, or the stricter
+# mean+1SD null -- and in what the control strip beside the heatmap shows.
 REFERENCE_SPECS: dict[str, dict[str, object]] = {
     "mean_plus_1sd": {
-        "tests": DEFAULT_SHARED_TESTS,
+        "control_sd_multiplier": 1.0,
         "stem": DEFAULT_STEM,
         "effect_prefix": "effect_vs_control_reference",
         "pair_sd_column": "negative_control_activity_sd_mean",
@@ -66,9 +69,9 @@ REFERENCE_SPECS: dict[str, dict[str, object]] = {
         "effect_summary_key": "mean_effect_vs_mean_plus_1sd_reference",
     },
     "mean": {
-        "tests": DEFAULT_OVERLAP_TESTS,
+        "control_sd_multiplier": 0.0,
         "stem": "origin_vs_new_mean_control_activity_heatmap_t7_ge50",
-        "effect_prefix": "effect_vs_mean_control",
+        "effect_prefix": "effect_vs_control_reference",
         "pair_sd_column": None,
         "sd_strip_label": "Control\nspread",
         "sd_colorbar_label": "SD across the 7 control posterior-mean activities",
@@ -87,19 +90,27 @@ def parse_args() -> argparse.Namespace:
         help="Test family whose columns and control-spread strip are plotted.",
     )
     parser.add_argument(
-        "--shared-tests",
+        "--origin-tables",
         type=Path,
-        default=None,
-        help="Pair table; defaults to the table of the chosen control reference.",
+        default=DEFAULT_TABLES["origin"],
+        help="Bayes_OldData/tables directory holding the exported matrices.",
     )
     parser.add_argument(
-        "--negative-control-activity",
+        "--new-tables",
         type=Path,
-        default=DEFAULT_CONTROL_ACTIVITY,
-        help=(
-            "Per-subclass negative-control activity table, used for the control-"
-            "spread strip when --control-reference mean is selected."
-        ),
+        default=DEFAULT_TABLES["new"],
+        help="Bayes_NewData/tables directory holding the exported matrices.",
+    )
+    parser.add_argument(
+        "--matrix-stem",
+        default=MATRIX_STEM,
+        help="Stem of the exported matrices inside those directories.",
+    )
+    parser.add_argument(
+        "--t7-threshold",
+        type=float,
+        default=50.0,
+        help="Target and pooled-control T7 both datasets must clear for a pair.",
     )
     parser.add_argument(
         "--restrict-calls",
@@ -174,6 +185,41 @@ def validate_shared_tests(shared: pd.DataFrame, spec: dict[str, object]) -> None
             "Shared test table has duplicate group-cCRE pairs:\n"
             + duplicated.head(10).to_string(index=False)
         )
+
+
+def load_shared(
+    tables: dict[str, Path], stem: str, spec: dict[str, object], t7_threshold: float,
+    q_cutoff: float,
+) -> tuple[pd.DataFrame, dict[str, "object"]]:
+    """Read both datasets' exported matrices and reduce them to the shared universe.
+
+    The activity and ``p_right`` columns are read verbatim; only ``q`` is derived
+    here, because BH depends on the family being tested and this figure's family
+    is the intersection of the two datasets, not either dataset alone.
+    """
+    datasets = {
+        run: load_dataset(tables[run], stem, float(spec["control_sd_multiplier"]))
+        for run in RUNS
+    }
+    shared = shared_universe(datasets, t7_threshold).rename(columns={"subclass": "group"})
+    for run in RUNS:
+        shared[f"{run}_q_common_universe"] = bh_fdr(
+            shared[f"{run}_p_right"].to_numpy(float)
+        )
+        shared[f"{run}_significant_common_q"] = shared[
+            f"{run}_q_common_universe"
+        ].le(q_cutoff)
+    calls = np.select(
+        [
+            shared["origin_significant_common_q"] & shared["new_significant_common_q"],
+            shared["origin_significant_common_q"] & ~shared["new_significant_common_q"],
+            ~shared["origin_significant_common_q"] & shared["new_significant_common_q"],
+        ],
+        ["both_significant", "origin_only_significant", "new_only_significant"],
+        default="neither_significant",
+    )
+    shared["common_q_call_status"] = calls
+    return shared, datasets
 
 
 def subclass_numeric_order(h5ad_path: Path, observed: pd.Index) -> list[str]:
@@ -343,28 +389,21 @@ def run_summary(
 
 
 def control_spread_by_group(
-    path: Path, row_order: list[str], n_controls: int = 7
+    datasets: dict[str, object], row_order: list[str], n_controls: int = 7
 ) -> dict[str, pd.Series]:
     """Return each run's SD across the control posterior means per subclass."""
-    if not path.exists():
-        raise FileNotFoundError(f"Missing negative-control activity table: {path}")
-    controls = pd.read_csv(path)
-    required = {"group", "cre", "origin_centered_activity_mean", "new_centered_activity_mean"}
-    missing = sorted(required.difference(controls.columns))
-    if missing:
-        raise ValueError(f"{path} is missing columns: {missing}")
-    controls["group"] = controls["group"].astype(str)
-    counts = controls.groupby("group")["cre"].nunique()
-    if not counts.eq(n_controls).all():
-        bad = counts[counts.ne(n_controls)].to_dict()
-        raise ValueError(f"{path} does not have {n_controls} controls per subclass: {bad}")
-    return {
-        run: controls.groupby("group")[f"{run}_centered_activity_mean"]
-        .std(ddof=1)
-        .reindex(row_order)
-        .astype(float)
-        for run in RUNS
-    }
+    output = {}
+    for run in RUNS:
+        controls = datasets[run].negative_control_activity
+        if controls.shape[1] != n_controls:
+            raise ValueError(
+                f"{run} control matrix has {controls.shape[1]} controls, "
+                f"expected {n_controls}"
+            )
+        output[run] = (
+            datasets[run].control_spread.reindex(row_order).astype(float)
+        )
+    return output
 
 
 def pair_control_sd_by_group(
@@ -640,9 +679,11 @@ def main() -> None:
         raise ValueError("--nominal-p-cutoff must be between 0 and 1")
 
     spec = REFERENCE_SPECS[args.control_reference]
-    shared_tests = args.shared_tests or spec["tests"]
     stem = args.stem or str(spec["stem"])
-    shared = pd.read_csv(shared_tests)
+    tables = {"origin": args.origin_tables, "new": args.new_tables}
+    shared, datasets = load_shared(
+        tables, args.matrix_stem, spec, args.t7_threshold, args.q_cutoff
+    )
     validate_shared_tests(shared, spec)
     shared["group"] = shared["group"].astype(str)
     shared["cre"] = shared["cre"].astype(str)
@@ -699,6 +740,7 @@ def main() -> None:
         )
         .groupby("cre")["combined_t7"]
         .sum()
+        .sort_index(kind="stable")
         .sort_values(ascending=False, kind="stable")
     )
     col_order = t7_order.index.astype(str).tolist()
@@ -717,9 +759,7 @@ def main() -> None:
             shared, str(spec["pair_sd_column"]), row_order
         )
     else:
-        control_sd = control_spread_by_group(
-            args.negative_control_activity, row_order
-        )
+        control_sd = control_spread_by_group(datasets, row_order)
     universe_note = (
         f"Restricted to {args.restrict_status.replace(',', ' or ')} pairs; "
         if restriction is not None
@@ -751,7 +791,11 @@ def main() -> None:
     manifest = {
         "inputs": {
             "control_reference": args.control_reference,
-            "shared_tests": str(Path(shared_tests).resolve()),
+            "activity_matrices": {
+                run: str(datasets[run].tables_dir.resolve()) for run in RUNS
+            },
+            "matrix_stem": str(datasets["origin"].stem),
+            "t7_threshold": float(args.t7_threshold),
             "origin_h5ad_for_row_order": str(args.origin_h5ad.resolve()),
             "library_counts": str(args.library_counts.resolve()),
             "atac_peaks": str(args.atac_peaks.resolve()),
@@ -767,8 +811,8 @@ def main() -> None:
             "cell_subclasses": int(len(row_order)),
             "cres": int(len(col_order)),
             "definition": (
-                "pairs with target T7 >= 50 and combined seven-control T7 >= 50 "
-                "in both datasets"
+                f"pairs with target T7 >= {args.t7_threshold:g} and combined "
+                f"seven-control T7 >= {args.t7_threshold:g} in both datasets"
                 + (
                     ""
                     if restriction is None

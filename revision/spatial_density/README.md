@@ -166,6 +166,67 @@ just a picture.
    `revision/spatial_correlation/results/activity_normalized/`; a large
    "region but no Moran's I" corner would be worth chasing.
 
+## Density-stabilised maps (visualisation, no test)
+
+`code/plot_stabilised_density.py` is the descriptive counterpart to the
+permutation workflow: a per-cCRE activity map with the cell-density artefact
+removed in closed form, no permutations and no p-values.
+
+**What was already handled.** `R = D/N` is a kernel-weighted *mean*, not a sum,
+so it is unbiased for local mean activity at any cell density. Dividing by `N`
+*is* the density normalisation and it was always there.
+
+**What this adds.** The residual density artefact is noise, not bias: the
+sampling variance of `R(u)` falls with local effective sample size, so thin
+areas throw extreme values by chance and dominate the eye. That variance is
+exactly `var(a) * variance_factor(u)`, already computed by `build_geometry`, so
+`activity_density.stabilise` needs no new estimation -- only empirical-Bayes
+shrinkage against it:
+
+```
+sigma2(u) = var(a) * variance_factor(u)
+tau2      = max(0, Var_pixels(R) - mean_pixels(sigma2))
+w(u)      = tau2 / (tau2 + sigma2(u))
+shrunk(u) = mu + w(u) * (R(u) - mu)
+```
+
+Verified on synthetic fields: `w -> 1` reproduces `R` exactly; `tau2 = 0` gives a
+flat map; a planted hotspot keeps weight 0.96 at its peak; pure noise collapses
+from sd 0.0925 to 0.0000; and on a **62.6x cell-density gradient with constant
+true activity** the raw range of 1.41 becomes **0.0000** -- the property the
+whole exercise exists for.
+
+On real data the correction scales with bandwidth exactly as it should, biting
+where sampling is thin and stepping aside where it is not (CRE138 sec2):
+
+| h | mean weight | peak, raw -> stabilised |
+|---|---|---|
+| 50 | 0.825 | 5.17x -> **3.79x** |
+| 100 | 0.914 | 3.90x -> 2.61x |
+| 200 | 0.972 | 2.47x -> 2.37x |
+| 400 | 0.994 | 2.15x -> 2.15x |
+
+**Read the colour scale as relative.** Panels 3 and 4 show activity as a
+multiple of that cCRE's own section baseline, which is what the shrinkage
+targets. That is the only self-consistent choice: a pixel with no local evidence
+lands exactly on 1.0 and reads as "nothing to say here". Absolute baselines vary
+enormously between cCREs -- 11.7x the negative-control level for CRE138, 0.33x
+for CRE174 -- and are recorded as `baseline_mean`.
+
+**Limitation, stated on every figure.** This normalises out cell density only,
+not cell-type composition. Activity differs by subclass and subclasses are
+spatially organised, so bright areas may still be cell-type anatomy rather than
+position. `stabilised_density_summary.csv` ranks cCREs by
+`max_shrunk_relative`; that ranking is descriptive and is **not** a significance
+test.
+
+```bash
+sbatch revision/spatial_density/code/submit_stabilised_density.slurm   # h = 100, 200, 400
+```
+
+Outputs: `figures/stabilised/h{H}/{cre}_{section}_stabilised.{png,pdf}` and
+`results/stabilised/h{H}/stabilised_density_summary.csv`.
+
 ## What the full run found (job 19989029, `within_subclass`)
 
 389 cCREs x 2 sections x 999 permutations x 3 bandwidths, screened in ~9 min on

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -30,6 +31,16 @@ from analysis_utils import (
 from plot_section_reproducibility import (
     bayesian_base,
     bootstrap_base,
+)
+
+RUN_BAYES_CODE = Path(__file__).resolve().parents[2] / "run_Bayes"
+if str(RUN_BAYES_CODE) not in sys.path:
+    sys.path.insert(0, str(RUN_BAYES_CODE))
+
+from activity_matrix_io import (  # noqa: E402
+    DEFAULT_STEM as MATRIX_STEM,
+    load_dataset,
+    matrix_paths,
 )
 
 METHOD_SPECS = {
@@ -125,6 +136,21 @@ def parse_args() -> argparse.Namespace:
         "--append-individual-negative-controls",
         action="store_true",
         help="Append each ordinary negative-control cCRE as a separate right-hand column.",
+    )
+    parser.add_argument(
+        "--activity-matrix-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Dataset tables/ directory holding the exported activity matrix. When "
+            "given, the ordinary-control activity is read from it instead of being "
+            "re-reduced from the posterior."
+        ),
+    )
+    parser.add_argument(
+        "--activity-matrix-stem",
+        default=MATRIX_STEM,
+        help="Stem of the exported matrices inside --activity-matrix-dir.",
     )
     parser.add_argument("--cmap", default="viridis")
     parser.add_argument("--library-size-csv", type=Path, default=LIBSIZE_CSV)
@@ -264,6 +290,34 @@ def posterior_activity_with_ordinary_controls(
     return activity, activity.loc[:, controls].copy(), controls, posterior_path
 
 
+def matrix_activity_with_ordinary_controls(
+    tables_dir: Path,
+    stem: str,
+    *,
+    center_by_control_mean: bool,
+) -> tuple[pd.DataFrame, pd.DataFrame, list[str], Path]:
+    """Read the exported activity matrix instead of re-reducing the posterior.
+
+    The export is already centred on the seven-control mean, which is the only
+    form the heatmaps plot; the uncentred form is recovered by adding that mean
+    back, so both callers of this loader are served from one file.
+    """
+    dataset = load_dataset(tables_dir, stem)
+    activity = dataset.activity
+    controls = dataset.negative_control_activity
+    control_mean = controls.mean(axis=1)
+    if center_by_control_mean:
+        controls = controls.sub(control_mean, axis=0)
+    else:
+        activity = activity.add(control_mean, axis=0)
+    return (
+        activity,
+        controls,
+        list(controls.columns),
+        matrix_paths(tables_dir, stem)["activity"],
+    )
+
+
 def load_activity(
     args: argparse.Namespace,
 ) -> tuple[
@@ -299,7 +353,13 @@ def load_activity(
             or args.append_individual_negative_controls
         ):
             matrix, controls, control_names, posterior_path = (
-                posterior_activity_with_ordinary_controls(
+                matrix_activity_with_ordinary_controls(
+                    args.activity_matrix_dir,
+                    args.activity_matrix_stem,
+                    center_by_control_mean=args.center_by_mean_negative_controls,
+                )
+                if args.activity_matrix_dir is not None
+                else posterior_activity_with_ordinary_controls(
                     root,
                     center_by_control_mean=args.center_by_mean_negative_controls,
                 )
@@ -414,11 +474,14 @@ def t7_pair_totals(
 
 
 def t7_cre_order(pair_t7: pd.DataFrame) -> list[str]:
+    """Descending T7, ties broken by cCRE name so the order never depends on input order."""
     total_by_cre = pair_t7.sum(axis=0)
+    total_by_cre.index = total_by_cre.index.astype(str)
     return (
-        total_by_cre.sort_values(ascending=False, na_position="last")
-        .index.astype(str)
-        .tolist()
+        total_by_cre.to_frame("total")
+        .sort_index(kind="stable")
+        .sort_values("total", ascending=False, na_position="last", kind="stable")
+        .index.tolist()
     )
 
 
@@ -438,13 +501,25 @@ def read_significance_mask(
     columns: pd.Index,
     q_cutoff: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    tests = pd.read_csv(
-        path,
-        usecols=["t7_threshold", "group", "cre", "q_right"],
-    )
-    tests = tests.loc[
-        np.isclose(tests["t7_threshold"].to_numpy(float), t7_threshold)
-    ].copy()
+    header = pd.read_csv(path, nrows=0).columns
+    if "t7_threshold" in header:
+        tests = pd.read_csv(path, usecols=["t7_threshold", "group", "cre", "q_right"])
+        tests = tests.loc[
+            np.isclose(tests["t7_threshold"].to_numpy(float), t7_threshold)
+        ].copy()
+    else:
+        # Exported per-dataset table: one BH column, fixed to its own universe.
+        token = f"{t7_threshold:g}".replace(".", "p")
+        q_column = f"q_right_t7_ge{token}"
+        if q_column not in header:
+            raise ValueError(
+                f"{path} has no {q_column}; re-export it with "
+                f"--q-t7-threshold {t7_threshold:g}"
+            )
+        tests = pd.read_csv(path, usecols=["subclass", "cre", q_column]).rename(
+            columns={"subclass": "group", q_column: "q_right"}
+        )
+        tests = tests.dropna(subset=["q_right"])
     tests["group"] = tests["group"].astype(str)
     tests["cre"] = tests["cre"].astype(str)
     q_values = tests.pivot_table(

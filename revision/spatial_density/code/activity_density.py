@@ -57,6 +57,7 @@ __all__ = [
     "BandwidthGeometry",
     "Region",
     "SectionGrid",
+    "StabilisedSurface",
     "build_geometry",
     "build_grid",
     "density_surface",
@@ -65,6 +66,7 @@ __all__ = [
     "null_maxima",
     "null_z_stack",
     "permutation_p_value",
+    "stabilise",
     "transform_marks",
     "z_stack",
 ]
@@ -320,6 +322,91 @@ def density_surface(
     out = np.zeros(grid.shape, dtype=np.float32)
     np.divide(weighted, geometry.cell_density, out=out, where=geometry.valid)
     return out
+
+
+@dataclass(frozen=True)
+class StabilisedSurface:
+    """A density-noise-stabilised activity map and the terms behind it."""
+
+    raw: np.ndarray  # R(u), already density-normalised
+    shrunk: np.ndarray  # the map to show; NaN outside the valid mask
+    weight: np.ndarray  # w(u) in [0, 1]: how far each pixel kept its value
+    sigma: np.ndarray  # sqrt of the per-pixel sampling variance
+    tau_squared: float
+    prior_mean: float
+
+
+def stabilise(
+    grid: SectionGrid,
+    geometry: BandwidthGeometry,
+    marks: np.ndarray,
+    *,
+    prior_mean: float | None = None,
+) -> StabilisedSurface:
+    """Remove the cell-density artefact from ``R`` in closed form.
+
+    ``R = D/N`` is a weighted *mean*, so it is already unbiased for local mean
+    activity at any cell density -- dividing by ``N`` is the density
+    normalisation. What density still buys is **noise**: the sampling variance of
+    ``R(u)`` falls with the local effective sample size, so thinly-sampled areas
+    throw extreme values by chance and dominate the eye. That variance is exactly
+    ``var(marks) * geometry.variance_factor``, already computed by
+    :func:`build_geometry`, so no estimation machinery is needed here.
+
+    The correction is empirical-Bayes shrinkage. Treating the true surface as
+    ``theta(u) ~ (mu, tau^2)`` observed through noise ``sigma^2(u)``, method of
+    moments gives ``tau^2`` from the spatial variance of ``R`` minus the average
+    sampling variance, and each pixel is pulled toward ``mu`` by the share of its
+    variance that is noise:
+
+        w(u) = tau^2 / (tau^2 + sigma^2(u))
+        shrunk(u) = mu + w(u) * (R(u) - mu)
+
+    Well-sampled pixels keep their value (``w -> 1``); thin ones collapse to the
+    baseline (``w -> 0``). The output stays on the scale of ``marks``.
+
+    Two caveats worth knowing rather than discovering:
+
+    * the smoothing makes neighbouring pixels highly correlated, so ``tau^2`` is
+      a moment estimate whose *precision* is overstated -- its expectation is
+      sound, but do not read it as a well-determined variance component;
+    * ``tau_squared == 0`` returns a flat map at ``mu``. That is the honest
+      reading of "nothing here exceeds sampling noise", not a failure, and
+      callers should surface it rather than quietly plotting a blank panel.
+
+    This removes cell density only. Activity differs by cell type and cell types
+    are spatially organised, so structure that survives may still be cell-type
+    anatomy rather than position.
+    """
+    if marks.shape != (grid.n_cells,):
+        raise ValueError(f"marks has shape {marks.shape}, expected ({grid.n_cells},)")
+    valid = geometry.valid
+    if not valid.any():
+        raise ValueError("geometry has no valid pixels to stabilise")
+
+    raw = density_surface(grid, geometry, marks)
+    variance = float(np.var(marks))
+    sigma_squared = (variance * geometry.variance_factor).astype(np.float32)
+    mu = float(np.mean(marks)) if prior_mean is None else float(prior_mean)
+
+    spatial_variance = float(np.var(raw[valid]))
+    mean_noise = float(np.mean(sigma_squared[valid]))
+    tau_squared = max(0.0, spatial_variance - mean_noise)
+
+    weight = np.zeros(grid.shape, dtype=np.float32)
+    shrunk = np.full(grid.shape, np.nan, dtype=np.float32)
+    if tau_squared > 0:
+        weight[valid] = tau_squared / (tau_squared + sigma_squared[valid])
+    shrunk[valid] = mu + weight[valid] * (raw[valid] - mu)
+
+    return StabilisedSurface(
+        raw=raw,
+        shrunk=shrunk,
+        weight=weight,
+        sigma=np.sqrt(sigma_squared, dtype=np.float32),
+        tau_squared=tau_squared,
+        prior_mean=mu,
+    )
 
 
 def z_stack(

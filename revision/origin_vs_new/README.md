@@ -115,14 +115,23 @@ not hidden.
   replicates agree and therefore restricts the assay-positive pairs to that same
   universe.
 - `code/plot_origin_vs_new_heatmap.py`: matched original/new activity heatmap
-  with test diagnostics. Cells carry a star for shared-universe BH `q <= 0.05`
-  and a black box for an ATAC peak; pairs that reach nominal `p <= 0.05` without
-  BH significance are counted in the panel titles but not marked.
-  `--control-reference` selects the test family: `mean` reads the primary overlap
-  table and draws the control-spread strip as the SD across the seven control
-  posterior-mean activities from
-  `overlap_t7_ge50_negative_control_activity.csv`, while `mean_plus_1sd`
-  (the default) reads the draw-wise mean+1 SD table. `--restrict-calls`,
+  with test diagnostics. It plots the exported per-dataset matrices and derives
+  nothing but the shared-universe BH: the colours are read from
+  `../Bayes_OldData/tables/subclass_cre_activity_matrix.csv.gz` and
+  `../Bayes_NewData/tables/subclass_cre_activity_matrix.csv.gz`, the displayed
+  universe from the matching `_target_t7_matrix.csv.gz` at `--t7-threshold`
+  (default 50, applied to both datasets), and `p_right` from
+  `_significance.csv.gz`. Cells carry a star for shared-universe BH `q <= 0.05`,
+  recomputed here from `p_right` because the family is the intersection of the
+  two datasets rather than either one alone, and a black box for an ATAC peak;
+  pairs that reach nominal `p <= 0.05` without BH significance are counted in
+  the panel titles but not marked. `--control-reference` selects which exported
+  significance table is read: `mean` takes the mean-control null and draws the
+  control-spread strip as the SD across the seven control posterior-mean
+  activities in `_negative_control_activity_matrix.csv.gz`, while `mean_plus_1sd`
+  (the default) takes the `subclass_cre_mean_plus_1sd_significance.csv.gz`
+  export. Regenerate the matrices with
+  `revision/run_Bayes/submit_activity_matrices.slurm`. `--restrict-calls`,
   `--restrict-status-column`, and `--restrict-status` subset the displayed pairs
   by a call-status column, which is how the replicate-concordant heatmap is
   produced:

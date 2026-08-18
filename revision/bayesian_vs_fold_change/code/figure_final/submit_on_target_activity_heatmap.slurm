@@ -13,6 +13,7 @@ set -euo pipefail
 REPO=/gpfs/commons/groups/ren_lab/guojiezhong/starr-fish
 ANALYSIS="$REPO/revision/bayesian_vs_fold_change"
 OLD_DATA_BAYES="$REPO/revision/Bayes_OldData/bayesian"
+OLD_DATA_TABLES="$REPO/revision/Bayes_OldData/tables"
 PYTHON=${PYTHON:-/gpfs/commons/home/guojiezhong/miniconda3/envs/scvi/bin/python}
 
 export MPLBACKEND=Agg
@@ -39,7 +40,8 @@ cd "$REPO"
   --cmap coolwarm \
   --t7-threshold 50 \
   --filter-variants t7_ge_threshold \
-  --significance-tests "$ANALYSIS/results/tables/joint_dropout_direct_activity_mean_negative_control_tests_t7_series.csv.gz" \
+  --activity-matrix-dir "$OLD_DATA_TABLES" \
+  --significance-tests "$OLD_DATA_TABLES/subclass_cre_significance.csv.gz" \
   --significance-q-cutoff 0.05 \
   --atac-peaks "$REPO/STARRFISH_in_vivo/Data/cre_atac_peaks.csv" \
   --restrict-to-on-target \
