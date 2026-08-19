@@ -25,12 +25,14 @@ if str(_CODE_DIR) not in _sys.path:
     _sys.path.insert(0, str(_CODE_DIR))
 
 from analysis_utils import (
-    ANALYSIS_DIR,
     DEFAULT_H5AD,
     FIGURES_WORK,
     LIBSIZE_CSV,
     OLD_DATA_BAYES,
     OLD_DATA_BOOTSTRAP,
+    PANEL_SIDE_INCHES,
+    display_label,
+    fit_panel_size,
     log,
     write_json,
 )
@@ -43,36 +45,14 @@ def parse_args() -> argparse.Namespace:
         "--bootstrap-dir", type=Path, default=OLD_DATA_BOOTSTRAP
     )
     parser.add_argument(
-        "--old-bayesian-dir",
-        type=Path,
-        default=ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint",
-    )
-    parser.add_argument(
-        "--new-bayesian-dir",
-        type=Path,
-        default=None,
-        help="Legacy alias for the decoupled+dropout Bayesian directory.",
-    )
-    parser.add_argument(
-        "--decoupled-bayesian-dir",
-        type=Path,
-        default=None,
-        help="Bayesian decoupled directory without dropout.",
-    )
-    parser.add_argument(
         "--joint-dropout-bayesian-dir",
         type=Path,
         default=OLD_DATA_BAYES,
         help=(
             "Joint model with zero-inflated dropout. Defaults to the production "
-            "fit in Bayes_OldData/bayesian, not the results/ablation variant."
+            "fit in Bayes_OldData/bayesian, not the results/ablation variant. This "
+            "is the only Bayesian fit the stripe diagnostics read."
         ),
-    )
-    parser.add_argument(
-        "--decoupled-dropout-bayesian-dir",
-        type=Path,
-        default=None,
-        help="Bayesian decoupled directory with zero-inflated dropout.",
     )
     parser.add_argument(
         "--figures-dir", type=Path, default=FIGURES_WORK
@@ -119,7 +99,17 @@ def add_count_ticks(ax, max_x: float, max_y: float) -> None:
 
 
 def build_data(args: argparse.Namespace) -> tuple[pd.DataFrame, dict]:
-    methods = pm.CORRELATION_METHODS
+    """Stack the production fit against the two fold-change estimators.
+
+    Only :data:`plot_method_activity_correlation.PRODUCTION_METHODS` is read, so the
+    ablation arms are never loaded and the cCRE blacklist is the union over Bootstrap
+    and the production fit alone.
+    """
+    methods = pm.PRODUCTION_METHODS
+    if args.bayesian_method not in methods:
+        raise ValueError(
+            f"--bayesian-method {args.bayesian_method!r} is not one of {methods}"
+        )
     matrices, pair_t7, pair_cre, cell_counts, _, metadata = pm.prepare_base(args, methods)
     wide = pm.stack_methods(matrices, methods)
     total_t7 = pm.pair_count_series(pair_t7, "total_t7").reindex(wide.index)
@@ -162,12 +152,18 @@ def plot_diagnostic(
     if len(finite_context) > args.background_sample:
         finite_context = finite_context.sample(args.background_sample, random_state=0)
 
+    # Widths stay uneven -- the count scatter carries a colorbar and the box panel is
+    # narrow -- so the canvas is sized for the MEAN panel to be PANEL_SIDE_INCHES wide.
+    width_ratios = [1.1, 1.25, 0.95]
     fig, axes = plt.subplots(
         1,
         3,
-        figsize=(15.8, 4.8),
+        figsize=(
+            PANEL_SIDE_INCHES * len(width_ratios),
+            PANEL_SIDE_INCHES,
+        ),
         constrained_layout=True,
-        gridspec_kw={"width_ratios": [1.1, 1.25, 0.95]},
+        gridspec_kw={"width_ratios": width_ratios},
     )
 
     ax = axes[0]
@@ -198,7 +194,7 @@ def plot_diagnostic(
         hi = args.vertical_center + args.vertical_halfwidth
         ax.axvspan(lo, hi, color="#d62728", alpha=0.12, linewidth=0)
     ax.set_xlabel("Bootstrap mean log activity")
-    ax.set_ylabel(f"{args.bayesian_method} mean log activity")
+    ax.set_ylabel(f"{display_label(args.bayesian_method)} mean log activity")
     ax.set_title("Selected stripe location")
 
     ax = axes[1]
@@ -285,6 +281,7 @@ def plot_diagnostic(
         f"cCRE={summary['total_ccre']['median']:.0f}",
         fontsize=12,
     )
+    fit_panel_size(fig, axes)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, bbox_inches="tight")
     plt.close(fig)
@@ -325,7 +322,7 @@ def main() -> None:
             horizontal,
             args,
             title=(
-                f"Horizontal stripe: {args.bayesian_method} near "
+                f"Horizontal stripe: {display_label(args.bayesian_method)} near "
                 f"{args.horizontal_center:g}"
             ),
             output=args.figures_dir / f"{args.stem}_horizontal_bayesian_minus0p5.pdf",

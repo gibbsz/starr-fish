@@ -15,6 +15,7 @@ bayesian_sec1="$(
     --section sec1 \
     --infection-model copy_number_dropout \
     --negative-control-mode ordinary-and-pooled \
+    --activity-model hierarchical \
     --outdir "$ANALYSIS_DIR/results/sections/sec1/bayesian"
 )"
 bayesian_sec2="$(
@@ -22,6 +23,7 @@ bayesian_sec2="$(
     --section sec2 \
     --infection-model copy_number_dropout \
     --negative-control-mode ordinary-and-pooled \
+    --activity-model hierarchical \
     --outdir "$ANALYSIS_DIR/results/sections/sec2/bayesian"
 )"
 plots_job="$(

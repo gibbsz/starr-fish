@@ -15,6 +15,7 @@ from analysis_utils import (
     DEFAULT_H5AD,
     FIGURES_WORK,
     OLD_DATA_BOOTSTRAP,
+    ablation_root,
     log,
     write_json,
 )
@@ -35,20 +36,11 @@ METHODS = (
 )
 METHOD_ROOTS = {
     "Bootstrap": OLD_DATA_BOOTSTRAP,
-    "Joint": ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint",
-    "Decoupled": (
-        ANALYSIS_DIR / "results" / "ablation" / "bayesian_decoupled_no_dropout"
-    ),
-    "Joint+dropout": (
-        ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint_dropout"
-    ),
-    "Decoupled+dropout": (
-        ANALYSIS_DIR / "results" / "ablation" / "bayesian_decoupled"
-    ),
-    "Metacell Bayesian": ANALYSIS_DIR
-    / "results"
-    / "ablation"
-    / "bayesian_bootstrap_metacells_size100_number100",
+    "Joint": ablation_root("bayesian_joint"),
+    "Decoupled": ablation_root("bayesian_decoupled"),
+    "Joint+dropout": ablation_root("bayesian_joint_dropout"),
+    "Decoupled+dropout": ablation_root("bayesian_decoupled_dropout"),
+    "Metacell Bayesian": ablation_root("bayesian_bootstrap_metacells_size100_number100"),
 }
 
 

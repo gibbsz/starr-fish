@@ -8,7 +8,6 @@ import json
 import re
 from pathlib import Path
 
-import h5py
 import matplotlib
 
 matplotlib.use("Agg")
@@ -17,6 +16,8 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from scipy.stats import spearmanr
+
+from baystarrfish.data import read_grouped_counts
 
 from analysis_utils import (
     ANALYSIS_DIR,
@@ -73,54 +74,13 @@ def normalize_labels(values: np.ndarray) -> np.ndarray:
 def load_grouped_t7(
     h5ad: Path, posterior_groups: np.ndarray, cre_names: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return group-by-cCRE T7 totals, group classes, and group cell counts."""
-    with h5py.File(h5ad, "r") as handle:
-        subclass = handle["obs"]["subclass_name"]
-        subclass_categories = normalize_labels(
-            decode_strings(subclass["categories"][...])
-        )
-        subclass_codes = subclass["codes"][...].astype(np.int64)
-        class_data = handle["obs"]["class_name"]
-        class_categories = normalize_labels(decode_strings(class_data["categories"][...]))
-        class_codes = class_data["codes"][...].astype(np.int64)
-        valid = (subclass_codes >= 0) & (class_codes >= 0)
+    """Return group-by-cCRE T7 totals, group classes, and group cell counts.
 
-        subclass_lookup = {name: idx for idx, name in enumerate(subclass_categories)}
-        missing_groups = sorted(set(posterior_groups) - set(subclass_lookup))
-        if missing_groups:
-            raise ValueError(f"H5AD is missing posterior subclasses: {missing_groups}")
-        posterior_to_h5 = np.asarray(
-            [subclass_lookup[name] for name in posterior_groups], dtype=np.int64
-        )
-        cell_counts_h5 = np.bincount(
-            subclass_codes[valid], minlength=len(subclass_categories)
-        )
-
-        class_of_h5 = np.full(len(subclass_categories), -1, dtype=np.int64)
-        pairs = np.unique(
-            np.column_stack([subclass_codes[valid], class_codes[valid]]), axis=0
-        )
-        for subclass_idx, class_idx in pairs:
-            if class_of_h5[subclass_idx] not in {-1, class_idx}:
-                raise ValueError("subclass does not map uniquely to class")
-            class_of_h5[subclass_idx] = class_idx
-        group_classes = class_categories[class_of_h5[posterior_to_h5]]
-
-        t7_group = handle["obsm"]["T7CRE"]
-        missing_cres = sorted(set(cre_names) - set(t7_group.keys()))
-        if missing_cres:
-            raise ValueError(f"T7 matrix is missing fitted cCREs: {missing_cres}")
-        totals = np.empty((len(posterior_groups), len(cre_names)), dtype=np.float64)
-        for cre_idx, cre in enumerate(cre_names):
-            values = t7_group[cre][...].astype(np.float64, copy=False)
-            grouped = np.bincount(
-                subclass_codes[valid],
-                weights=values[valid],
-                minlength=len(subclass_categories),
-            )
-            totals[:, cre_idx] = grouped[posterior_to_h5]
-
-    return totals, group_classes, cell_counts_h5[posterior_to_h5]
+    Kept as the T7-only view onto ``baystarrfish.data.read_grouped_counts``, which
+    owns the aggregation and can stream the cCRE counts in the same pass.
+    """
+    counts = read_grouped_counts(h5ad, posterior_groups, cre_names, keys=("T7CRE",))
+    return counts.totals["T7CRE"], counts.group_classes, counts.group_cell_counts
 
 
 def balanced_target_score(

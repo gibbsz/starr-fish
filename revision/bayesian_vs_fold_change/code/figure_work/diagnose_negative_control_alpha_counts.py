@@ -31,6 +31,7 @@ from analysis_utils import (
     DEFAULT_H5AD,
     FIGURES_WORK,
     LIBSIZE_CSV,
+    ablation_root,
     write_json,
 )
 
@@ -44,10 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--root",
         type=Path,
-        default=ANALYSIS_DIR
-        / "results"
-        / "ablation"
-        / "bayesian_joint_dropout_ordinary_and_pooled_negative_controls",
+        default=ablation_root("bayesian_joint_dropout_ordinary_and_pooled_negative_controls"),
     )
     parser.add_argument("--h5ad", type=Path, default=DEFAULT_H5AD)
     parser.add_argument("--library-size-csv", type=Path, default=LIBSIZE_CSV)

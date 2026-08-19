@@ -108,7 +108,7 @@ def _sample_activity_classlevel(
     n_cre,
     priors: ModelPriors,
     negative_control_mask=None,
-    activity_model="hierarchical",
+    activity_model="direct",
 ):
     """log_gamma_{g,j} = alpha_j + eta_{g,j}; controls share alpha/eta by group."""
     if activity_model == "direct":
@@ -147,7 +147,7 @@ def _sample_activity_subclasslevel(
     class_of_subclass,
     priors: ModelPriors,
     negative_control_mask=None,
-    activity_model="hierarchical",
+    activity_model="direct",
 ):
     """log_gamma_{s,j} = alpha_j + eta_{class(s),j} + delta_{s,j}.
 

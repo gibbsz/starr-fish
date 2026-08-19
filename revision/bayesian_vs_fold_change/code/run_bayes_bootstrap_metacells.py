@@ -232,6 +232,11 @@ def main() -> None:
         num_posterior=args.num_posterior,
         seed=args.seed,
         infection_model=args.infection_model,
+        # This ablation pools the annotated controls in-model (see the CountData call
+        # above), which only the hierarchical parameterisation supports; direct activity
+        # refuses a negative-control mask. Stated explicitly because `direct` is now the
+        # package default.
+        activity_model="hierarchical",
         posterior_sites_to_return=posterior_sites,
     )
     result["config"].update(

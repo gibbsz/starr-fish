@@ -70,7 +70,7 @@ def run_model(t7, cre, subclass_labels, class_labels, lib_size_log, cre_names, *
               priors: "ModelPriors" = None, num_steps=20000, lr=5e-3,
               guide="AutoNormal", num_warmup=1000, num_samples=1000, num_chains=2,
               num_posterior=1000, seed=0, verbose=True, negative_control_mask=None,
-              infection_model="copy_number", activity_model="hierarchical",
+              infection_model="copy_number", activity_model="direct",
               posterior_sites_to_return=None) -> dict:
     """Fit the model from plain arrays (no STARRFISH object, no 97GB pickle).
 
@@ -269,10 +269,16 @@ def run_decoupled_model(
     infection_quadrature_points: int = 7,
     posterior_sites_to_return=None,
     dropout_model: str = "zero_inflated",
+    activity_model: str = "direct",
 ) -> dict:
     """Fit the two-stage T7 infection / CRE activity model."""
     if dropout_model not in {"zero_inflated", "none"}:
         raise ValueError("dropout_model must be 'zero_inflated' or 'none'")
+    if activity_model not in {"hierarchical", "direct"}:
+        raise ValueError(
+            f"unsupported activity_model={activity_model}; "
+            "available ['direct', 'hierarchical']"
+        )
     priors = priors or ModelPriors()
     t7 = np.asarray(t7).astype(np.int64)
     cre = np.asarray(cre).astype(np.int64)
@@ -283,6 +289,11 @@ def run_decoupled_model(
             raise ValueError("negative_control_mask must have shape (n_cre,)")
         if not negative_control_mask.any():
             negative_control_mask = None
+    if activity_model == "direct" and negative_control_mask is not None:
+        raise ValueError(
+            "direct activity requires ordinary negative controls; pass no "
+            "negative_control_mask"
+        )
     lib_centered = np.asarray(lib_size_log, dtype=np.float64)
     lib_centered = lib_centered - lib_centered.mean()
 
@@ -369,10 +380,13 @@ def run_decoupled_model(
             kmax,
             negative_control_mask,
             priors,
+            activity_model,
             observe,
         )
 
-    init_cre = init_cre_from_moments(cre_stats, priors, negative_control_mask)
+    init_cre = init_cre_from_moments(
+        cre_stats, priors, negative_control_mask, activity_model
+    )
     if dropout_model == "none":
         init_cre.pop("p_drop_cre", None)
     cre_samples, cre_info = fit_svi(
@@ -423,8 +437,12 @@ def run_decoupled_model(
     scalar_sites_t7 = [
         "beta_t7", "phi_t7", "p_drop_t7", "mu_rho", "sigma_u", "sigma_w", "tau_a",
     ]
+    # Both activity parameterisations, so the saved scalars identify which one ran:
+    # mu_gamma/sigma_gamma for direct, the alpha/eta/delta family for hierarchical.
     scalar_sites_cre = [
-        "phi_cre", "p_drop_cre", "mu_alpha", "sigma_alpha", "sigma_eta",
+        "phi_cre", "p_drop_cre",
+        "mu_gamma", "sigma_gamma",
+        "mu_alpha", "sigma_alpha", "sigma_eta",
         "sigma_delta", "alpha_neg", "log_gamma_neg",
     ]
     scalar_samples = {
@@ -481,6 +499,7 @@ def run_decoupled_model(
             model_variant="decoupled_t7_cre",
             infection_model="copy_number",
             dropout_model=dropout_model,
+            activity_model=activity_model,
             kmax=kmax,
             steps_t7=steps_t7,
             steps_cre=steps_cre,

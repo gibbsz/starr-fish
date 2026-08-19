@@ -29,19 +29,29 @@ from .controls import (
     negative_control_names,
 )
 from .counts import CountData
+from .grouped_counts import (
+    DEFAULT_COUNT_KEYS,
+    GroupedCounts,
+    grouped_obsm_totals,
+    read_grouped_counts,
+)
 from .libsize import library_counts, library_size_log
 
 __all__ = [
+    "DEFAULT_COUNT_KEYS",
     "NEGATIVE_CONTROL_MODES",
     "POOLED_NEGATIVE_CONTROL_NAME",
     "CountData",
+    "GroupedCounts",
     "aligned_obsm_frame",
     "build_pooled_negative_control",
     "canonical_cre_info",
     "cre_blacklist",
+    "grouped_obsm_totals",
     "library_counts",
     "library_size_log",
     "negative_control_names",
+    "read_grouped_counts",
     "normalize_celltype_labels",
     "paths",
     "read_and_prepare_adata",

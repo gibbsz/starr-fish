@@ -239,7 +239,7 @@ def main(argv=None):
     ap.add_argument(
         "--activity-model",
         choices=["hierarchical", "direct"],
-        default="hierarchical",
+        default="direct",
     )
     ap.add_argument("--steps", type=int, default=4000)
     ap.add_argument("--nuts", action="store_true")

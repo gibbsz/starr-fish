@@ -16,7 +16,7 @@ from ..model.priors import ModelPriors
 
 def init_from_moments(stats: CollapsedStats, lib_size_centered, priors: ModelPriors,
                       level: str, channel: str, negative_control_mask=None,
-                      activity_model: str = "hierarchical") -> dict:
+                      activity_model: str = "direct") -> dict:
     """Crude method-of-moments init for the raw (non-centered) sites.
 
     Anchors ``beta_t7`` at the mean T7 among T7-positive rows (k~=1 under rare
@@ -106,14 +106,39 @@ def init_cre_from_moments(
     stats: CollapsedStats,
     priors: ModelPriors,
     negative_control_mask=None,
+    activity_model: str = "direct",
 ) -> dict:
-    """Method-of-moments initial values for the CRE-only conditional model."""
+    """Method-of-moments initial values for the CRE-only conditional model.
+
+    Mirrors the activity branch of :func:`init_from_moments`; the two must agree on
+    the site names each parameterisation samples, or SVI silently starts from the
+    prior for the sites the init does not mention.
+    """
     w = np.asarray(stats.weight)
     cre = np.asarray(stats.counts["cre"])
     cpos = cre > 0
     gamma0 = float(np.average(cre[cpos], weights=w[cpos])) if cpos.any() else 1.0
     gamma0 = max(gamma0, 1.0)
     init = {
+        "phi_cre": np.float64(2.0),
+        "p_drop_cre": np.float64(
+            priors.p_drop_cre_alpha / (priors.p_drop_cre_alpha + priors.p_drop_cre_beta)
+        ),
+    }
+    if activity_model == "direct":
+        if negative_control_mask is not None:
+            raise ValueError(
+                "direct activity requires ordinary negative controls"
+            )
+        init.update({
+            "mu_gamma": np.float64(np.log(gamma0)),
+            "sigma_gamma": np.float64(1.0),
+            "gamma_raw": np.zeros((stats.n_group, stats.n_cre)),
+        })
+        return init
+    if activity_model != "hierarchical":
+        raise ValueError(f"unsupported activity_model={activity_model}")
+    init.update({
         "mu_alpha": np.float64(np.log(gamma0)),
         "sigma_alpha": np.float64(1.0),
         "alpha_raw": np.zeros(stats.n_cre),
@@ -121,11 +146,7 @@ def init_cre_from_moments(
         "eta_raw": np.zeros((int(stats.n_class), stats.n_cre)),
         "sigma_delta": np.float64(0.5),
         "delta_raw": np.zeros((stats.n_group, stats.n_cre)),
-        "phi_cre": np.float64(2.0),
-        "p_drop_cre": np.float64(
-            priors.p_drop_cre_alpha / (priors.p_drop_cre_alpha + priors.p_drop_cre_beta)
-        ),
-    }
+    })
     if negative_control_mask is not None:
         init["alpha_neg"] = np.float64(np.log(gamma0))
         init["eta_neg_raw"] = np.zeros(int(stats.n_class))

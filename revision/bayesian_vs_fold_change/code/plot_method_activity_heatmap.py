@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 
 import matplotlib
@@ -24,6 +23,7 @@ from analysis_utils import (
     FIGURES_WORK,
     LIBSIZE_CSV,
     OLD_DATA_BOOTSTRAP,
+    ablation_root,
     log,
     read_and_prepare_adata,
     write_json,
@@ -33,10 +33,6 @@ from plot_section_reproducibility import (
     bootstrap_base,
 )
 
-RUN_BAYES_CODE = Path(__file__).resolve().parents[2] / "run_Bayes"
-if str(RUN_BAYES_CODE) not in sys.path:
-    sys.path.insert(0, str(RUN_BAYES_CODE))
-
 from activity_matrix_io import (  # noqa: E402
     DEFAULT_STEM as MATRIX_STEM,
     load_dataset,
@@ -44,7 +40,8 @@ from activity_matrix_io import (  # noqa: E402
 )
 
 METHOD_SPECS = {
-    "bayesian_decoupled": {
+    # Key names the arm it reads: the decoupled fit WITH zero-inflated dropout.
+    "bayesian_decoupled_dropout": {
         "label": "Bayesian decoupled",
         "kind": "bayesian",
         "root_attr": "new_bayesian_dir",
@@ -65,7 +62,7 @@ METHOD_SPECS = {
         "root_attr": "bootstrap_dir",
     },
 }
-DEFAULT_METHOD_KEYS = ("bayesian_decoupled", "bayesian_joint", "bootstrap")
+DEFAULT_METHOD_KEYS = ("bayesian_decoupled_dropout", "bayesian_joint", "bootstrap")
 FILTER_VARIANTS = ("complete", "t7_gt_threshold", "t7_ge_threshold")
 NEGATIVE_CONTROL_COLUMN = "Negative control"
 DENSE_AXIS_LIMIT = 60
@@ -81,17 +78,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--old-bayesian-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint",
+        default=ablation_root("bayesian_joint"),
     )
     parser.add_argument(
         "--new-bayesian-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "ablation" / "bayesian_decoupled",
+        default=ablation_root("bayesian_decoupled_dropout"),
     )
     parser.add_argument(
         "--joint-dropout-bayesian-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint_dropout",
+        default=ablation_root("bayesian_joint_dropout"),
     )
     parser.add_argument(
         "--figures-dir", type=Path, default=FIGURES_WORK

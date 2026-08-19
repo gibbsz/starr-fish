@@ -15,9 +15,23 @@ Three families, selected by ``infection_model``:
 ``binary``
     a shared Bernoulli infection gate instead of a copy count.
 
-Two activity parameterisations, selected by ``activity_model``: ``hierarchical``
-(``log_gamma = alpha_j + eta_{class,j} + delta_{subclass,j}``) and ``direct``
-(exchangeable over the full subclass x cCRE matrix; used for the production fit).
+Two activity parameterisations, selected by ``activity_model``:
+
+``direct`` (the default)
+    ``log_gamma`` exchangeable over the full subclass x cCRE matrix,
+    ``mu_gamma + sigma_gamma * N(0, 1)``. Every negative control gets its own free
+    parameter, so the spread across controls is a real quantity the downstream test
+    can use. This is what the production fits use, and it **refuses** a
+    ``negative_control_mask``.
+``hierarchical``
+    ``log_gamma = alpha_j + eta_{class,j} + delta_{subclass,j}``. Borrows strength
+    across subclasses within a cCRE, and accepts a ``negative_control_mask``, which
+    collapses the masked controls onto one shared trajectory (``log_gamma_neg``).
+
+The two shrink poorly-measured pairs toward different targets -- one global mean
+versus each cCRE's own level -- so fits made under different settings are not
+comparable pair-for-pair. ``activity_model`` is recorded in every run manifest;
+check it before comparing two fits.
 """
 
 from __future__ import annotations
@@ -101,7 +115,7 @@ def model_t7_full_dropout(stats: CollapsedStats, lib_size_centered, kmax: int,
 
 def model_classlevel(stats: CollapsedStats, lib_size_centered, kmax: int,
                      negative_control_mask=None,
-                     priors: ModelPriors = ModelPriors(), activity_model="hierarchical",
+                     priors: ModelPriors = ModelPriors(), activity_model="direct",
                      observe: bool = True):
     """Stage-2 joint CRE+T7 model at class granularity (group == class)."""
     log_a = _sample_abundance(lib_size_centered, priors)
@@ -119,7 +133,7 @@ def model_classlevel(stats: CollapsedStats, lib_size_centered, kmax: int,
 
 def model_full(stats: CollapsedStats, lib_size_centered, kmax: int,
                negative_control_mask=None,
-               priors: ModelPriors = ModelPriors(), activity_model="hierarchical",
+               priors: ModelPriors = ModelPriors(), activity_model="direct",
                observe: bool = True):
     """Stage-3 full model: subclass nested in class (group == subclass)."""
     assert stats.class_of_group is not None, "model_full needs class_of_group on stats"
@@ -139,7 +153,7 @@ def model_full(stats: CollapsedStats, lib_size_centered, kmax: int,
 
 def model_classlevel_dropout(stats: CollapsedStats, lib_size_centered, kmax: int,
                              negative_control_mask=None,
-                             priors: ModelPriors = ModelPriors(), activity_model="hierarchical",
+                             priors: ModelPriors = ModelPriors(), activity_model="direct",
                              observe: bool = True):
     """Joint class model with global T7 and CRE zero-inflated dropout rates."""
     log_a = _sample_abundance(lib_size_centered, priors)
@@ -169,7 +183,7 @@ def model_classlevel_dropout(stats: CollapsedStats, lib_size_centered, kmax: int
 
 def model_full_dropout(stats: CollapsedStats, lib_size_centered, kmax: int,
                        negative_control_mask=None,
-                       priors: ModelPriors = ModelPriors(), activity_model="hierarchical",
+                       priors: ModelPriors = ModelPriors(), activity_model="direct",
                        observe: bool = True):
     """Joint subclass model with global T7 and CRE zero-inflated dropout rates."""
     assert stats.class_of_group is not None, "model_full_dropout needs class_of_group on stats"
@@ -208,13 +222,15 @@ def model_cre_conditional_subclass(
     kmax: int,
     negative_control_mask=None,
     priors: ModelPriors = ModelPriors(),
+    activity_model="direct",
     observe: bool = True,
 ):
     """CRE-only subclass activity model conditioned on T7 infection posterior."""
     assert stats.class_of_group is not None, "model_cre_conditional_subclass needs class_of_group"
     n_class = int(stats.n_class)
     log_gamma = _sample_activity_subclasslevel(
-        stats.n_group, n_class, stats.n_cre, stats.class_of_group, priors, negative_control_mask
+        stats.n_group, n_class, stats.n_cre, stats.class_of_group, priors,
+        negative_control_mask, activity_model,
     )
     phi_cre = numpyro.sample("phi_cre", dist.HalfNormal(priors.phi_cre_scale))
     p_drop_cre = _sample_cre_dropout(priors)
@@ -242,13 +258,15 @@ def model_cre_conditional_subclass_no_dropout(
     kmax: int,
     negative_control_mask=None,
     priors: ModelPriors = ModelPriors(),
+    activity_model="direct",
     observe: bool = True,
 ):
     """CRE-only subclass activity model conditioned on T7 posterior, without dropout."""
     assert stats.class_of_group is not None, "model_cre_conditional_subclass_no_dropout needs class_of_group"
     n_class = int(stats.n_class)
     log_gamma = _sample_activity_subclasslevel(
-        stats.n_group, n_class, stats.n_cre, stats.class_of_group, priors, negative_control_mask
+        stats.n_group, n_class, stats.n_cre, stats.class_of_group, priors,
+        negative_control_mask, activity_model,
     )
     phi_cre = numpyro.sample("phi_cre", dist.HalfNormal(priors.phi_cre_scale))
     if observe:
@@ -280,7 +298,7 @@ def model_binary_t7_classlevel(stats: CollapsedStats, lib_size_centered, kmax: i
 
 def model_binary_classlevel(stats: CollapsedStats, lib_size_centered, kmax: int,
                             negative_control_mask=None,
-                            priors: ModelPriors = ModelPriors(), activity_model="hierarchical",
+                            priors: ModelPriors = ModelPriors(), activity_model="direct",
                             observe: bool = True):
     """Joint class model with a shared binary infection event."""
     log_a = _sample_abundance(lib_size_centered, priors)
@@ -298,7 +316,7 @@ def model_binary_classlevel(stats: CollapsedStats, lib_size_centered, kmax: int,
 
 def model_binary_full(stats: CollapsedStats, lib_size_centered, kmax: int,
                       negative_control_mask=None,
-                      priors: ModelPriors = ModelPriors(), activity_model="hierarchical",
+                      priors: ModelPriors = ModelPriors(), activity_model="direct",
                       observe: bool = True):
     """Joint subclass model with a shared binary infection event."""
     assert stats.class_of_group is not None, "model_binary_full needs class_of_group on stats"

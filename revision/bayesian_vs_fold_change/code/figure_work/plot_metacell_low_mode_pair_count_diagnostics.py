@@ -30,6 +30,7 @@ from analysis_utils import (
     FIGURES_WORK,
     LIBSIZE_CSV,
     OLD_DATA_BOOTSTRAP,
+    ablation_root,
     log,
     write_json,
 )
@@ -50,7 +51,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--old-bayesian-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint",
+        default=ablation_root("bayesian_joint"),
     )
     parser.add_argument(
         "--new-bayesian-dir",
@@ -61,15 +62,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--decoupled-bayesian-dir",
         type=Path,
-        default=ANALYSIS_DIR
-        / "results"
-        / "ablation"
-        / "bayesian_decoupled_no_dropout",
+        default=ablation_root("bayesian_decoupled"),
     )
     parser.add_argument(
         "--joint-dropout-bayesian-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint_dropout",
+        default=ablation_root("bayesian_joint_dropout"),
     )
     parser.add_argument(
         "--decoupled-dropout-bayesian-dir",

@@ -16,7 +16,15 @@ import seaborn as sns
 from scipy.stats import fisher_exact
 from sklearn.metrics import average_precision_score, precision_recall_curve
 
-from analysis_utils import ANALYSIS_DIR, FIGURES_WORK, STARRFISH_DATA, write_json
+from analysis_utils import (
+    ANALYSIS_DIR,
+    FIGURES_WORK,
+    PANEL_SIDE_INCHES,
+    STARRFISH_DATA,
+    display_label,
+    fit_panel_size,
+    write_json,
+)
 from test_individual_negative_control_loo_empirical_fdr import assign_empirical_fdr
 from baystarrfish.stats import bh_fdr
 
@@ -51,6 +59,9 @@ METHOD_COLORS = {
     FILTERED_MEAN_CONTROL_METHOD: "#7f7f7f",
     FILTERED_BOOTSTRAP_MEAN_CONTROL_METHOD: "#bcbd22",
 }
+#: Width reserved for the method legend, which sits outside the top-right panel.
+LEGEND_INCHES = 2.2
+
 ASSAYS = {
     "ATAC peak": STARRFISH_DATA / "cre_atac_peaks.csv",
     "Chromatin-a": STARRFISH_DATA / "cre_chromatin_state_a.csv",
@@ -529,7 +540,10 @@ def plot_precision_recall(
     fig, axes = plt.subplots(
         len(metrics),
         len(assays),
-        figsize=(max(12, 1.45 * len(methods) + 4.0), 7.8),
+        figsize=(
+            PANEL_SIDE_INCHES * len(assays) + LEGEND_INCHES,
+            PANEL_SIDE_INCHES * len(metrics),
+        ),
         sharey=False,
         constrained_layout=True,
     )
@@ -600,7 +614,10 @@ def plot_precision_recall(
             if row_idx != 0 or col_idx != len(assays) - 1:
                 ax.get_legend().remove()
             else:
+                handles, legend_labels = ax.get_legend_handles_labels()
                 ax.legend(
+                    handles,
+                    [display_label(text) for text in legend_labels],
                     title="Method",
                     loc="upper left",
                     bbox_to_anchor=(1.02, 1.0),
@@ -619,6 +636,7 @@ def plot_precision_recall(
     )
     sns.despine(fig=fig)
     output.parent.mkdir(parents=True, exist_ok=True)
+    fit_panel_size(fig, axes)
     fig.savefig(output, bbox_inches="tight")
     plt.close(fig)
 
@@ -632,7 +650,11 @@ def plot_pr_curves(
 ) -> None:
     sns.set_theme(context="paper", style="whitegrid")
     fig, axes = plt.subplots(
-        1, len(ASSAYS), figsize=(12.2, 6.2), constrained_layout=True, squeeze=False
+        1,
+        len(ASSAYS),
+        figsize=(PANEL_SIDE_INCHES * len(ASSAYS), PANEL_SIDE_INCHES),
+        constrained_layout=True,
+        squeeze=False,
     )
     for ax, assay_name in zip(axes[0], ASSAYS):
         assay_curves = curves[curves["assay"].eq(assay_name)]
@@ -648,7 +670,7 @@ def plot_pr_curves(
                 where="post",
                 color=METHOD_COLORS[method],
                 linewidth=1.35,
-                label=f"{method} (AP={ap:.3f})",
+                label=f"{display_label(method)} (AP={ap:.3f})",
             )
         prevalence = float(assay_metrics["prevalence"].iloc[0])
         ax.axhline(
@@ -681,6 +703,7 @@ def plot_pr_curves(
         fontsize=12,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
+    fit_panel_size(fig, axes)
     fig.savefig(output, bbox_inches="tight")
     plt.close(fig)
 

@@ -46,6 +46,7 @@ from analysis_utils import (  # noqa: E402
 # promote it; its sidecars follow automatically.
 FINAL_FIGURES: Final[tuple[str, ...]] = (
     "method_activity_correlation_t7_gt50.pdf",
+    "method_activity_correlation_complete.pdf",
     "method_activity_correlation_cellgt1000.pdf",
     "method_activity_correlation_t7nanoporegt1000.pdf",
     "method_activity_stripe_count_diagnostics_horizontal_bayesian_minus0p5.pdf",
@@ -88,7 +89,14 @@ def parse_args() -> argparse.Namespace:
 
 
 def sidecars(search_dirs: list[Path], figure: str) -> list[Path]:
-    """Files sharing the figure's stem, excluding the figure itself."""
+    """Data files sharing the figure's stem, excluding the figure itself.
+
+    The stem scan is a plain prefix match, so PDFs are excluded: one figure's name
+    is often a prefix of another's (``..._complete.pdf`` vs
+    ``..._complete_ccre_colored.pdf``), and a figure is never another figure's
+    sidecar. Promoting a figure must not drag its neighbours along -- every real
+    sidecar is a table (``*_pairs.csv``, ``*_values.csv``, ``*_summary.csv``).
+    """
     stem = Path(figure).stem
     found: list[Path] = []
     for directory in search_dirs:
@@ -101,6 +109,7 @@ def sidecars(search_dirs: list[Path], figure: str) -> list[Path]:
                 if path.is_file()
                 and path.name != figure
                 and path.name.startswith(stem)
+                and path.suffix.lower() != ".pdf"
             )
         )
     return found

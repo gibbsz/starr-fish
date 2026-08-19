@@ -56,20 +56,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--negative-control-mode",
         choices=["pooled", "ordinary", "ordinary-and-pooled"],
-        default="pooled",
+        default="ordinary",
         help=(
-            "Pool annotated negative controls through shared activity parameters, "
-            "fit them as ordinary cCREs, or fit the seven ordinary columns plus "
-            "one appended all-seven pooled pseudo-cCRE in the same model."
+            "Fit the annotated negative controls as ordinary cCREs (the default, and "
+            "the only mode --activity-model direct accepts), pool them through shared "
+            "activity parameters, or fit the seven ordinary columns plus one appended "
+            "all-seven pooled pseudo-cCRE in the same model."
         ),
     )
     parser.add_argument(
         "--activity-model",
         choices=["hierarchical", "direct"],
-        default="hierarchical",
+        default="direct",
         help=(
-            "Use the alpha/eta/delta hierarchy or directly estimate an exchangeable "
-            "raw log_gamma matrix. Direct activity requires ordinary negative controls."
+            "Directly estimate an exchangeable raw log_gamma matrix (the default; "
+            "requires ordinary negative controls) or use the alpha/eta/delta "
+            "hierarchy. The two shrink thinly-measured pairs toward different "
+            "targets, so fits made under different settings are not comparable "
+            "pair-for-pair."
         ),
     )
     parser.add_argument("--kmax", type=int, default=None)
@@ -100,6 +104,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-cells", type=int, default=None, help="Smoke testing only.")
     parser.add_argument("--max-cres", type=int, default=None, help="Smoke testing only.")
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help=(
+            "Replace a completed fit. Without it, an outdir that already holds a "
+            "run_manifest.json is refused. The default outdir for the production "
+            "settings is Bayes_OldData/bayesian, so a bare invocation would otherwise "
+            "overwrite the shipped fit."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -160,6 +174,16 @@ def main() -> None:
         )
     if args.outdir is None:
         args.outdir = default_outdir(args)
+    # Fits are cheap to recompute (~13 min) but their outputs are cited downstream,
+    # so replacing one must be deliberate. This matters most for the default settings,
+    # whose default outdir is the shipped production fit.
+    existing_manifest = Path(args.outdir) / "run_manifest.json"
+    if existing_manifest.exists() and not args.overwrite:
+        raise SystemExit(
+            f"refusing to overwrite the completed fit in {args.outdir}\n"
+            f"  {existing_manifest} already exists\n"
+            "pass --overwrite, or point --outdir somewhere else"
+        )
     if args.cpu:
         # Must precede the first touch of a model symbol, which is what triggers
         # the JAX import and therefore the backend choice.

@@ -27,6 +27,7 @@ from analysis_utils import (
     ANALYSIS_DIR,
     FIGURES_WORK,
     OLD_DATA_BOOTSTRAP,
+    ablation_root,
     log,
     write_json,
 )
@@ -49,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--joint-bayesian-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint",
+        default=ablation_root("bayesian_joint"),
     )
     parser.add_argument(
         "--metacell-bayesian-dir",

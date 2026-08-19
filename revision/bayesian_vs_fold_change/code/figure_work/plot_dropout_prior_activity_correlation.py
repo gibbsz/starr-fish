@@ -29,6 +29,7 @@ from analysis_utils import (
     DEFAULT_H5AD,
     FIGURES_WORK,
     OLD_DATA_BOOTSTRAP,
+    ablation_root,
     log,
     write_json,
 )
@@ -43,12 +44,9 @@ from plot_section_reproducibility import bayesian_base, bootstrap_base
 
 METHOD_DIRS = {
     "Joint Bayes no dropout": (
-        ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint"
+        ablation_root("bayesian_joint")
     ),
-    "Joint Bayes dropout default Beta(1,9)": ANALYSIS_DIR
-    / "results"
-    / "ablation"
-    / "bayesian_joint_dropout",
+    "Joint Bayes dropout default Beta(1,9)": ablation_root("bayesian_joint_dropout"),
     "Joint Bayes dropout moderate Beta(2,5)": ANALYSIS_DIR
     / "results"
     / "ablation"

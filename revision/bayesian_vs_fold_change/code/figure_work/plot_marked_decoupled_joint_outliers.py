@@ -24,11 +24,11 @@ if str(_CODE_DIR) not in _sys.path:
     _sys.path.insert(0, str(_CODE_DIR))
 
 from analysis_utils import (
-    ANALYSIS_DIR,
     DEFAULT_H5AD,
     FIGURES_WORK,
     LIBSIZE_CSV,
     OLD_DATA_BOOTSTRAP,
+    ablation_root,
     log,
     write_json,
 )
@@ -52,12 +52,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--old-bayesian-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint",
+        default=ablation_root("bayesian_joint"),
     )
     parser.add_argument(
         "--new-bayesian-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "ablation" / "bayesian_decoupled",
+        default=ablation_root("bayesian_decoupled_dropout"),
     )
     parser.add_argument(
         "--figures-dir", type=Path, default=FIGURES_WORK

@@ -62,14 +62,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-cells", type=int, default=None, help="Smoke testing only.")
     parser.add_argument("--max-cres", type=int, default=None, help="Smoke testing only.")
     parser.add_argument("--cpu", action="store_true")
+    parser.add_argument(
+        "--negative-control-mode",
+        choices=["pooled", "ordinary", "ordinary-and-pooled"],
+        default="ordinary",
+        help=(
+            "Fit the annotated negative controls as ordinary cCREs (the default, and "
+            "the only mode --activity-model direct accepts), pool them through shared "
+            "activity parameters, or add an appended all-seven pooled pseudo-cCRE."
+        ),
+    )
+    parser.add_argument(
+        "--activity-model",
+        choices=["hierarchical", "direct"],
+        default="direct",
+        help=(
+            "Directly estimate an exchangeable raw log_gamma matrix (the default; "
+            "requires ordinary negative controls) or use the alpha/eta/delta "
+            "hierarchy. Must match the fit this run will be compared against."
+        ),
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace a completed fit instead of refusing to start.",
+    )
     return parser.parse_args()
 
 
 def default_outdir(args: argparse.Namespace) -> Path:
+    # The suffix names what the arm HAS, not what it lacks: bayesian_decoupled is the
+    # plain two-stage fit and bayesian_decoupled_dropout adds zero-inflated dropout.
     name = (
-        "bayesian_decoupled"
+        "bayesian_decoupled_dropout"
         if args.dropout_model == "zero_inflated"
-        else "bayesian_decoupled_no_dropout"
+        else "bayesian_decoupled"
     )
     if args.section == "all":
         return ANALYSIS_DIR / "results" / "ablation" / name
@@ -98,8 +125,19 @@ def dropout_prior_config(args: argparse.Namespace) -> dict:
 
 def main() -> None:
     args = parse_args()
+    if args.activity_model == "direct" and args.negative_control_mode != "ordinary":
+        raise ValueError(
+            "--activity-model direct requires --negative-control-mode ordinary"
+        )
     if args.outdir is None:
         args.outdir = default_outdir(args)
+    existing_manifest = args.outdir / "run_manifest.json"
+    if existing_manifest.exists() and not args.overwrite:
+        raise SystemExit(
+            f"refusing to overwrite the completed fit in {args.outdir}\n"
+            f"  {existing_manifest} already exists\n"
+            "pass --overwrite, or point --outdir somewhere else"
+        )
     if args.cpu:
         # Must precede the first touch of a model symbol.
         os.environ["JAX_PLATFORMS"] = "cpu"
@@ -112,14 +150,13 @@ def main() -> None:
         p_drop_cre_beta=args.p_drop_cre_beta,
     )
 
-    # The decoupled ablation always pools the annotated controls in-model.
     data = CountData.from_h5ad(
         args.h5ad,
         section=args.section,
         max_cells=args.max_cells,
         max_cres=args.max_cres,
         seed=args.seed,
-        negative_control_mode="pooled",
+        negative_control_mode=args.negative_control_mode.replace("-", "_"),
     )
 
     posterior_sites = (
@@ -144,6 +181,7 @@ def main() -> None:
         infection_quadrature_points=args.infection_quadrature_points,
         posterior_sites_to_return=posterior_sites,
         dropout_model=args.dropout_model,
+        activity_model=args.activity_model,
     )
     result["config"].update(
         {
@@ -155,6 +193,8 @@ def main() -> None:
             "posterior_sites_to_return": posterior_sites,
             "dropout_prior": dropout_prior_config(args),
             "dropout_model": args.dropout_model,
+            "activity_model": args.activity_model,
+            "negative_control_mode": args.negative_control_mode.replace("-", "_"),
         }
     )
 

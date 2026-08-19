@@ -17,11 +17,15 @@ import pandas as pd
 import seaborn as sns
 
 from analysis_utils import (
-    ANALYSIS_DIR,
+    PANEL_SIDE_INCHES,
+    REFERENCE_PANEL_SIDE_INCHES,
+    display_label,
+    fit_panel_size,
     DEFAULT_H5AD,
     FIGURES_WORK,
     LIBSIZE_CSV,
     OLD_DATA_BOOTSTRAP,
+    ablation_root,
     log,
     read_and_prepare_adata,
     write_json,
@@ -32,6 +36,7 @@ from plot_method_activity_heatmap import (
     trim_empty_axes,
 )
 from plot_section_reproducibility import bayesian_base, bootstrap_base
+from activity_matrix_io import load_beta_t7_activity, matrix_paths  # noqa: E402
 
 
 METHODS = ("Bayesian decoupled", "Bayesian joint", "Bootstrap")
@@ -45,6 +50,67 @@ CORRELATION_METHODS = (
     "Decoupled+dropout",
 )
 
+#: Bootstrap plus the production fit, for the scripts that compare the two estimators
+#: against the raw pair counts. The point estimate rides along because it is what the
+#: count diagnostics quote per selected pair.
+PRODUCTION_METHODS = (
+    "Bootstrap",
+    POINT_METHOD,
+    "Joint+dropout",
+)
+
+#: Every manuscript panel is a two-method comparison: the bootstrap fold change against
+#: the production Bayesian fit. Carrying the ablation arms put two universes in one
+#: figure -- the Bayesian x Bayesian panels spanned all 328 x 389 = 127,592 pairs while
+#: every panel touching a fold-change axis was cut to the 34,255 pairs with cCRE > 0
+#: and T7 > 0, since ``mean(log(cCRE / T7))`` is undefined anywhere else.
+#: ``POINT_METHOD`` is left out because it is essentially a copy of ``Bootstrap``
+#: (r = 0.984) and its panel showed only the discreteness of the two estimators against
+#: each other, not a method difference.
+SHIPPED_VARIANT_METHODS = (
+    "Bootstrap",
+    "Joint+dropout",
+)
+
+#: The variants ``figure_final/collect_final_figures.py`` copies into
+#: results/figures/final. They carry :data:`SHIPPED_VARIANT_METHODS`; the work/-only t7
+#: variants keep the full ablation matrix, which is where the four model arms are still
+#: compared against one another.
+SHIPPED_VARIANTS = (
+    "complete",
+    "t7_gt50",
+    "cellgt1000",
+    "t7nanoporegt1000",
+)
+
+#: Which arm under revision/Bayesian_ablation/ each Bayesian label reads. Every arm
+#: there shares the production ``direct`` activity parameterisation and ordinary
+#: negative controls, so these four differ only in channel and dropout -- which is what
+#: makes the correlation matrix a model comparison rather than a parameterisation
+#: comparison. ``bayesian_joint_dropout`` is a symlink to Bayes_OldData, i.e. the
+#: production fit itself, so it needs no separate label.
+ABLATION_ARM_FOR_METHOD = {
+    "Joint": "bayesian_joint",
+    "Joint+dropout": "bayesian_joint_dropout",
+    "Decoupled": "bayesian_decoupled",
+    "Decoupled+dropout": "bayesian_decoupled_dropout",
+    # Legacy labels, kept for METHODS and plot_method_activity_heatmap.METHOD_SPECS.
+    "Bayesian joint": "bayesian_joint",
+    "Bayesian decoupled": "bayesian_decoupled_dropout",
+    "Metacell Bayesian": "bayesian_bootstrap_metacells_size100_number100",
+}
+
+#: Per-method CLI override, for the scripts that pass an explicit directory.
+METHOD_ROOT_OVERRIDE_ATTR = {
+    "Joint": "old_bayesian_dir",
+    "Bayesian joint": "old_bayesian_dir",
+    "Decoupled": "decoupled_bayesian_dir",
+    "Joint+dropout": "joint_dropout_bayesian_dir",
+    "Decoupled+dropout": "decoupled_dropout_bayesian_dir",
+    "Bayesian decoupled": "new_bayesian_dir",
+    "Metacell Bayesian": "metacell_bayesian_dir",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -54,7 +120,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--old-bayesian-dir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "ablation" / "bayesian_joint",
+        default=ablation_root("bayesian_joint"),
     )
     parser.add_argument(
         "--new-bayesian-dir",
@@ -117,41 +183,55 @@ def mean_log_beta_t7(root: Path) -> float:
 
 
 def default_bayesian_root(name: str) -> Path:
-    return ANALYSIS_DIR / "results" / "ablation" / name
+    """Posterior dir for one ablation arm; ablation_root knows which moved."""
+    return ablation_root(name)
 
 
 def method_roots(args: argparse.Namespace) -> dict[str, Path]:
-    joint = getattr(args, "old_bayesian_dir", default_bayesian_root("bayesian_joint"))
-    legacy_decoupled = (
-        getattr(args, "new_bayesian_dir", None)
-        or default_bayesian_root("bayesian_decoupled")
-    )
-    decoupled = (
-        getattr(args, "decoupled_bayesian_dir", None)
-        or default_bayesian_root("bayesian_decoupled_no_dropout")
-    )
-    joint_dropout = (
-        getattr(args, "joint_dropout_bayesian_dir", None)
-        or default_bayesian_root("bayesian_joint_dropout")
-    )
-    decoupled_dropout = (
-        getattr(args, "decoupled_dropout_bayesian_dir", None)
-        or legacy_decoupled
-    )
-    metacell = (
-        getattr(args, "metacell_bayesian_dir", None)
-        or default_bayesian_root("bayesian_bootstrap_metacells_size100_number100")
-    )
-    return {
-        "Bootstrap": getattr(args, "bootstrap_dir", OLD_DATA_BOOTSTRAP),
-        "Bayesian decoupled": legacy_decoupled,
-        "Bayesian joint": joint,
-        "Joint": joint,
-        "Decoupled": decoupled,
-        "Joint+dropout": joint_dropout,
-        "Decoupled+dropout": decoupled_dropout,
-        "Metacell Bayesian": metacell,
-    }
+    """Posterior directory per method label.
+
+    Callers declare only some of the override flags, so each is read with ``getattr``
+    and falls back to the arm named in :data:`ABLATION_ARM_FOR_METHOD`.
+    """
+    roots = {"Bootstrap": getattr(args, "bootstrap_dir", OLD_DATA_BOOTSTRAP)}
+    for method, arm in ABLATION_ARM_FOR_METHOD.items():
+        override = getattr(args, METHOD_ROOT_OVERRIDE_ATTR.get(method, ""), None)
+        roots[method] = override or default_bayesian_root(arm)
+    return roots
+
+
+def exported_tables_dir(root: Path) -> Path:
+    """The ``tables/`` sibling of a posterior directory.
+
+    ``export_activity_matrix.py`` defaults its ``--outdir`` to exactly this, so the
+    convention holds for the relocated ablation arms and for an explicitly passed
+    ``Bayes_OldData/bayesian`` alike.
+    """
+    return root.parent / "tables"
+
+
+def exported_beta_t7_activity(root: Path) -> tuple[pd.DataFrame, float]:
+    """Read one fit's beta_t7-referenced activity matrix and its correction scalar.
+
+    This is the same quantity the posterior would give -- posterior mean ``log_gamma``
+    minus ``mean(log(beta_t7))``, controls included -- but reading the exported matrix
+    avoids opening a 439 MB ``.npz`` (twice) per method.
+    """
+    tables_dir = exported_tables_dir(root)
+    activity = load_beta_t7_activity(tables_dir)
+    manifest_path = matrix_paths(tables_dir)["manifest"]
+    if not manifest_path.exists():
+        raise FileNotFoundError(
+            f"Missing export manifest {manifest_path}. Run the activity-matrix export "
+            f"for {root} first."
+        )
+    manifest = json.loads(manifest_path.read_text())
+    if "mean_log_beta_t7" not in manifest:
+        raise ValueError(
+            f"{manifest_path} predates the beta_t7 export; re-run "
+            "revision/run_Bayes/export_activity_matrix.py for this fit"
+        )
+    return activity, float(manifest["mean_log_beta_t7"])
 
 
 def load_corrected_activity(
@@ -167,7 +247,10 @@ def load_corrected_activity(
         root = roots[method]
         if method == "Bootstrap":
             raw[method] = bootstrap_base(root, args)[0]
+        elif args.activity_calibration == "none":
+            raw[method], corrections[method] = exported_beta_t7_activity(root)
         else:
+            # The calibrated scale is not exported; it still needs the posterior.
             raw[method] = bayesian_base(root, args)[0]
             corrections[method] = mean_log_beta_t7(root)
             raw[method] = raw[method] - corrections[method]
@@ -225,6 +308,20 @@ def stack_methods(
     return pd.concat(series, axis=1)
 
 
+def complete_cases(wide: pd.DataFrame) -> pd.DataFrame:
+    """Restrict a stacked frame to the pairs every plotted method scores.
+
+    One figure must describe one universe of subclass x cCRE pairs. Both fold-change
+    estimators are undefined wherever the pair's cCRE or T7 count is zero, while the
+    Bayesian posterior is finite on every pair, so dropping non-finite values
+    column-by-column would put the diagonal histograms on a much larger set than the
+    scatters beside them -- 127,592 pairs against 34,255 in the unfiltered variant --
+    and the resulting shift in the Bayesian marginal reads as a method bias rather
+    than as the change of universe it is.
+    """
+    return wide.replace([np.inf, -np.inf], np.nan).dropna()
+
+
 def correlation_row(
     variant: str,
     x_method: str,
@@ -246,9 +343,26 @@ def correlation_row(
     }
 
 
-def scatter_style_for_variant(variant: str) -> dict:
+#: Extra figure width for the colorbar strip on the colour-by-count matrix.
+COLORBAR_INCHES = 0.8
+
+
+def marker_scale() -> float:
+    """Marker-area factor that holds point density fixed across panel sizes.
+
+    Sizes were tuned when a panel was ``REFERENCE_PANEL_SIDE_INCHES`` square. Panels
+    are now a fixed ``PANEL_SIDE_INCHES`` regardless of how many methods the matrix
+    holds, so the factor is a constant -- keeping the marker size fixed instead would
+    spread the same points over a larger canvas and the dense bands, the shrinkage
+    floor in particular, would stop being legible.
+    """
+    return float((PANEL_SIDE_INCHES / REFERENCE_PANEL_SIDE_INCHES) ** 2)
+
+
+def scatter_style_for_variant(variant: str, n_methods: int) -> dict:
+    scale = marker_scale()
     return {
-        "s": 2,
+        "s": 2 * scale,
         "alpha": 0.08,
         "linewidths": 0,
         "color": "#2f6f8f",
@@ -265,11 +379,11 @@ def plot_scatter_matrix(
 ) -> list[dict]:
     sns.set_theme(context="paper", style="white")
     limits = {method: axis_limit(wide[method]) for method in methods}
-    scatter_style = scatter_style_for_variant(variant)
+    scatter_style = scatter_style_for_variant(variant, len(methods))
     fig, axes = plt.subplots(
         len(methods),
         len(methods),
-        figsize=(max(13.8, 2.7 * len(methods)), max(13.8, 2.7 * len(methods))),
+        figsize=(PANEL_SIDE_INCHES * len(methods), PANEL_SIDE_INCHES * len(methods)),
         constrained_layout=True,
         squeeze=False,
     )
@@ -327,23 +441,26 @@ def plot_scatter_matrix(
                     bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
                 )
             if row == len(methods) - 1:
-                ax.set_xlabel(x_method)
+                ax.set_xlabel(display_label(x_method))
             else:
                 ax.set_xlabel("")
                 ax.set_xticklabels([])
             if col == 0:
-                ax.set_ylabel(y_method)
+                ax.set_ylabel(display_label(y_method))
             else:
                 ax.set_ylabel("")
                 ax.set_yticklabels([])
     fig.suptitle(
         f"Method activity correlations ({filter_label})\n"
+        f"every panel, diagonals included, uses the {len(wide):,} subclass-cCRE pairs "
+        "scored by all methods shown; "
         "Bayesian values use log_gamma - E[log(beta_t7)]; "
         "point estimate is log(total cCRE / total T7); "
         "black line is y = x; axes show 0.5-99.5 percentile ranges.",
         fontsize=12,
     )
     sns.despine(fig=fig)
+    fit_panel_size(fig, axes)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, bbox_inches="tight")
     plt.close(fig)
@@ -409,6 +526,7 @@ def plot_count_colored_scatter_matrix(
     positive_counts = total_counts[
         np.isfinite(total_counts.to_numpy(float)) & total_counts.gt(0).to_numpy()
     ]
+    scale = marker_scale()
     cmap = "coolwarm_r"
     vmax_floor = max(float(max(colorbar_ticks)), center_count * 1.1)
     vmax = float(max(vmax_floor, positive_counts.max())) if len(positive_counts) else vmax_floor
@@ -424,7 +542,10 @@ def plot_count_colored_scatter_matrix(
     fig, axes = plt.subplots(
         len(methods),
         len(methods),
-        figsize=(max(14.6, 2.9 * len(methods)), max(13.8, 2.7 * len(methods))),
+        figsize=(
+            PANEL_SIDE_INCHES * len(methods) + COLORBAR_INCHES,
+            PANEL_SIDE_INCHES * len(methods),
+        ),
         constrained_layout=True,
         squeeze=False,
     )
@@ -472,7 +593,7 @@ def plot_count_colored_scatter_matrix(
                     ax.scatter(
                         pair[x_method].to_numpy()[background],
                         pair[y_method].to_numpy()[background],
-                        s=1.2,
+                        s=1.2 * scale,
                         alpha=0.08,
                         linewidths=0,
                         color=zero_color,
@@ -485,7 +606,7 @@ def plot_count_colored_scatter_matrix(
                         c=np.log10(pair_count_array[positive]),
                         cmap=cmap,
                         norm=norm,
-                        s=2,
+                        s=2 * scale,
                         alpha=0.16,
                         linewidths=0,
                         rasterized=True,
@@ -508,12 +629,12 @@ def plot_count_colored_scatter_matrix(
                     bbox={"facecolor": "white", "alpha": 0.75, "edgecolor": "none"},
                 )
             if row == len(methods) - 1:
-                ax.set_xlabel(x_method)
+                ax.set_xlabel(display_label(x_method))
             else:
                 ax.set_xlabel("")
                 ax.set_xticklabels([])
             if col == 0:
-                ax.set_ylabel(y_method)
+                ax.set_ylabel(display_label(y_method))
             else:
                 ax.set_ylabel("")
                 ax.set_yticklabels([])
@@ -530,11 +651,14 @@ def plot_count_colored_scatter_matrix(
     colorbar.ax.set_yticklabels([str(tick) for tick in ticks])
     fig.suptitle(
         f"Method activity correlations ({filter_label})\n"
-        f"Off-diagonal points colored by {count_label}; purple means count = 0. "
+        f"every panel uses the {len(wide):,} subclass-cCRE pairs scored by all "
+        "methods shown; "
+        f"off-diagonal points colored by {count_label}; purple means count = 0. "
         "Black line is y = x.",
         fontsize=12,
     )
     sns.despine(fig=fig)
+    fit_panel_size(fig, axes)
     output.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output, bbox_inches="tight")
     plt.close(fig)
@@ -691,23 +815,38 @@ def plot_correlations(args: argparse.Namespace) -> dict:
         "cellgt1000": variants["cellgt1000"],
         "t7nanoporegt1000": variants["t7nanoporegt1000"],
     }
+    for name in SHIPPED_VARIANTS:
+        if name in variants:
+            variants[name]["methods"] = SHIPPED_VARIANT_METHODS
+
     outputs = {}
     colored_outputs = {}
     variant_summary = {}
     correlations = []
     for variant, spec in variants.items():
-        masked = {method: matrix.where(spec["mask"]) for method, matrix in matrices.items()}
+        variant_methods = tuple(spec.get("methods", methods))
+        masked = {
+            method: matrices[method].where(spec["mask"]) for method in variant_methods
+        }
         trimmed, rows, columns, present = trim_empty_axes(masked)
-        wide = stack_methods(trimmed, methods)
+        wide = complete_cases(stack_methods(trimmed, variant_methods))
         output = args.figures_dir / f"{args.stem}_{variant}.pdf"
         correlations.extend(
-            plot_scatter_matrix(wide, variant, spec["filter_label"], output, methods)
+            plot_scatter_matrix(
+                wide, variant, spec["filter_label"], output, variant_methods
+            )
         )
         outputs[variant] = str(output)
         variant_summary[variant] = {
             "rows": int(len(rows)),
             "columns": int(len(columns)),
+            "methods": list(variant_methods),
             "finite_pairs_any_method": int(present.to_numpy(bool).sum()),
+            "complete_case_pairs": int(len(wide)),
+            "complete_case_rows": int(
+                wide.index.get_level_values("group").nunique()
+            ),
+            "complete_case_columns": int(wide.index.get_level_values("cre").nunique()),
             "passing_filter_pairs": int(spec["mask"].to_numpy(bool).sum()),
             "filter_kind": spec["filter_kind"],
             "output": str(output),
@@ -727,7 +866,7 @@ def plot_correlations(args: argparse.Namespace) -> dict:
                 variant,
                 spec["filter_label"],
                 t7_colored_output,
-                methods,
+                variant_methods,
                 "Total T7 count",
                 "subclass_cCRE_total_t7",
             )
@@ -739,7 +878,7 @@ def plot_correlations(args: argparse.Namespace) -> dict:
                 variant,
                 spec["filter_label"],
                 cre_colored_output,
-                methods,
+                variant_methods,
                 "Total cCRE count",
                 "subclass_cCRE_total_ccre",
                 center_count=5.0,

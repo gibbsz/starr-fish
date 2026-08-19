@@ -3,9 +3,11 @@
 
 The matrices are written by ``export_activity_matrix.py`` into each dataset's
 ``tables/`` directory and are the single source of truth for every activity
-heatmap. This module owns the file-name convention so the writer and the
-plotting scripts cannot drift apart, and provides the two reads the plots need:
-one dataset, and the shared universe of two datasets.
+figure. This module owns the file-name convention -- including the T7-threshold
+token in the ``q`` filename and the matching ``q_right_t7_ge*`` column name -- so
+the writer and the plotting scripts cannot drift apart, and provides the reads
+the plots need: one dataset, one matrix of one dataset, and the shared universe
+of two datasets.
 """
 
 from __future__ import annotations
@@ -17,6 +19,9 @@ import pandas as pd
 
 DEFAULT_STEM = "subclass_cre"
 ACTIVITY_COLUMN = "centered_activity_mean"
+BETA_T7_ACTIVITY_COLUMN = "beta_t7_activity_mean"
+TARGET_CRE_COLUMN = "target_cre_total"
+DEFAULT_Q_T7_THRESHOLD = 50.0
 PAIR_KEY = ["subclass", "cre"]
 
 
@@ -27,12 +32,35 @@ def stem_for(stem: str, control_sd_multiplier: float) -> str:
     return f"{stem}_mean_plus_{control_sd_multiplier:g}sd"
 
 
+def t7_token(t7_threshold: float) -> str:
+    """Filename-safe rendering of a T7 threshold, e.g. 50 -> ``50``, 0.5 -> ``0p5``."""
+    return f"{t7_threshold:g}".replace(".", "p")
+
+
+def q_column_for(t7_threshold: float) -> str:
+    """The shipped BH q column name for a given own-universe T7 threshold."""
+    return f"q_right_t7_ge{t7_token(t7_threshold)}"
+
+
+def call_column_for(t7_threshold: float) -> str:
+    """The shipped significance-call column name for a given T7 threshold."""
+    return f"significant_q_t7_ge{t7_token(t7_threshold)}"
+
+
 def matrix_paths(
-    tables_dir: Path, stem: str = DEFAULT_STEM, control_sd_multiplier: float = 0.0
+    tables_dir: Path,
+    stem: str = DEFAULT_STEM,
+    control_sd_multiplier: float = 0.0,
+    q_t7_threshold: float = DEFAULT_Q_T7_THRESHOLD,
 ) -> dict[str, Path]:
     full = stem_for(stem, control_sd_multiplier)
+    token = t7_token(q_t7_threshold)
     return {
         "activity": tables_dir / f"{full}_activity_matrix.csv.gz",
+        "beta_t7_activity": tables_dir / f"{full}_beta_t7_activity_matrix.csv.gz",
+        "p_value": tables_dir / f"{full}_p_value_matrix.csv.gz",
+        "q_value": tables_dir / f"{full}_q_value_matrix_t7_ge{token}.csv.gz",
+        "target_cre": tables_dir / f"{full}_target_cre_matrix.csv.gz",
         "target_t7": tables_dir / f"{full}_target_t7_matrix.csv.gz",
         "negative_control_activity": (
             tables_dir / f"{full}_negative_control_activity_matrix.csv.gz"
@@ -44,11 +72,22 @@ def matrix_paths(
 
 @dataclass(frozen=True)
 class DatasetMatrices:
-    """One dataset's exported activity matrix and its test table."""
+    """One dataset's exported matrices and its test table.
+
+    ``activity``, ``p_value``, ``q_value``, ``target_cre`` and ``target_t7`` share
+    the target-pair axis (negative controls excluded). ``beta_t7_activity`` is the
+    one exception: it spans every ordinary cCRE, controls included, because it is a
+    raw posterior quantity with no test attached and the method-comparison figures
+    plot the controls alongside the targets.
+    """
 
     tables_dir: Path
     stem: str
     activity: pd.DataFrame
+    beta_t7_activity: pd.DataFrame
+    p_value: pd.DataFrame
+    q_value: pd.DataFrame
+    target_cre: pd.DataFrame
     target_t7: pd.DataFrame
     negative_control_activity: pd.DataFrame
     significance: pd.DataFrame
@@ -92,9 +131,12 @@ def _read_matrix(path: Path) -> pd.DataFrame:
 
 
 def load_dataset(
-    tables_dir: Path, stem: str = DEFAULT_STEM, control_sd_multiplier: float = 0.0
+    tables_dir: Path,
+    stem: str = DEFAULT_STEM,
+    control_sd_multiplier: float = 0.0,
+    q_t7_threshold: float = DEFAULT_Q_T7_THRESHOLD,
 ) -> DatasetMatrices:
-    paths = matrix_paths(tables_dir, stem, control_sd_multiplier)
+    paths = matrix_paths(tables_dir, stem, control_sd_multiplier, q_t7_threshold)
     significance = pd.read_csv(paths["significance"])
     missing = sorted({*PAIR_KEY, "p_right"}.difference(significance.columns))
     if missing:
@@ -105,10 +147,28 @@ def load_dataset(
         tables_dir=tables_dir,
         stem=stem_for(stem, control_sd_multiplier),
         activity=_read_matrix(paths["activity"]),
+        beta_t7_activity=_read_matrix(paths["beta_t7_activity"]),
+        p_value=_read_matrix(paths["p_value"]),
+        q_value=_read_matrix(paths["q_value"]),
+        target_cre=_read_matrix(paths["target_cre"]),
         target_t7=_read_matrix(paths["target_t7"]),
         negative_control_activity=_read_matrix(paths["negative_control_activity"]),
         significance=significance,
     )
+
+
+def load_beta_t7_activity(
+    tables_dir: Path,
+    stem: str = DEFAULT_STEM,
+    control_sd_multiplier: float = 0.0,
+) -> pd.DataFrame:
+    """Just the beta_t7-referenced activity matrix, for the method-comparison figures.
+
+    They need only this one matrix from each ablation arm, and reading it alone
+    avoids requiring the whole exported set of an arm.
+    """
+    paths = matrix_paths(tables_dir, stem, control_sd_multiplier)
+    return _read_matrix(paths["beta_t7_activity"])
 
 
 def eligible_pairs(dataset: DatasetMatrices, t7_threshold: float) -> pd.DataFrame:

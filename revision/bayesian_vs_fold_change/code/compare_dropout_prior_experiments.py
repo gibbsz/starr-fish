@@ -12,9 +12,9 @@ import numpy as np
 import pandas as pd
 
 from analysis_utils import (
-    ANALYSIS_DIR,
     DEFAULT_H5AD,
     OLD_DATA_BOOTSTRAP,
+    ablation_root,
     log,
     write_json,
 )
@@ -29,23 +29,10 @@ from plot_section_reproducibility import bayesian_base, bootstrap_base
 
 
 DEFAULT_EXPERIMENTS = {
-    "default_beta_1_9": (
-        ANALYSIS_DIR / "results" / "ablation" / "bayesian_decoupled"
-    ),
-    "moderate_beta_2_5": ANALYSIS_DIR
-    / "results"
-    / "ablation"
-    / "bayesian_decoupled_dropout_moderate",
-    "high_beta_5_5": (
-        ANALYSIS_DIR
-        / "results"
-        / "ablation"
-        / "bayesian_decoupled_dropout_high"
-    ),
-    "strongly_high_beta_8_2": ANALYSIS_DIR
-    / "results"
-    / "ablation"
-    / "bayesian_decoupled_dropout_strongly_high",
+    "default_beta_1_9": ablation_root("bayesian_decoupled_dropout"),
+    "moderate_beta_2_5": ablation_root("bayesian_decoupled_dropout_moderate"),
+    "high_beta_5_5": ablation_root("bayesian_decoupled_dropout_high"),
+    "strongly_high_beta_8_2": ablation_root("bayesian_decoupled_dropout_strongly_high"),
 }
 
 
@@ -58,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--outdir",
         type=Path,
-        default=ANALYSIS_DIR / "results" / "ablation" / "dropout_prior_comparison",
+        default=ablation_root("dropout_prior_comparison"),
     )
     parser.add_argument("--bootstrap-log-chunk-size", type=int, default=250)
     parser.add_argument("--t7-threshold", type=float, default=100.0)
